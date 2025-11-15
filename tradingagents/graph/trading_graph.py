@@ -133,6 +133,26 @@ def create_llm_by_provider(provider: str, model: str, backend_url: str, temperat
             timeout=timeout
         )
 
+    elif provider.lower() == "copilot":
+        # GitHub Copilot 支持
+        from tradingagents.llm_adapters.copilot_adapter import ChatCopilot
+
+        # 优先使用传入的 API Key，否则从环境变量读取
+        copilot_token = api_key or os.getenv('GITHUB_COPILOT_TOKEN')
+        if not copilot_token:
+            raise ValueError("使用GitHub Copilot需要设置GITHUB_COPILOT_TOKEN环境变量或在数据库中配置Token")
+
+        logger.info(f"🔧 [GitHub Copilot] 使用模型: {model}")
+
+        return ChatCopilot(
+            model=model,
+            api_key=copilot_token,
+            base_url=backend_url if backend_url else None,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+
     elif provider.lower() in ["qianfan", "custom_openai"]:
         return create_openai_compatible_llm(
             provider=provider,
