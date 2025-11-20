@@ -150,7 +150,7 @@ def create_llm_by_provider(provider: str, model: str, backend_url: str, temperat
         )
 
     elif provider.lower() == "copilot":
-        # GitHub Copilot 支持
+        # GitHub Copilot 支持 (Azure AI Inference)
         from tradingagents.llm_adapters.copilot_adapter import ChatCopilot
 
         # 优先使用传入的 API Key，否则从环境变量读取
@@ -163,6 +163,26 @@ def create_llm_by_provider(provider: str, model: str, backend_url: str, temperat
         return ChatCopilot(
             model=model,
             api_key=copilot_token,
+            base_url=backend_url if backend_url else None,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout
+        )
+
+    elif provider.lower() == "copilot-business":
+        # GitHub Copilot Business 支持 (高级模型: GPT-5, Claude等)
+        from tradingagents.llm_adapters.copilot_business_adapter import ChatCopilotBusiness
+
+        # 优先使用传入的 API Key，否则从环境变量读取
+        business_token = api_key or os.getenv('GITHUB_COPILOT_BUSINESS_TOKEN')
+        if not business_token:
+            raise ValueError("使用GitHub Copilot Business需要设置GITHUB_COPILOT_BUSINESS_TOKEN环境变量或在数据库中配置Token")
+
+        logger.info(f"🔧 [GitHub Copilot Business] 使用模型: {model}")
+
+        return ChatCopilotBusiness(
+            model=model,
+            api_key=business_token,
             base_url=backend_url if backend_url else None,
             temperature=temperature,
             max_tokens=max_tokens,
