@@ -110,7 +110,12 @@ class OpenAICompatibleBase(ChatOpenAI):
                 )
         else:
             logger.info(f"✅ [{provider_name}初始化] 使用传入的 API Key（来自数据库配置），长度: {len(api_key)}")
-        
+
+        # gpt-5-mini需要温度是1
+        if model == "gpt-5-mini":
+            temperature = 1.0
+            logger.info(f"🎯 [{provider_name}初始化] {model} 模型要求 temperature 固定为 1.0，已自动设置")
+
         # 设置OpenAI兼容参数
         # 注意：model参数会被Pydantic映射到model_name字段
         openai_kwargs = {
@@ -162,17 +167,15 @@ class OpenAICompatibleBase(ChatOpenAI):
         """
         生成聊天响应，并记录token使用量
         """
-        
         # 记录开始时间
         start_time = time.time()
-        
-        # 调用父类生成方法
-        result = super()._generate(messages, stop, run_manager, **kwargs)
-        
-        # 记录token使用
-        self._track_token_usage(result, kwargs, start_time)
-        
-        return result
+        try:
+            result = super()._generate(messages, stop, run_manager, **kwargs)
+            self._track_token_usage(result, kwargs, start_time)
+            return result
+        except Exception as e:
+            logger.error(f"❌ [OpenAICompatibleBase] 请求失败: {e} | model={getattr(self, '_model_name_alias', None)} | kwargs={kwargs}")
+            raise
 
     def _track_token_usage(self, result: ChatResult, kwargs: Dict, start_time: float):
         """记录token使用量并输出日志"""
@@ -482,6 +485,7 @@ OPENAI_COMPATIBLE_PROVIDERS = {
             "gpt-4-turbo": {"context_length": 128000, "supports_function_calling": True},
             "gpt-4o": {"context_length": 128000, "supports_function_calling": True},
             "gpt-4o-mini": {"context_length": 128000, "supports_function_calling": True},
+            "gpt-5-mini": {"context_length": 128000, "supports_function_calling": True},
             "claude-3-haiku": {"context_length": 200000, "supports_function_calling": True},
             "claude-3-sonnet": {"context_length": 200000, "supports_function_calling": True},
             "claude-3-opus": {"context_length": 200000, "supports_function_calling": True},

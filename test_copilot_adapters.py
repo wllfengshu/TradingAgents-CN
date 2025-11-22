@@ -28,7 +28,7 @@ def test_copilot_standard():
 
         # 初始化适配器
         copilot = ChatCopilot(
-            model="gpt-4o",
+            model="gpt-4.1",
             temperature=1.0,
             max_tokens=500,
             timeout=120
@@ -171,10 +171,10 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # 测试标准 Copilot
-    # test_copilot_standard()
+    test_copilot_standard()
 
     # 测试 Business Copilot
-    test_copilot_business()
+    # test_copilot_business()
 
     print("\n" + "=" * 80)
     print("所有测试完成！")

@@ -226,6 +226,7 @@ class ChatCopilotBusiness(BaseChatModel):
 
             if response.status_code >= 400:
                 error_text = response.text[:500]
+                logger.error(f"❌ [Copilot Business] 请求失败: {response.status_code} | model={self.model} | body={body} | error={error_text}")
                 raise RuntimeError(
                     f"Copilot Business API 请求失败 {response.status_code}: {error_text}\n"
                     f"请检查 token 是否过期或格式是否正确"
@@ -253,7 +254,7 @@ class ChatCopilotBusiness(BaseChatModel):
             return ChatResult(generations=[generation])
 
         except Exception as e:
-            logger.error(f"❌ [Copilot Business] 请求失败: {e}")
+            logger.error(f"❌ [Copilot Business] 请求失败: {e} | model={self.model} | body={body}")
             raise
 
     @property
@@ -277,4 +278,3 @@ class ChatCopilotBusiness(BaseChatModel):
                 self._http_client.close()
             except:
                 pass
-

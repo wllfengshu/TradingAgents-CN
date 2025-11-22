@@ -3,12 +3,14 @@ GitHub Copilot 适配器 - Azure AI Inference 端点
 通过 GitHub Token 访问 Azure AI Inference 提供的优质大模型
 
 支持的模型：
+- gpt-5-mini
+- gpt-4.1
 - gpt-4o: GPT-4 Optimized ⭐(推荐，默认)
 - gpt-4o-mini: GPT-4o Mini (快速且经济)
-- gpt-4: GPT-4
+- gpt-4: GPT-4   ---   不支持
 - gpt-3.5-turbo: GPT-3.5 Turbo
-- o1-preview: OpenAI O1 Preview (推理模型)
-- o1-mini: OpenAI O1 Mini (快速推理)
+- o1-preview: OpenAI O1 Preview (推理模型)  ---   不支持
+- o1-mini: OpenAI O1 Mini (快速推理)  ---   不支持
 
 获取 GitHub Token:
 1. 安装 GitHub CLI: https://cli.github.com/
@@ -72,10 +74,8 @@ class ChatCopilot(OpenAICompatibleBase):
                 "获取方式: gh auth token (需先安装 GitHub CLI)"
             )
 
-        # Azure AI Inference 限制：temperature 必须为 1.0
-        if temperature != 1.0:
-            logger.warning(f"⚠️  [Copilot适配器] Azure AI Inference 限制: temperature 已重置为 1.0 (原值: {temperature})")
-            temperature = 1.0
+        # Azure AI Inference 限制：所有 Copilot 相关模型 temperature 必须为 1.0
+        temperature = 1.0
 
         # O1 系列模型使用 max_completion_tokens 参数
         if "o1" in model.lower():
