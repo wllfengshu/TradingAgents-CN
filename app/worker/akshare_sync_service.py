@@ -776,18 +776,9 @@ class AKShareSyncService:
         try:
             # 1. 确定要同步的股票列表
             if symbols is None:
-                basic_info_cursor = self.db.stock_basic_info.find(
-                    {
-                        "$or": [
-                            {"market_info.market": "CN"},  # 新数据结构
-                            {"category": "stock_cn"},      # 旧数据结构
-                            {"market": {"$in": ["主板", "创业板", "科创板", "北交所"]}}  # 按市场类型
-                        ]
-                    },
-                    {"code": 1}
-                )
-                symbols = [doc["code"] async for doc in basic_info_cursor]
-                logger.info(f"📋 从 stock_basic_info 获取到 {len(symbols)} 只股票")
+                # 只同步自选股
+                symbols = await self._get_favorite_stocks()
+                logger.info(f"📋 获取到 {len(symbols)} 只自选股用于财务数据同步")
 
             if not symbols:
                 logger.warning("⚠️ 没有找到要同步的股票")

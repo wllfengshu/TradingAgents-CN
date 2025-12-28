@@ -157,6 +157,40 @@ class OpenAICompatibleBase(ChatOpenAI):
     # 移除model_name property定义，使用Pydantic字段
     # model_name字段由ChatOpenAI基类的Pydantic字段提供
     
+    @staticmethod
+    def filter_prompt(text: str) -> str:
+        """
+        敏感词过滤，覆盖各类违规、违法、暴力、仇恨、色情、未成年人、虚假信息、隐私、系统安全等领域
+        """
+        SENSITIVE_WORDS = [
+            # 非法活动
+            "毒品", "制毒", "吸毒", "毒品配方", "麻黄素",
+            "黑客", "入侵系统", "破解软件", "DDoS攻击", "零日漏洞", "0day", "网络钓鱼",
+            "诈骗", "伪造证件", "洗钱", "伪造货币",
+            "武器制造", "炸弹", "爆炸物", "枪支改装",
+            # 暴力与仇恨
+            "杀人", "伤害", "自杀", "自残", "虐待", "威胁", "恐怖主义",
+            "种族歧视", "性别歧视", "地域攻击", "宗教侮辱", "性取向歧视",
+            # 成人内容
+            "色情", "性行为", "性暗示", "成人服务",
+            # 未成年人相关
+            "儿童色情", "恋童癖", "未成年人不当内容",
+            # 虚假信息
+            "未经证实的疗法", "医学谣言", "夸大疗效",
+            "编造公共事件", "阴谋论", "伪造证据", "误导性信息",
+            # 隐私侵犯
+            "获取他人隐私", "人肉搜索", "窃取数据", "账户破解",
+            # 系统安全
+            "角色扮演", "忽略规则", "系统提示注入", "编码攻击", "Base64解码", "特殊指令", "对话模拟注入",
+            # 敏感信息泄露
+            "训练数据", "用户对话内容", "机密信息", "诱导模型透露",
+            # 通用敏感词
+            "越狱", "破解", "绕过", "bypass", "jailbreak", "hack", "exploit", "敏感", "违规", "违法"
+        ]
+        for word in SENSITIVE_WORDS:
+            text = text.replace(word, "*")
+        return text
+
     def _generate(
         self,
         messages: List[BaseMessage],
@@ -165,17 +199,46 @@ class OpenAICompatibleBase(ChatOpenAI):
         **kwargs: Any,
     ) -> ChatResult:
         """
-        生成聊天响应，并记录token使用量
+        生成聊天响应，并记录token使用量，增加 prompt 过滤和自动重试机制
         """
-        # 记录开始时间
+        import copy
+        MAX_RETRIES = 2
+        attempt = 0
+        last_exception = None
+        # 处理所有消息内容
+        filtered_messages = []
+        for msg in messages:
+            msg_copy = copy.deepcopy(msg)
+            if hasattr(msg_copy, 'content') and isinstance(msg_copy.content, str):
+                msg_copy.content = self.filter_prompt(msg_copy.content)
+            filtered_messages.append(msg_copy)
         start_time = time.time()
-        try:
-            result = super()._generate(messages, stop, run_manager, **kwargs)
-            self._track_token_usage(result, kwargs, start_time)
-            return result
-        except Exception as e:
-            logger.error(f"❌ [OpenAICompatibleBase] 请求失败: {e} | model={getattr(self, '_model_name_alias', None)} | kwargs={kwargs}")
-            raise
+        while attempt < MAX_RETRIES:
+            try:
+                result = super()._generate(filtered_messages, stop, run_manager, **kwargs)
+                self._track_token_usage(result, kwargs, start_time)
+                return result
+            except Exception as e:
+                last_exception = e
+                # 检查是否为 content_filter 错误
+                if hasattr(e, 'response') and hasattr(e.response, 'status_code') and e.response.status_code == 400:
+                    err_json = getattr(e.response, 'json', lambda: {})()
+                    if err_json.get('error', {}).get('code') == 'content_filter':
+                        logger.warning(f"⚠️ [OpenAICompatibleBase] prompt 触发内容过滤，自动重试，第{attempt+1}次。内容: {[m.content for m in filtered_messages]}")
+                        # 简化 prompt 再重试（如只保留最后一条消息）
+                        if len(filtered_messages) > 1:
+                            filtered_messages = [filtered_messages[-1]]
+                        else:
+                            # 再次过滤最后一条消息内容
+                            if hasattr(filtered_messages[0], 'content'):
+                                filtered_messages[0].content = self.filter_prompt(filtered_messages[0].content)
+                        attempt += 1
+                        continue
+                # 其他异常直接抛出
+                logger.error(f"❌ [OpenAICompatibleBase] 请求失败: {e}")
+                raise
+        logger.error(f"❌ [OpenAICompatibleBase] 多次重试后仍触发内容过滤，最后异常: {last_exception}")
+        raise last_exception
 
     def _track_token_usage(self, result: ChatResult, kwargs: Dict, start_time: float):
         """记录token使用量并输出日志"""

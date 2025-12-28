@@ -450,7 +450,7 @@ async def lifespan(app: FastAPI):
             run_akshare_financial_sync,
             CronTrigger.from_crontab(settings.AKSHARE_FINANCIAL_SYNC_CRON, timezone=settings.TIMEZONE),
             id="akshare_financial_sync",
-            name="财务数据同步（AKShare）"
+            name="财务数据同步（AKShare - 仅自选股）"
         )
         if not (settings.AKSHARE_UNIFIED_ENABLED and settings.AKSHARE_FINANCIAL_SYNC_ENABLED):
             scheduler.pause_job("akshare_financial_sync")
