@@ -182,6 +182,29 @@ const routes: RouteRecordRaw[] = [
 
 
   {
+    path: '/ai-selector',
+    name: 'AiSelector',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: {
+      title: 'AI选股',
+      icon: 'Cpu',
+      requiresAuth: true,
+      transition: 'slide-up'
+    },
+    children: [
+      {
+        path: '',
+        name: 'AiSelectorHome',
+        component: () => import('@/views/AiSelector/index.vue'),
+        meta: {
+          title: 'AI选股',
+          requiresAuth: true
+        }
+      }
+    ]
+  },
+
+  {
     path: '/tasks',
     name: 'TaskCenter',
     component: () => import('@/layouts/BasicLayout.vue'),
