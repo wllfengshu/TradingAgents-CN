@@ -185,6 +185,7 @@ const routes: RouteRecordRaw[] = [
     path: '/ai-selector',
     name: 'AiSelector',
     component: () => import('@/layouts/BasicLayout.vue'),
+    redirect: '/ai-selector/home',
     meta: {
       title: 'AI选股',
       icon: 'Cpu',
@@ -193,11 +194,29 @@ const routes: RouteRecordRaw[] = [
     },
     children: [
       {
-        path: '',
+        path: 'home',
         name: 'AiSelectorHome',
         component: () => import('@/views/AiSelector/index.vue'),
         meta: {
           title: 'AI选股',
+          requiresAuth: true
+        }
+      },
+      {
+        path: 'records',
+        name: 'AiSelectorRecords',
+        component: () => import('@/views/AiSelector/Records.vue'),
+        meta: {
+          title: '选股记录',
+          requiresAuth: true
+        }
+      },
+      {
+        path: 'records/:id',
+        name: 'AiSelectorRecordDetail',
+        component: () => import('@/views/AiSelector/RecordDetail.vue'),
+        meta: {
+          title: '记录详情',
           requiresAuth: true
         }
       }

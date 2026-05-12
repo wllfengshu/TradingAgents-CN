@@ -55,31 +55,50 @@
 
         <!-- 协同流程说明 -->
         <div class="flow-section">
-          <h4 class="section-title">协同流程</h4>
+          <h4 class="section-title">协同流程（逐级筛选，条件终止）</h4>
           <div class="flow-steps">
             <div class="flow-step">
               <div class="step-number">1</div>
-              <div class="step-text">多维分析</div>
+              <div class="step-text">大盘分析</div>
+              <div class="step-condition">偏空则终止</div>
             </div>
             <div class="flow-arrow">
               <el-icon><ArrowRight /></el-icon>
             </div>
             <div class="flow-step">
               <div class="step-number">2</div>
-              <div class="step-text">交叉验证</div>
+              <div class="step-text">板块识别</div>
+              <div class="step-condition">无主线则终止</div>
             </div>
             <div class="flow-arrow">
               <el-icon><ArrowRight /></el-icon>
             </div>
             <div class="flow-step">
               <div class="step-number">3</div>
-              <div class="step-text">风险过滤</div>
+              <div class="step-text">合力筛选</div>
+              <div class="step-condition">无标的则终止</div>
             </div>
             <div class="flow-arrow">
               <el-icon><ArrowRight /></el-icon>
             </div>
             <div class="flow-step">
               <div class="step-number">4</div>
+              <div class="step-text">龙头确认</div>
+              <div class="step-condition">无龙头则终止</div>
+            </div>
+            <div class="flow-arrow">
+              <el-icon><ArrowRight /></el-icon>
+            </div>
+            <div class="flow-step">
+              <div class="step-number">5</div>
+              <div class="step-text">风险评估</div>
+              <div class="step-condition">高风险则终止</div>
+            </div>
+            <div class="flow-arrow">
+              <el-icon><ArrowRight /></el-icon>
+            </div>
+            <div class="flow-step">
+              <div class="step-number">6</div>
               <div class="step-text">综合决策</div>
             </div>
           </div>
@@ -152,6 +171,18 @@
             </el-alert>
           </div>
 
+          <!-- 提前终止提示 -->
+          <div v-if="resultData.earlyStop" class="early-stop-section">
+            <el-alert type="info" :closable="false" show-icon>
+              <template #title>
+                <span style="font-weight: bold;">分析提前终止：{{ resultData.earlyStopReason }}</span>
+              </template>
+              <template #default>
+                <span>上游分析师判断当前市场条件不满足继续分析的要求，后续步骤已自动跳过。</span>
+              </template>
+            </el-alert>
+          </div>
+
           <!-- 各分析师结论 -->
           <div v-if="resultData.analystResults" class="analyst-results">
             <h4 class="section-title">各分析师结论</h4>
@@ -203,6 +234,14 @@
               <div class="decision-reasoning" v-if="resultData.decision.reasoning">
                 <span class="label">决策依据：</span>
                 <p>{{ resultData.decision.reasoning }}</p>
+              </div>
+              <div class="decision-position" v-if="resultData.decision.position_suggestion">
+                <span class="label">仓位建议：</span>
+                <p>{{ resultData.decision.position_suggestion }}</p>
+              </div>
+              <div class="decision-risk" v-if="resultData.decision.risk_warning">
+                <span class="label">风险提示：</span>
+                <p>{{ resultData.decision.risk_warning }}</p>
               </div>
             </div>
           </div>
@@ -294,11 +333,15 @@ import {
   Refresh,
 } from '@element-plus/icons-vue'
 import { marked } from 'marked'
+import { aiSelectorApi } from '@/api/aiSelector'
+import { useAuthStore } from '@/stores/auth'
 
 marked.setOptions({
   breaks: true,
   gfm: true
 })
+
+const authStore = useAuthStore()
 
 // 分析师团队定义
 const analystTeam = [
@@ -351,8 +394,9 @@ const running = ref(false)
 const progress = ref(0)
 const currentStep = ref('')
 const elapsedTime = ref(0)
+const currentTaskId = ref('')
 let timer: ReturnType<typeof setInterval> | null = null
-let progressTimer: ReturnType<typeof setInterval> | null = null
+let pollingTimer: ReturnType<typeof setInterval> | null = null
 
 // 结果数据
 const hasResult = ref(false)
@@ -369,10 +413,16 @@ const resultData = reactive<{
     action: string
     stocks: Array<{ code: string; name: string }>
     reasoning: string
+    position_suggestion?: string
+    risk_warning?: string
   } | null
+  earlyStop: boolean
+  earlyStopReason: string
 }>({
   analystResults: [],
-  decision: null
+  decision: null,
+  earlyStop: false,
+  earlyStopReason: ''
 })
 
 // 定时运行
@@ -423,95 +473,117 @@ const handleRunNow = async () => {
   running.value = true
   progress.value = 0
   elapsedTime.value = 0
-  currentStep.value = '正在初始化AI选股分析...'
+  currentStep.value = '正在提交AI选股任务...'
   progressStatus.value = ''
 
-  // 模拟计时
+  // 计时器
   timer = setInterval(() => {
     elapsedTime.value += 1
   }, 1000)
 
-  // 模拟进度
-  const steps = [
-    { name: '大盘分析师工作中...', target: 15 },
-    { name: '主线板块分析师工作中...', target: 30 },
-    { name: '市场合力分析师工作中...', target: 50 },
-    { name: '股票龙头分析师工作中...', target: 65 },
-    { name: '风险分析师工作中...', target: 80 },
-    { name: '决策分析师综合研判...', target: 100 }
-  ]
-
-  let stepIndex = 0
-  progressTimer = setInterval(() => {
-    if (stepIndex < steps.length) {
-      const step = steps[stepIndex]
-      currentStep.value = step.name
-      progress.value = Math.min(progress.value + Math.random() * 5 + 2, step.target)
-
-      if (progress.value >= step.target) {
-        stepIndex++
-      }
+  try {
+    // 调用后端API启动任务
+    const res = await aiSelectorApi.run()
+    if (!res.success) {
+      throw new Error(res.message || '启动任务失败')
     }
 
-    if (progress.value >= 100) {
-      progress.value = 100
-      if (progressTimer) clearInterval(progressTimer)
-      if (timer) clearInterval(timer)
-      progressStatus.value = 'success'
-      currentStep.value = '分析完成'
+    currentTaskId.value = res.data.task_id
+    currentStep.value = '任务已提交，等待处理...'
+    progress.value = 5
 
-      // 模拟结果
-      setTimeout(() => {
+    // 开始轮询任务状态
+    startPolling()
+  } catch (error: any) {
+    running.value = false
+    if (timer) { clearInterval(timer); timer = null }
+    ElMessage.error(error.message || '启动AI选股任务失败')
+  }
+}
+
+// 轮询任务状态
+const startPolling = () => {
+  if (pollingTimer) clearInterval(pollingTimer)
+
+  pollingTimer = setInterval(async () => {
+    if (!currentTaskId.value) return
+
+    try {
+      const res = await aiSelectorApi.getStatus(currentTaskId.value)
+      if (!res.success || !res.data) return
+
+      const task = res.data
+
+      // 更新进度
+      progress.value = task.progress || 0
+      currentStep.value = task.current_step || ''
+
+      if (task.status === 'completed') {
+        // 任务完成，获取完整结果
+        if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null }
+        if (timer) { clearInterval(timer); timer = null }
+
+        progress.value = 100
+        progressStatus.value = 'success'
+        currentStep.value = '分析完成'
+
+        await fetchResult()
         running.value = false
-        hasResult.value = true
-        resultTime.value = new Date().toLocaleString('zh-CN')
-        activeResultTab.value = '0'
-        resultData.analystResults = [
-          {
-            name: '大盘分析师',
-            conclusion: '偏多',
-            tagType: 'success',
-            content: '## 大盘分析结论\n\n当前上证指数处于中期上升趋势，MACD金叉形成，北向资金连续3日净流入，涨跌比2.5:1，市场整体偏强。\n\n**关键指标：**\n- 上证指数：3,350点，涨幅+0.85%\n- 北向资金：净流入+52亿\n- 涨跌比：2.5:1\n- 成交额：1.2万亿'
-          },
-          {
-            name: '主线板块分析师',
-            conclusion: '科技+新能源',
-            tagType: 'success',
-            content: '## 板块分析结论\n\n当前市场主线聚焦于人工智能和新能源板块，涨停集中度最高。\n\n**热门板块：**\n- AI算力：涨停集中度38%，5日强度+12%\n- 半导体：涨停集中度25%，5日强度+8%\n- 新能源：涨停集中度20%，5日强度+6%\n- 医药：涨停集中度8%，5日强度+2%'
-          },
-          {
-            name: '市场合力分析师',
-            conclusion: '主力流入',
-            tagType: 'success',
-            content: '## 合力分析结论\n\n主力资金持续流入科技板块，散户资金跟随，形成正向合力。\n\n**资金动向：**\n- 主力净流入：+38亿（科技）、+22亿（新能源）\n- 散户净流入：+15亿（科技）、+8亿（新能源）\n- 合力方向：正向共振'
-          },
-          {
-            name: '股票龙头分析师',
-            conclusion: '多只强势',
-            tagType: 'success',
-            content: '## 龙头分析结论\n\nAI算力板块龙头连板强势，半导体板块出现补涨龙头。\n\n**强势标的：**\n- 中际旭创：3连板，AI算力龙头\n- 寒武纪：2连板，AI芯片\n- 宁德时代：1板+大阳，新能源龙头'
-          },
-          {
-            name: '风险分析师',
-            conclusion: '风险可控',
-            tagType: 'warning',
-            content: '## 风险分析结论\n\n已排除ST、*ST及退市风险股，注意新股炒作风险。\n\n**风险提示：**\n- 已排除ST/*ST股：15只\n- 已排除退市风险股：3只\n- 新股炒作风险：2只需警惕\n- 整体风险评级：中等偏低'
-          }
-        ]
-        resultData.decision = {
-          action: '谨慎推荐',
-          stocks: [
-            { code: '300308', name: '中际旭创' },
-            { code: '688256', name: '寒武纪' },
-            { code: '300750', name: '宁德时代' }
-          ],
-          reasoning: '大盘偏多、主线明确（AI+新能源）、主力资金正流入、龙头股强势，但需注意短期涨幅较大带来的回调风险。建议分批建仓，控制仓位在30%以内。'
-        }
-
         ElMessage.success('AI选股分析完成')
-      }, 500)
+
+      } else if (task.status === 'failed') {
+        // 任务失败
+        if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null }
+        if (timer) { clearInterval(timer); timer = null }
+
+        progressStatus.value = 'exception'
+        currentStep.value = '分析失败'
+        running.value = false
+
+        const errMsg = task.error_message || '分析过程中发生错误'
+        ElMessage.error(errMsg)
+      }
+    } catch (error) {
+      console.error('轮询AI选股任务状态失败:', error)
     }
-  }, 800)
+  }, 3000)
+}
+
+// 获取完整结果
+const fetchResult = async () => {
+  if (!currentTaskId.value) return
+
+  try {
+    const res = await aiSelectorApi.getResult(currentTaskId.value)
+    if (!res.success || !res.data) return
+
+    const data = res.data
+    hasResult.value = true
+    resultTime.value = new Date().toLocaleString('zh-CN')
+    activeResultTab.value = '0'
+
+    // 填充分析师结果
+    if (data.analyst_results && Array.isArray(data.analyst_results)) {
+      resultData.analystResults = data.analyst_results.map((r: any) => ({
+        name: r.name,
+        conclusion: r.conclusion,
+        tagType: r.conclusion === '已跳过' ? 'info' : (r.tag_type as 'success' | 'warning' | 'danger' | 'info'),
+        content: r.content,
+      }))
+    }
+
+    // 填充提前终止信息
+    resultData.earlyStop = !!data.early_stop
+    resultData.earlyStopReason = data.early_stop_reason || ''
+
+    // 填充决策结果
+    if (data.decision) {
+      resultData.decision = data.decision
+    }
+  } catch (error) {
+    console.error('获取AI选股结果失败:', error)
+    ElMessage.error('获取结果失败')
+  }
 }
 
 // 定时运行
@@ -554,15 +626,18 @@ const handleReset = () => {
   hasResult.value = false
   resultData.analystResults = []
   resultData.decision = null
+  resultData.earlyStop = false
+  resultData.earlyStopReason = ''
   progress.value = 0
   elapsedTime.value = 0
   currentStep.value = ''
   progressStatus.value = ''
+  currentTaskId.value = ''
 }
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
-  if (progressTimer) clearInterval(progressTimer)
+  if (pollingTimer) clearInterval(pollingTimer)
 })
 </script>
 
@@ -719,15 +794,16 @@ onUnmounted(() => {
 
       .flow-steps {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
-        gap: 16px;
+        gap: 10px;
+        flex-wrap: wrap;
 
         .flow-step {
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
 
           .step-number {
             width: 36px;
@@ -747,12 +823,18 @@ onUnmounted(() => {
             font-weight: 500;
             color: #374151;
           }
+
+          .step-condition {
+            font-size: 11px;
+            color: #e6a23c;
+            white-space: nowrap;
+          }
         }
 
         .flow-arrow {
           color: #c0c4cc;
           font-size: 20px;
-          margin-top: -20px;
+          margin-top: 12px;
         }
       }
     }
@@ -848,6 +930,10 @@ onUnmounted(() => {
       margin-bottom: 20px;
     }
 
+    .early-stop-section {
+      margin-bottom: 20px;
+    }
+
     .analyst-results {
       margin-bottom: 24px;
 
@@ -928,6 +1014,18 @@ onUnmounted(() => {
         }
 
         .decision-reasoning {
+          p {
+            margin: 8px 0 0;
+            font-size: 14px;
+            line-height: 1.8;
+            color: #374151;
+          }
+        }
+
+        .decision-position,
+        .decision-risk {
+          margin-top: 12px;
+
           p {
             margin: 8px 0 0;
             font-size: 14px;

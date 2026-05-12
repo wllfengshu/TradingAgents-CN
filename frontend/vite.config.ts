@@ -72,8 +72,12 @@ export default defineConfig({
     }
   },
   css: {
+    // 使用多线程 Worker 并行编译 SCSS（Vite 5.4+）
+    preprocessorMaxWorkers: true,
     preprocessorOptions: {
       scss: {
+        // 使用 sass-embedded（比 sass 快 3-5 倍）+ modern-compiler API
+        api: 'modern-compiler',
         additionalData: `@use "@/styles/variables.scss" as *;`
       }
     }

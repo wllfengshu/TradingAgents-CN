@@ -37,7 +37,7 @@ dependencies = [
     "concurrent-log-handler>=0.9.24",  # Windows 友好的日志轮转处理器
 
     # 数据源和金融数据
-    "akshare>=1.17.86",
+    "akshare>=1.18.60",
     "baostock>=0.8.8",
     "eodhd>=1.0.32",
     "finnhub-python>=2.4.23",
@@ -52,7 +52,7 @@ dependencies = [
     "langchain-anthropic>=0.3.15",
     "langchain-experimental>=0.3.4",
     "langchain-google-genai>=2.1.12",  # 修复 client_options 未定义错误
-    "langchain-openai>=0.3.23",
+    "langchain-openai>=1.1.14",
     "langgraph>=0.4.8",
     "openai>=1.0.0,<2.0.0",
 

@@ -56,10 +56,14 @@
     </el-menu-item>
     -->
 
-    <el-menu-item index="/ai-selector">
-      <el-icon><Cpu /></el-icon>
-      <template #title>AI选股</template>
-    </el-menu-item>
+    <el-sub-menu index="/ai-selector">
+      <template #title>
+        <el-icon><Cpu /></el-icon>
+        <span>AI选股</span>
+      </template>
+      <el-menu-item index="/ai-selector/home">立即选股</el-menu-item>
+      <el-menu-item index="/ai-selector/records">选股记录</el-menu-item>
+    </el-sub-menu>
 
     <el-sub-menu index="/settings">
       <template #title>

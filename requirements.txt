@@ -4,7 +4,7 @@
 
 typing-extensions
 openai>=1.0.0,<2.0.0
-langchain-openai>=0.1.0
+langchain-openai>=1.1.14
 langchain-experimental
 pandas
 yfinance
@@ -15,7 +15,7 @@ eodhd
 langgraph
 chromadb
 setuptools
-akshare>=1.17.86
+akshare>=1.18.60
 tushare
 baostock
 finnhub-python
