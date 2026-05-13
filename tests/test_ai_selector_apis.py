@@ -276,9 +276,9 @@ class TestComputeFunctions(unittest.TestCase):
 
     def test_compute_market_indicators(self):
         """测试大盘指标计算完整流程"""
-        from app.services.ai_selector_service import compute_market_indicators
+        from app.services.ai_selector_service import compute_market_indicators, ApiCache
 
-        result = compute_market_indicators()
+        result = compute_market_indicators(ApiCache())
         print(result)
         self.assertIsInstance(result, dict, "结果应为字典")
         self.assertIn("指标来源", result, "应包含指标来源")

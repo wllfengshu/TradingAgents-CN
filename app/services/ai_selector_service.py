@@ -21,15 +21,47 @@ from app.services.simple_analysis_service import (
     get_provider_and_url_by_model_sync,
 )
 from app.core.database import get_mongo_db
+from ..utils.stock_utils import is_main_board_stock
 
 logger = logging.getLogger("app.services.ai_selector_service")
+
+
+class ApiCache:
+    """API调用缓存，在单次AI选股运行期间缓存akshare接口调用结果，运行结束后清空
+
+    类似Java的ThreadLocal效果：每次AI选股运行时创建，运行期间同一接口只调用一次，
+    运行结束后清空缓存，不同任务的缓存互不干扰。
+    """
+
+    def __init__(self):
+        self._cache: Dict[str, Any] = {}
+        self._hits = 0
+        self._misses = 0
+
+    def call(self, cache_key: str, func, *args, **kwargs):
+        """调用API并缓存结果，如果已有缓存则直接返回"""
+        if cache_key in self._cache:
+            self._hits += 1
+            logger.info(f"API缓存命中: {cache_key}")
+            return self._cache[cache_key]
+        result = func(*args, **kwargs)
+        self._cache[cache_key] = result
+        self._misses += 1
+        return result
+
+    def clear(self):
+        if self._hits > 0 or self._misses > 0:
+            logger.info(f"API缓存清空，命中{self._hits}次，未命中{self._misses}次")
+        self._cache.clear()
+        self._hits = 0
+        self._misses = 0
 
 
 # ============================================================
 # 指标计算函数
 # ============================================================
 
-def compute_market_indicators() -> Dict[str, Any]:
+def compute_market_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """大盘分析师指标计算：指数/北向资金/涨跌比等"""
     try:
         import akshare as ak
@@ -38,7 +70,7 @@ def compute_market_indicators() -> Dict[str, Any]:
 
         # 1. 上证指数
         try:
-            sh_index = ak.stock_zh_index_daily(symbol="sh000001")
+            sh_index = api_cache.call("stock_zh_index_daily:sh000001", ak.stock_zh_index_daily, symbol="sh000001")
             if sh_index is not None and not sh_index.empty:
                 latest = sh_index.iloc[-1]
                 prev = sh_index.iloc[-2] if len(sh_index) > 1 else latest
@@ -53,7 +85,7 @@ def compute_market_indicators() -> Dict[str, Any]:
 
         # 2. 深证成指
         try:
-            sz_index = ak.stock_zh_index_daily(symbol="sz399001")
+            sz_index = api_cache.call("stock_zh_index_daily:sz399001", ak.stock_zh_index_daily, symbol="sz399001")
             if sz_index is not None and not sz_index.empty:
                 latest = sz_index.iloc[-1]
                 prev = sz_index.iloc[-2] if len(sz_index) > 1 else latest
@@ -68,7 +100,7 @@ def compute_market_indicators() -> Dict[str, Any]:
         # 3. 沪深港通资金（替代已停止公布的北向资金净流入数据）
         # 3a. 沪深港通每日资金流向汇总
         try:
-            hsgt_summary = ak.stock_hsgt_fund_flow_summary_em()
+            hsgt_summary = api_cache.call("stock_hsgt_fund_flow_summary_em", ak.stock_hsgt_fund_flow_summary_em)
             if hsgt_summary is not None and not hsgt_summary.empty:
                 hsgt_data = {}
                 for _, row in hsgt_summary.iterrows():
@@ -105,7 +137,7 @@ def compute_market_indicators() -> Dict[str, Any]:
 
         # 3b. 北向资金增持个股排行前10（替代原沪股通活跃股）
         try:
-            hold_rank = ak.stock_hsgt_hold_stock_em(market="北向", indicator="今日排行")
+            hold_rank = api_cache.call("stock_hsgt_hold_stock_em:北向:今日排行", ak.stock_hsgt_hold_stock_em, market="北向", indicator="今日排行")
             if hold_rank is not None and not hold_rank.empty:
                 top10 = hold_rank.head(10)
                 result["沪深港通活跃股前10"] = [
@@ -126,7 +158,7 @@ def compute_market_indicators() -> Dict[str, Any]:
 
         # 3c. 行业资金成交集中度（使用同花顺行业资金流数据）
         try:
-            industry_flow = ak.stock_fund_flow_industry(symbol="即时")
+            industry_flow = api_cache.call("stock_fund_flow_industry:即时", ak.stock_fund_flow_industry, symbol="即时")
             if industry_flow is not None and not industry_flow.empty:
                 top8 = industry_flow.head(8)
                 result["沪深港通行业成交集中度"] = [
@@ -145,7 +177,7 @@ def compute_market_indicators() -> Dict[str, Any]:
 
         # 4. 涨跌比（使用新浪数据源，东方财富接口被限制）
         try:
-            stock_changes = ak.stock_zh_a_spot()
+            stock_changes = api_cache.call("stock_zh_a_spot", ak.stock_zh_a_spot)
             if stock_changes is not None and not stock_changes.empty:
                 up_count = len(stock_changes[stock_changes["涨跌幅"] > 0])
                 down_count = len(stock_changes[stock_changes["涨跌幅"] < 0])
@@ -172,7 +204,7 @@ def compute_market_indicators() -> Dict[str, Any]:
         return {"错误": str(e)}
 
 
-def compute_sector_indicators() -> Dict[str, Any]:
+def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """主线板块分析师指标计算：涨停集中度/5日强度等"""
     try:
         import akshare as ak
@@ -181,7 +213,7 @@ def compute_sector_indicators() -> Dict[str, Any]:
 
         # 1. 板块涨跌幅排行（使用同花顺数据源，东方财富接口被限制）
         try:
-            sector_rank = ak.stock_board_industry_summary_ths()
+            sector_rank = api_cache.call("stock_board_industry_summary_ths", ak.stock_board_industry_summary_ths)
             if sector_rank is not None and not sector_rank.empty:
                 top_sectors = sector_rank.nlargest(10, "涨跌幅") if "涨跌幅" in sector_rank.columns else sector_rank.head(10)
                 result["涨幅前10板块"] = []
@@ -202,7 +234,8 @@ def compute_sector_indicators() -> Dict[str, Any]:
 
         # 2. 涨停股统计
         try:
-            zt_stocks = ak.stock_zt_pool_em(date=datetime.now().strftime("%Y%m%d"))
+            today_str = datetime.now().strftime("%Y%m%d")
+            zt_stocks = api_cache.call(f"stock_zt_pool_em:{today_str}", ak.stock_zt_pool_em, date=today_str)
             if zt_stocks is not None and not zt_stocks.empty:
                 result["涨停统计"] = {
                     "涨停数量": len(zt_stocks),
@@ -217,7 +250,8 @@ def compute_sector_indicators() -> Dict[str, Any]:
 
         # 3. 连板股统计（强势股池：连续涨停2板及以上的股票）
         try:
-            lb_stocks = ak.stock_zt_pool_strong_em(date=datetime.now().strftime("%Y%m%d"))
+            today_str = datetime.now().strftime("%Y%m%d")
+            lb_stocks = api_cache.call(f"stock_zt_pool_strong_em:{today_str}", ak.stock_zt_pool_strong_em, date=today_str)
             if lb_stocks is not None and not lb_stocks.empty:
                 # 过滤掉成交额为0的停牌股票
                 if "成交额" in lb_stocks.columns:
@@ -244,7 +278,7 @@ def compute_sector_indicators() -> Dict[str, Any]:
         return {"错误": str(e)}
 
 
-def compute_force_indicators() -> Dict[str, Any]:
+def compute_force_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """市场合力分析师指标计算：主力+散户双向净流入等"""
     try:
         import akshare as ak
@@ -253,7 +287,7 @@ def compute_force_indicators() -> Dict[str, Any]:
 
         # 1. 行业资金流向（使用同花顺行业资金流，替代东方财富接口）
         try:
-            industry_fund = ak.stock_fund_flow_industry(symbol="即时")
+            industry_fund = api_cache.call("stock_fund_flow_industry:即时", ak.stock_fund_flow_industry, symbol="即时")
             if industry_fund is not None and not industry_fund.empty:
                 result["主力资金流向前20"] = []
                 for _, row in industry_fund.head(20).iterrows():
@@ -270,15 +304,21 @@ def compute_force_indicators() -> Dict[str, Any]:
                         item["流出资金(亿)"] = str(row["流出资金"])
                     if "领涨股" in industry_fund.columns:
                         item["领涨股"] = str(row["领涨股"])
-                    result["主力资金流向前10"].append(item)
+                    result["主力资金流向前20"].append(item)
         except Exception as e:
             logger.error(f"获取主力资金流向失败: {e}")
             result["主力资金流向"] = "获取失败"
 
         # 2. 个股资金流向（使用同花顺个股资金流，替代东方财富接口）
+        # 只保留主板股票，排除科创板(688)、创业板(300/301)、北交所(8开头)
         try:
-            stock_fund = ak.stock_fund_flow_individual(symbol="即时")
+            stock_fund = api_cache.call("stock_fund_flow_individual:即时", ak.stock_fund_flow_individual, symbol="即时")
             if stock_fund is not None and not stock_fund.empty:
+                # 过滤：只保留主板股票
+                if "股票代码" in stock_fund.columns:
+                    stock_fund = stock_fund[stock_fund["股票代码"].astype(str).apply(is_main_board_stock)]
+                    logger.info(f"个股资金流向过滤后剩余主板股票: {len(stock_fund)} 条")
+
                 top_inflow = stock_fund.head(20)
                 result["个股主力净流入前20"] = []
                 for _, row in top_inflow.iterrows():
@@ -297,7 +337,7 @@ def compute_force_indicators() -> Dict[str, Any]:
                         item["流出资金"] = str(row["流出资金"])
                     if "换手率" in stock_fund.columns:
                         item["换手率"] = str(row["换手率"])
-                    result["个股主力净流入前10"].append(item)
+                    result["个股主力净流入前20"].append(item)
         except Exception as e:
             logger.error(f"获取个股资金流向失败: {e}")
             result["个股资金流向"] = "获取失败"
@@ -311,7 +351,7 @@ def compute_force_indicators() -> Dict[str, Any]:
         return {"错误": str(e)}
 
 
-def compute_leader_indicators() -> Dict[str, Any]:
+def compute_leader_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """股票龙头分析师指标计算：连板/板块排名/成交量等"""
     try:
         import akshare as ak
@@ -320,7 +360,8 @@ def compute_leader_indicators() -> Dict[str, Any]:
 
         # 1. 涨停池（龙头候选）
         try:
-            zt_pool = ak.stock_zt_pool_em(date=datetime.now().strftime("%Y%m%d"))
+            today_str = datetime.now().strftime("%Y%m%d")
+            zt_pool = api_cache.call(f"stock_zt_pool_em:{today_str}", ak.stock_zt_pool_em, date=today_str)
             if zt_pool is not None and not zt_pool.empty:
                 # 过滤掉成交额为0的停牌股票
                 if "成交额" in zt_pool.columns:
@@ -341,7 +382,7 @@ def compute_leader_indicators() -> Dict[str, Any]:
 
         # 2. 强势股（涨幅前20，使用新浪数据源）
         try:
-            stock_rank = ak.stock_zh_a_spot()
+            stock_rank = api_cache.call("stock_zh_a_spot", ak.stock_zh_a_spot)
             if stock_rank is not None and not stock_rank.empty:
                 top_stocks = stock_rank.nlargest(20, "涨跌幅")
                 result["强势股前20"] = []
@@ -364,23 +405,16 @@ def compute_leader_indicators() -> Dict[str, Any]:
         return {"错误": str(e)}
 
 
-def compute_risk_indicators() -> Dict[str, Any]:
+def compute_risk_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """风险分析师指标计算：排除ST/新股/退市等"""
     try:
         import akshare as ak
 
         result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-        # 1. ST股票列表
+        # 1. 次新股（使用新浪数据源，东方财富接口被限制）
         try:
-            result["ST风险股票"] = "直接判断股票名称是否包含ST或*ST"
-        except Exception as e:
-            logger.error(f"获取ST股票失败: {e}")
-            result["ST风险股票"] = "获取失败"
-
-        # 2. 次新股（使用新浪数据源，东方财富接口被限制）
-        try:
-            new_stocks = ak.stock_zh_a_new()
+            new_stocks = api_cache.call("stock_zh_a_new", ak.stock_zh_a_new)
             if new_stocks is not None and not new_stocks.empty:
                 result["次新股"] = {
                     "数量": len(new_stocks),
@@ -394,11 +428,17 @@ def compute_risk_indicators() -> Dict[str, Any]:
             logger.error(f"获取次新股失败: {e}")
             result["次新股"] = "获取失败"
 
+        # 2. ST股票列表
+        result["ST风险股票"] = "直接判断股票名称是否包含ST或*ST，如果包含直接标记为高风险，禁止买入"
+
         # 3. 退市风险
-        try:
-            result["ST风险股票"] = "直接判断股票名称是否包含 退市 或者 退字"
-        except Exception as e:
-            logger.error(f"获取涨幅异常失败: {e}")
+        result["退市风险股票"] = "直接判断股票名称是否包含 退市 或者 退字，如果包含直接标记为高风险，禁止买入"
+
+        # 4. 停牌风险
+        result["停牌风险股票"] = "直接判断股票名称是否包含 停牌 或者 停字，如果包含直接标记为高风险，禁止买入"
+
+        # 5. 只买入主板股票，排除科创板(688)、创业板(300/301)、北交所(8开头)
+        result["只买入主板股票"] = "只买入主板股票，排除科创板(688)、创业板(300/301)、北交所(8开头)"
 
         return result
 
@@ -584,6 +624,7 @@ RISK_ANALYST_PROMPT = """你是一位资深的风险分析师，专注于排除�
 
 DECISION_ANALYST_PROMPT = """你是一位资深的决策分析师，负责综合所有分析师的结论，给出最终的AI选股决策。
 
+## 当前时间是：{current_time}
 ## 各分析师的分析结论
 
 ### 大盘分析师结论
@@ -731,6 +772,9 @@ class AiSelectorService:
         """
         start_time = time.time()
 
+        # 创建API缓存，运行期间同一接口只调用一次，运行结束后清空
+        api_cache = ApiCache()
+
         # 用于收集各分析师结果（即使提前终止也能展示已完成的分析）
         analyst_results = []
         decision = None
@@ -747,7 +791,7 @@ class AiSelectorService:
 
             # ====== Step 1: 大盘分析师 ======
             await self._update_status(task_id, "running", 10, "大盘分析师计算指标中...")
-            market_indicators = await asyncio.to_thread(compute_market_indicators)
+            market_indicators = await asyncio.to_thread(compute_market_indicators, api_cache)
 
             await self._update_status(task_id, "running", 15, "大盘分析师分析中...")
             market_report = await asyncio.to_thread(
@@ -778,7 +822,7 @@ class AiSelectorService:
             # ====== Step 2: 主线板块分析师 ======
             if not early_stop_reason:
                 await self._update_status(task_id, "running", 25, "主线板块分析师计算指标中...")
-                sector_indicators = await asyncio.to_thread(compute_sector_indicators)
+                sector_indicators = await asyncio.to_thread(compute_sector_indicators, api_cache)
 
                 await self._update_status(task_id, "running", 30, "主线板块分析师分析中...")
                 sector_report = await asyncio.to_thread(
@@ -812,7 +856,7 @@ class AiSelectorService:
             # ====== Step 3: 市场合力分析师 ======
             if not early_stop_reason:
                 await self._update_status(task_id, "running", 40, "市场合力分析师计算指标中...")
-                force_indicators = await asyncio.to_thread(compute_force_indicators)
+                force_indicators = await asyncio.to_thread(compute_force_indicators, api_cache)
 
                 await self._update_status(task_id, "running", 45, "市场合力分析师分析中...")
                 force_report = await asyncio.to_thread(
@@ -848,7 +892,7 @@ class AiSelectorService:
             # ====== Step 4: 股票龙头分析师 ======
             if not early_stop_reason:
                 await self._update_status(task_id, "running", 55, "股票龙头分析师计算指标中...")
-                leader_indicators = await asyncio.to_thread(compute_leader_indicators)
+                leader_indicators = await asyncio.to_thread(compute_leader_indicators, api_cache)
 
                 await self._update_status(task_id, "running", 60, "股票龙头分析师分析中...")
                 leader_report = await asyncio.to_thread(
@@ -883,7 +927,7 @@ class AiSelectorService:
             # ====== Step 5: 风险分析师 ======
             if not early_stop_reason:
                 await self._update_status(task_id, "running", 70, "风险分析师计算指标中...")
-                risk_indicators = await asyncio.to_thread(compute_risk_indicators)
+                risk_indicators = await asyncio.to_thread(compute_risk_indicators, api_cache)
 
                 await self._update_status(task_id, "running", 75, "风险分析师分析中...")
                 risk_report = await asyncio.to_thread(
@@ -987,6 +1031,8 @@ class AiSelectorService:
             logger.error(f"AI选股任务执行失败: {e}", exc_info=True)
             await self._update_status(task_id, "failed", 0, f"分析失败: {str(e)}", error_message=str(e))
             raise
+        finally:
+            api_cache.clear()
 
     def _run_analyst(self, llm, analyst_name: str, prompt_template: str,
                      indicators_data: Dict, extra_params: Dict[str, str] = None) -> str:
@@ -1021,6 +1067,7 @@ class AiSelectorService:
         logger.info("AI选股 [决策分析师] 开始综合研判...")
 
         prompt = DECISION_ANALYST_PROMPT.format(
+            current_time=datetime.utcnow().isoformat(),
             market_report=market_report,
             sector_report=sector_report,
             force_report=force_report,
