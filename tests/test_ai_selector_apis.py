@@ -36,7 +36,7 @@ class TestAkshareMarketAPIs(unittest.TestCase):
         print(f"  [OK] 深证成指收盘价: {latest['close']}, 日期: {latest['date']}")
 
     def test_stock_hsgt_fund_flow_summary_em(self):
-        """沪深港通资金流向汇总"""
+        """沪深港通资金流向汇总（注意：北向成交净买额已停止公布，值恒为0）"""
         df = ak.stock_hsgt_fund_flow_summary_em()
         self.assertFalse(df.empty, "沪深港通资金流向汇总不应为空")
         self.assertIn("板块", df.columns, "应包含板块列")
@@ -44,6 +44,28 @@ class TestAkshareMarketAPIs(unittest.TestCase):
         self.assertIn("资金方向", df.columns, "应包含资金方向列")
         print(f"  [OK] 沪深港通资金流向汇总: {len(df)}条记录")
         print(f"  数据:\n{df.to_string()}")
+        # 验证北向成交净买额为0（数据已停止公布）
+        north_rows = df[df["资金方向"] == "北向"]
+        if not north_rows.empty:
+            north_net_buy = north_rows["成交净买额"].sum()
+            print(f"  [注意] 北向成交净买额合计: {north_net_buy}（预期为0，已停止公布）")
+
+    def test_fund_etf_spot_em_north_etf(self):
+        """北向资金ETF成交额（替代北向成交净买额）"""
+        df = ak.fund_etf_spot_em()
+        self.assertFalse(df.empty, "ETF实时数据不应为空")
+        self.assertIn("名称", df.columns, "应包含名称列")
+        self.assertIn("成交额", df.columns, "应包含成交额列")
+        # 筛选北向资金相关ETF
+        north_etf = df[df["名称"].str.contains("A50|MSCI|互联互通|陆股通", na=False)]
+        self.assertFalse(north_etf.empty, "应能找到北向资金相关ETF")
+        total_amount = north_etf["成交额"].sum() / 1e8
+        avg_change = north_etf["涨跌幅"].mean()
+        print(f"  [OK] 北向资金ETF: 共{len(north_etf)}只")
+        print(f"  北向资金ETF总成交额: {total_amount:.2f}亿")
+        print(f"  北向资金ETF平均涨跌幅: {avg_change:.2f}%")
+        for _, row in north_etf.head(5).iterrows():
+            print(f"    {row['代码']} {row['名称']} 涨跌幅:{row['涨跌幅']}% 成交额:{row['成交额']/1e8:.2f}亿")
 
     def test_stock_hsgt_hold_stock_em(self):
         """北向资金增持个股排行"""

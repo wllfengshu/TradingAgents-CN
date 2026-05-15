@@ -17,9 +17,9 @@ def is_main_board_stock(code: str) -> bool:
     - 创业板：300/301 开头
     - 北交所：8 开头（830/831/832/833/834/835/836/837/838/839）
     """
-    code = str(code).strip().lstrip("0") if code else ""
-    # 重新用原始值判断更稳妥，直接用前缀匹配
     code = str(code).strip()
+    if not code or len(code) < 3:
+        return False
     # 科创板
     if code.startswith("688"):
         return False

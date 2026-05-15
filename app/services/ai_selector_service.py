@@ -13,6 +13,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 
+from app.utils.json_compressor import compress_json_for_llm
+
 from langchain_core.messages import HumanMessage
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -47,6 +49,19 @@ class ApiCache:
         result = func(*args, **kwargs)
         self._cache[cache_key] = result
         self._misses += 1
+        # 记录底层接口返回数据
+        try:
+            import pandas as pd
+            if isinstance(result, pd.DataFrame):
+                logger.debug(
+                    f"[底层接口数据] {cache_key} -> "
+                    f"shape={result.shape}, columns={list(result.columns)}\n"
+                    f"{result.head(5).to_string(index=False)}"
+                )
+            else:
+                logger.debug(f"[底层接口数据] {cache_key} -> {result}")
+        except Exception as _log_err:
+            logger.debug(f"[底层接口数据] {cache_key} -> 日志记录失败: {_log_err}")
         return result
 
     def clear(self):
@@ -129,11 +144,35 @@ def compute_market_indicators(api_cache: ApiCache) -> Dict[str, Any]:
 
                     hsgt_data[f"{block_name}({direction})"] = entry
 
-                hsgt_data["说明"] = "沪深港通资金流向汇总，反映外资参与活跃程度"
+                hsgt_data["说明"] = "沪深港通资金流向汇总，北向成交净买额已停止公布，改用北向资金ETF成交额作为替代指标"
                 result["沪深港通成交"] = hsgt_data
         except Exception as e:
             logger.error(f"获取沪深港通成交数据失败: {e}")
             result["沪深港通成交"] = "获取失败"
+
+        # 3a2. 北向资金ETF成交额（替代已停止公布的北向成交净买额）
+        # 使用A50/MSCI/互联互通相关ETF的成交额之和，作为外资参与活跃度的替代指标
+        try:
+            etf_spot = api_cache.call("fund_etf_spot_em", ak.fund_etf_spot_em)
+            if etf_spot is not None and not etf_spot.empty:
+                # 筛选北向资金相关ETF：A50、MSCI、互联互通等追踪外资偏好的ETF
+                north_etf = etf_spot[etf_spot["名称"].str.contains("A50|MSCI|互联互通|陆股通", na=False)]
+                if not north_etf.empty:
+                    total_amount = north_etf["成交额"].sum()
+                    total_amount_yi = round(total_amount / 1e8, 2)
+                    # 按涨跌幅加权平均，反映北向ETF整体涨跌情况
+                    avg_change = round(north_etf["涨跌幅"].mean(), 2)
+                    etf_count = len(north_etf)
+                    if isinstance(result.get("沪深港通成交"), dict):
+                        result["沪深港通成交"]["北向资金ETF成交额(亿)"] = total_amount_yi
+                        result["沪深港通成交"]["北向资金ETF平均涨跌幅(%)"] = avg_change
+                        result["沪深港通成交"]["北向资金ETF数量"] = etf_count
+                        result["沪深港通成交"]["说明"] = (
+                            "北向成交净买额已停止公布，以A50/MSCI/互联互通ETF成交额作为外资活跃度替代指标。"
+                            "ETF成交额越大表示外资参与度越高。"
+                        )
+        except Exception as e:
+            logger.error(f"获取北向资金ETF成交额失败: {e}")
 
         # 3b. 北向资金增持个股排行前10（替代原沪股通活跃股）
         try:
@@ -462,7 +501,7 @@ MARKET_ANALYST_PROMPT = """你是一位资深的大盘分析师，专注于分�
 请基于上述数据，从以下维度进行分析：
 
 1. **指数走势判断**：上证指数、深证成指当前走势如何？是上升趋势、下降趋势还是震荡？
-2. **沪深港通资金分析**：注意，"沪深港通成交"数据包含沪股通(北向)、深股通(北向)等的成交净买额、资金净流入、涨跌数等。分析北向资金整体是净流入还是净流出？净买额大小反映外资参与活跃程度。"沪深港通活跃股前10"为北向资金增持排行，关注外资增持的个股和行业方向。"沪深港通行业成交集中度"为行业资金流向排行，关注资金集中流入的行业。
+2. **沪深港通资金分析**：注意，"沪深港通成交"数据中北向成交净买额已停止公布（值为0），改用"北向资金ETF成交额(亿)"作为外资参与活跃度的替代指标——该指标为A50/MSCI/互联互通ETF的当日总成交额，数值越大说明外资参与度越高；同时关注"北向资金ETF平均涨跌幅(%)"判断外资偏好方向。南向资金（港股通）的成交净买额数据仍可正常使用。"沪深港通活跃股前10"为北向资金增持排行，关注外资增持的个股和行业方向。"沪深港通行业成交集中度"为行业资金流向排行，关注资金集中流入的行业。
 3. **涨跌比分析**：上涨家数与下跌家数的比值如何？市场广度如何？
 4. **综合判断**：当前大盘整体偏多、偏空还是中性？
 
@@ -759,7 +798,7 @@ class AiSelectorService:
 
         return {"task_id": task_id, "status": "pending", "message": "AI选股任务已创建"}
 
-    async def execute_task(self, task_id: str, user_id: str):
+    async def execute_task(self, task_id: str, user_id: str = None):
         """执行AI选股任务（后台运行）
 
         Agent间存在依赖关系和条件终止：
@@ -1043,7 +1082,7 @@ class AiSelectorService:
         """
         logger.info(f"AI选股 [{analyst_name}] 开始分析...")
 
-        indicators_str = json.dumps(indicators_data, ensure_ascii=False, indent=2)
+        indicators_str = compress_json_for_llm(indicators_data)
 
         format_params = {"indicators_data": indicators_str}
         if extra_params:
@@ -1051,10 +1090,19 @@ class AiSelectorService:
 
         prompt = prompt_template.format(**format_params)
 
+        logger.debug(
+            f"[LLM提示词] [{analyst_name}] 提示词长度={len(prompt)}\n"
+            f"{'='*60}\n{prompt}\n{'='*60}"
+        )
+
         try:
             response = llm.invoke([HumanMessage(content=prompt)])
             report = response.content
             logger.info(f"AI选股 [{analyst_name}] 分析完成，报告长度: {len(report)}")
+            logger.debug(
+                f"[LLM输出] [{analyst_name}] 输出长度={len(report)}\n"
+                f"{'='*60}\n{report}\n{'='*60}"
+            )
             return report
         except Exception as e:
             logger.error(f"AI选股 [{analyst_name}] LLM调用失败: {e}")
@@ -1076,10 +1124,19 @@ class AiSelectorService:
             safe_stocks_info=safe_stocks_info,
         )
 
+        logger.debug(
+            f"[LLM提示词] [决策分析师] 提示词长度={len(prompt)}\n"
+            f"{'='*60}\n{prompt}\n{'='*60}"
+        )
+
         try:
             response = llm.invoke([HumanMessage(content=prompt)])
             report = response.content
             logger.info(f"AI选股 [决策分析师] 综合研判完成，报告长度: {len(report)}")
+            logger.debug(
+                f"[LLM输出] [决策分析师] 输出长度={len(report)}\n"
+                f"{'='*60}\n{report}\n{'='*60}"
+            )
             return report
         except Exception as e:
             logger.error(f"AI选股 [决策分析师] LLM调用失败: {e}")
