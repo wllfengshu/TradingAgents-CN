@@ -102,7 +102,22 @@
       "Bash(.venv/Scripts/python -c \"from app.routers.ai_trading import router; print\\('OK'\\)\")",
       "Bash(.venv/Scripts/python -c \"from app.routers.ai_trading import router; print\\('Router OK, routes:', len\\(router.routes\\)\\)\")",
       "Bash(.venv/Scripts/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000)",
-      "Bash(curl -s http://127.0.0.1:8000/api/ai-trading/records)"
+      "Bash(curl -s http://127.0.0.1:8000/api/ai-trading/records)",
+      "Bash(Get-Content \"E:\\\\02Learn\\\\09\\\\TradingAgents-CN\\\\frontend\\\\src\\\\views\\\\Analysis\\\\SingleAnalysis.vue\")",
+      "Bash(Measure-Object -Line)",
+      "PowerShell(Get-Content *)",
+      "Bash(python -c \"from app.services.ai_trading_service import get_ai_trading_service; print\\('AI Trading Service OK'\\)\")",
+      "PowerShell(& .venv\\\\Scripts\\\\python.exe -c \"from app.services.ai_trading_service import get_ai_trading_service; print\\('OK'\\)\")",
+      "PowerShell(& .venv\\\\Scripts\\\\python.exe -c \"from app.routers.ai_trading import router; print\\('Router OK'\\)\")",
+      "PowerShell(& .venv\\\\Scripts\\\\python.exe -c \"from app.routers.ai_trading import router; print\\('Router OK'\\)\" 2>$null)",
+      "PowerShell(& .venv\\\\Scripts\\\\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000)",
+      "PowerShell(Start-Sleep -Seconds 8; try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/health\" -UseBasicParsing -TimeoutSec 5; $r.StatusCode } catch { $_.Exception.Message })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/ai-trading/records\" -UseBasicParsing -TimeoutSec 5; $r.Content } catch { $_.Exception.Message })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/health\" -UseBasicParsing -TimeoutSec 5; $r.StatusCode } catch { $_.Exception.Message })",
+      "PowerShell(& .venv\\\\Scripts\\\\python.exe -c \"from app.services.ai_trading_service import get_ai_trading_service; print\\('OK'\\)\" 2>$null)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(Stop-Process *)"
     ]
   }
 }

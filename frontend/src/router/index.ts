@@ -437,16 +437,16 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'home',
         name: 'AiTradingHome',
-        component: () => import('@/views/AiTrading/index.vue'),
+        component: () => import('@/views/AITrading/index.vue'),
         meta: {
-          title: '立即选股',
+          title: '立即交易',
           requiresAuth: true
         }
       },
       {
         path: 'records',
         name: 'AiTradingRecords',
-        component: () => import('@/views/AiTrading/Records.vue'),
+        component: () => import('@/views/AITrading/Records.vue'),
         meta: {
           title: '交易记录',
           requiresAuth: true
@@ -455,7 +455,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'records/:id',
         name: 'AiTradingRecordDetail',
-        component: () => import('@/views/AiTrading/RecordDetail.vue'),
+        component: () => import('@/views/AITrading/RecordDetail.vue'),
         meta: {
           title: '记录详情',
           requiresAuth: true

@@ -9,7 +9,7 @@
             AI交易
           </h1>
           <p class="page-description">
-            AI驱动的智能交易系统，支持实盘与模拟两种模式
+            AI驱动的智能交易系统，多Agent协同分析持仓与机会，自动生成买卖信号
           </p>
         </div>
       </div>
@@ -17,7 +17,80 @@
 
     <!-- 主要内容区 -->
     <div class="trading-container">
-      <!-- 模式选择 & 运行控制 -->
+      <!-- Agent团队 -->
+      <el-card class="team-card" shadow="hover">
+        <template #header>
+          <div class="card-header">
+            <h3>交易Agent团队</h3>
+            <el-tag type="info" size="small">协同交易</el-tag>
+          </div>
+        </template>
+
+        <div class="analysts-grid">
+          <div
+            v-for="analyst in analystTeam"
+            :key="analyst.name"
+            class="analyst-card"
+          >
+            <div class="analyst-avatar" :style="{ background: analyst.bgColor }">
+              <span class="analyst-emoji">{{ analyst.emoji }}</span>
+            </div>
+            <div class="analyst-content">
+              <div class="analyst-name">{{ analyst.name }}</div>
+              <div class="analyst-desc">{{ analyst.description }}</div>
+              <div class="analyst-tags">
+                <el-tag
+                  v-for="tag in analyst.tags"
+                  :key="tag"
+                  size="small"
+                  effect="plain"
+                  class="analyst-tag"
+                >
+                  {{ tag }}
+                </el-tag>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 协同流程说明 -->
+        <div class="flow-section">
+          <h4 class="section-title">协同流程</h4>
+          <div class="flow-steps">
+            <div class="flow-step">
+              <div class="step-number">1</div>
+              <div class="step-text">查询持仓</div>
+              <div class="step-condition">获取账户信息</div>
+            </div>
+            <div class="flow-arrow">
+              <el-icon><ArrowRight /></el-icon>
+            </div>
+            <div class="flow-step">
+              <div class="step-number">2</div>
+              <div class="step-text">并发分析</div>
+              <div class="step-condition">持仓分析+AI选股</div>
+            </div>
+            <div class="flow-arrow">
+              <el-icon><ArrowRight /></el-icon>
+            </div>
+            <div class="flow-step">
+              <div class="step-number">3</div>
+              <div class="step-text">仓位管理</div>
+              <div class="step-condition">生成买卖信号</div>
+            </div>
+            <div class="flow-arrow">
+              <el-icon><ArrowRight /></el-icon>
+            </div>
+            <div class="flow-step">
+              <div class="step-number">4</div>
+              <div class="step-text">交易决策</div>
+              <div class="step-condition">执行下单</div>
+            </div>
+          </div>
+        </div>
+      </el-card>
+
+      <!-- 交易控制 -->
       <el-card class="control-card" shadow="hover">
         <template #header>
           <div class="card-header">
@@ -29,13 +102,13 @@
         <div class="mode-section">
           <span class="mode-label">交易模式：</span>
           <el-radio-group v-model="tradingMode" size="large" class="mode-group">
-            <el-radio-button label="live">
-              <el-icon><Promotion /></el-icon>
-              实盘模式
-            </el-radio-button>
             <el-radio-button label="paper">
               <el-icon><Monitor /></el-icon>
               模拟模式
+            </el-radio-button>
+            <el-radio-button label="live">
+              <el-icon><Promotion /></el-icon>
+              实盘模式
             </el-radio-button>
           </el-radio-group>
           <el-tag
@@ -112,109 +185,209 @@
         </div>
       </el-card>
 
-      <!-- 操作记录 -->
-      <el-card class="records-card" shadow="hover">
-        <template #header>
-          <div class="card-header">
-            <h3>操作记录</h3>
-            <div class="card-actions">
-              <el-button text size="small" @click="fetchRecords">
-                <el-icon><Refresh /></el-icon>
-                刷新
-              </el-button>
+      <!-- 运行结果 -->
+      <div v-if="hasResult" class="results-section">
+        <el-card class="results-card" shadow="hover">
+          <template #header>
+            <div class="card-header">
+              <h3>运行结果</h3>
+              <div class="result-meta">
+                <el-tag :type="tradingMode === 'live' ? 'danger' : 'success'" size="small">
+                  {{ tradingMode === 'live' ? '实盘' : '模拟' }}
+                </el-tag>
+                <el-tag type="success" size="small" style="margin-left: 8px;">{{ resultTime }}</el-tag>
+              </div>
+            </div>
+          </template>
+
+          <!-- 风险提示 -->
+          <div class="risk-disclaimer">
+            <el-alert type="warning" :closable="false" show-icon>
+              <template #title>
+                <span style="font-weight: bold;">本系统为AI辅助交易工具，分析结果仅供参考，不构成任何投资建议。市场有风险，投资需谨慎。</span>
+              </template>
+            </el-alert>
+          </div>
+
+          <!-- 持仓信息 -->
+          <div v-if="resultData.accountInfo" class="account-section">
+            <h4 class="section-title">账户信息</h4>
+            <div class="account-card">
+              <div class="account-item">
+                <span class="label">可用资金：</span>
+                <span class="value">{{ formatMoney(resultData.accountInfo.cash) }}</span>
+              </div>
+              <div class="account-item">
+                <span class="label">总资产：</span>
+                <span class="value">{{ formatMoney(resultData.accountInfo.total_value) }}</span>
+              </div>
+              <div class="account-item">
+                <span class="label">冻结资金：</span>
+                <span class="value">{{ formatMoney(resultData.accountInfo.frozen_cash) }}</span>
+              </div>
+            </div>
+
+            <div v-if="resultData.positions && resultData.positions.length > 0" class="positions-section">
+              <h4 class="section-title" style="margin-top: 16px;">当前持仓</h4>
+              <el-table :data="resultData.positions" size="small" class="positions-table">
+                <el-table-column prop="code" label="代码" width="120" />
+                <el-table-column prop="name" label="名称" width="100" />
+                <el-table-column prop="volume" label="数量(股)" width="100" />
+                <el-table-column prop="cost_price" label="成本价" width="100">
+                  <template #default="{ row }">{{ row.cost_price?.toFixed(2) }}</template>
+                </el-table-column>
+                <el-table-column prop="current_price" label="现价" width="100">
+                  <template #default="{ row }">{{ row.current_price?.toFixed(2) }}</template>
+                </el-table-column>
+                <el-table-column label="市值" width="120">
+                  <template #default="{ row }">{{ formatMoney(row.volume * row.current_price) }}</template>
+                </el-table-column>
+                <el-table-column label="盈亏" min-width="120">
+                  <template #default="{ row }">
+                    <span :style="{ color: getProfitColor(row.current_price - row.cost_price) }">
+                      {{ formatMoney((row.current_price - row.cost_price) * row.volume) }}
+                    </span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <div v-else class="no-position">
+              <el-tag type="info">空仓</el-tag>
             </div>
           </div>
-        </template>
 
-        <el-table
-          :data="records"
-          v-loading="loadingRecords"
-          size="small"
-          class="records-table"
-          :default-sort="{ prop: 'created_at', order: 'descending' }"
-        >
-          <el-table-column label="时间" width="170" prop="created_at" sortable>
-            <template #default="{ row }">
-              {{ formatDateTime(row.created_at) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="模式" width="100">
-            <template #default="{ row }">
-              <el-tag
-                :type="row.mode === 'live' ? 'danger' : 'success'"
-                size="small"
-                effect="plain"
+          <!-- 各分析师结论 -->
+          <div v-if="resultData.analystResults && resultData.analystResults.length > 0" class="analyst-results">
+            <h4 class="section-title">各分析师结论</h4>
+            <el-tabs v-model="activeResultTab" type="card">
+              <el-tab-pane
+                v-for="(result, index) in resultData.analystResults"
+                :key="index"
+                :label="result.name"
+                :name="String(index)"
               >
-                {{ row.mode === 'live' ? '实盘' : '模拟' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="100">
-            <template #default="{ row }">
-              <el-tag
-                :type="getActionTagType(row.action)"
-                size="small"
-              >
-                {{ row.action }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="标的" min-width="120">
-            <template #default="{ row }">
-              <template v-if="row.stocks && row.stocks.length > 0">
-                <el-tag
-                  v-for="stock in row.stocks"
-                  :key="stock.code"
-                  size="small"
-                  effect="plain"
-                  class="stock-tag"
-                >
-                  {{ stock.code }} {{ stock.name }}
-                </el-tag>
-              </template>
-              <span v-else style="color: #909399;">-</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="100">
-            <template #default="{ row }">
-              <el-tag
-                :type="getStatusTagType(row.status)"
-                size="small"
-              >
-                {{ getStatusLabel(row.status) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="详情" min-width="200" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span>{{ row.detail || '-' }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="耗时" width="100">
-            <template #default="{ row }">
-              <span v-if="row.elapsed_time">{{ formatTime(row.elapsed_time) }}</span>
-              <span v-else style="color: #909399;">-</span>
-            </template>
-          </el-table-column>
-        </el-table>
+                <div class="result-pane">
+                  <div class="result-summary">
+                    <el-tag :type="result.tagType" size="large">{{ result.conclusion }}</el-tag>
+                  </div>
+                  <div class="result-detail" v-html="formatContent(result.content)"></div>
+                </div>
+              </el-tab-pane>
+            </el-tabs>
+          </div>
 
-        <!-- 空状态 -->
-        <div v-if="!loadingRecords && records.length === 0" class="empty-section">
-          <el-empty description="暂无操作记录">
-            <template #image>
-              <div class="empty-icon">
-                <el-icon :size="64" color="#c0c4cc"><TrendCharts /></el-icon>
+          <!-- 交易信号 -->
+          <div v-if="resultData.tradingSignals && resultData.tradingSignals.length > 0" class="signals-section">
+            <h4 class="section-title">交易信号</h4>
+            <el-table :data="resultData.tradingSignals" size="small" class="signals-table">
+              <el-table-column prop="code" label="股票代码" width="120" />
+              <el-table-column prop="name" label="股票名称" width="100" />
+              <el-table-column prop="action" label="方向" width="80">
+                <template #default="{ row }">
+                  <el-tag :type="row.action === '买入' ? 'success' : 'danger'" size="small" effect="dark">
+                    {{ row.action }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="price" label="价格" width="100">
+                <template #default="{ row }">{{ row.price?.toFixed(2) }}</template>
+              </el-table-column>
+              <el-table-column prop="volume" label="数量(股)" width="100" />
+              <el-table-column prop="amount" label="金额" width="120">
+                <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
+              </el-table-column>
+              <el-table-column prop="reason" label="理由" min-width="200" show-overflow-tooltip />
+            </el-table>
+          </div>
+
+          <!-- 下单结果 -->
+          <div v-if="resultData.orderResults && resultData.orderResults.length > 0" class="orders-section">
+            <h4 class="section-title">下单结果</h4>
+            <div class="orders-list">
+              <div
+                v-for="(order, index) in resultData.orderResults"
+                :key="index"
+                class="order-item"
+                :class="{ 'order-success': order.success, 'order-failed': !order.success }"
+              >
+                <div class="order-header">
+                  <el-tag :type="order.action === '买入' ? 'success' : 'danger'" size="small" effect="dark">
+                    {{ order.action }}
+                  </el-tag>
+                  <span class="order-code">{{ order.code }} {{ order.name }}</span>
+                  <el-tag :type="order.success ? 'success' : 'danger'" size="small">
+                    {{ order.success ? '成功' : '失败' }}
+                  </el-tag>
+                </div>
+                <div class="order-detail">
+                  <span v-if="order.order_id">订单号：{{ order.order_id }}</span>
+                  <span v-if="order.price">价格：{{ order.price?.toFixed(2) }}</span>
+                  <span v-if="order.volume">数量：{{ order.volume }}股</span>
+                  <span v-if="order.error" class="order-error">{{ order.error }}</span>
+                </div>
               </div>
-            </template>
-          </el-empty>
-        </div>
-      </el-card>
+            </div>
+          </div>
+
+          <!-- 决策摘要 -->
+          <div v-if="resultData.decision" class="decision-section">
+            <h4 class="section-title">综合决策</h4>
+            <div class="decision-card">
+              <div class="decision-action">
+                <span class="label">决策倾向：</span>
+                <el-tag
+                  :type="getActionTagType(resultData.decision.action)"
+                  size="large"
+                  effect="dark"
+                >
+                  {{ resultData.decision.action }}
+                </el-tag>
+              </div>
+              <div class="decision-reasoning" v-if="resultData.decision.reasoning">
+                <span class="label">决策依据：</span>
+                <p>{{ resultData.decision.reasoning }}</p>
+              </div>
+              <div class="decision-position" v-if="resultData.decision.position_suggestion">
+                <span class="label">仓位建议：</span>
+                <p>{{ resultData.decision.position_suggestion }}</p>
+              </div>
+              <div class="decision-risk" v-if="resultData.decision.risk_warning">
+                <span class="label">风险提示：</span>
+                <p>{{ resultData.decision.risk_warning }}</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 操作按钮 -->
+          <div class="result-actions">
+            <el-button type="primary" @click="handleExport">
+              <el-icon><Download /></el-icon>
+              导出结果
+            </el-button>
+            <el-button @click="handleReset">
+              <el-icon><Refresh /></el-icon>
+              重新运行
+            </el-button>
+          </div>
+        </el-card>
+      </div>
+
+      <!-- 空状态 -->
+      <div v-if="!hasResult && !running" class="empty-section">
+        <el-empty description="暂无运行结果，请点击运行按钮开始AI交易">
+          <template #image>
+            <div class="empty-icon">
+              <el-icon :size="64" color="#c0c4cc"><TrendCharts /></el-icon>
+            </div>
+          </template>
+        </el-empty>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   TrendCharts,
@@ -222,10 +395,49 @@ import {
   VideoPause,
   Promotion,
   Monitor,
+  ArrowRight,
+  Download,
   Refresh,
 } from '@element-plus/icons-vue'
-import { aiTradingApi, type AiTradingRecord } from '@/api/aiTrading'
-import { formatDateTime } from '@/utils/datetime'
+import { marked } from 'marked'
+import { aiTradingApi } from '@/api/aiTrading'
+
+marked.setOptions({
+  breaks: true,
+  gfm: true
+})
+
+// Agent团队定义
+const analystTeam = [
+  {
+    name: '持仓分析',
+    emoji: '📊',
+    description: '查询账户持仓，分析持仓股票基本面与技术面',
+    tags: ['账户查询', '持仓分析', '个股评估'],
+    bgColor: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+  },
+  {
+    name: 'AI选股',
+    emoji: '🎯',
+    description: '多Agent协同筛选优质标的，发现投资机会',
+    tags: ['大盘分析', '板块识别', '龙头筛选'],
+    bgColor: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)'
+  },
+  {
+    name: '仓位管理分析师',
+    emoji: '⚖️',
+    description: '综合持仓与机会，生成买卖信号与仓位调整方案',
+    tags: ['买卖信号', '仓位调整', '风险控制'],
+    bgColor: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)'
+  },
+  {
+    name: '交易决策分析师',
+    emoji: '🚀',
+    description: '审核交易信号，执行下单操作',
+    tags: ['下单执行', '订单确认', '交易风控'],
+    bgColor: 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)'
+  }
+]
 
 // 交易模式
 const tradingMode = ref<'paper' | 'live'>('paper')
@@ -240,9 +452,66 @@ const progressStatus = ref<'' | 'success' | 'exception' | 'warning'>('')
 let timer: ReturnType<typeof setInterval> | null = null
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 
-// 操作记录
-const records = ref<AiTradingRecord[]>([])
-const loadingRecords = ref(false)
+// 结果数据
+const hasResult = ref(false)
+const resultTime = ref('')
+const activeResultTab = ref('0')
+const resultData = reactive<{
+  accountInfo: {
+    cash: number
+    total_value: number
+    frozen_cash: number
+  } | null
+  positions: Array<{
+    code: string
+    name: string
+    volume: number
+    cost_price: number
+    current_price: number
+  }>
+  analystResults: Array<{
+    name: string
+    conclusion: string
+    tagType: 'success' | 'warning' | 'danger' | 'info'
+    content: string
+  }>
+  tradingSignals: Array<{
+    code: string
+    name: string
+    action: string
+    price: number
+    volume: number
+    amount: number
+    reason: string
+  }>
+  orderResults: Array<{
+    code: string
+    name: string
+    action: string
+    price: number
+    volume: number
+    order_id: string | null
+    success: boolean
+    error: string | null
+  }>
+  decision: {
+    action: string
+    reasoning: string
+    position_suggestion?: string
+    risk_warning?: string
+  } | null
+  earlyStop: boolean
+  earlyStopReason: string
+}>({
+  accountInfo: null,
+  positions: [],
+  analystResults: [],
+  tradingSignals: [],
+  orderResults: [],
+  decision: null,
+  earlyStop: false,
+  earlyStopReason: ''
+})
 
 // 格式化时间
 const formatTime = (seconds: number): string => {
@@ -253,37 +522,40 @@ const formatTime = (seconds: number): string => {
   return remainingSeconds > 0 ? `${minutes}分${remainingSeconds}秒` : `${minutes}分钟`
 }
 
+// 格式化金额
+const formatMoney = (value: number | undefined | null): string => {
+  if (value === undefined || value === null) return '-'
+  return value.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
+}
+
+// 盈亏颜色
+const getProfitColor = (profit: number): string => {
+  if (profit > 0) return '#f56c6c'
+  if (profit < 0) return '#67c23a'
+  return '#909399'
+}
+
+// 格式化内容（Markdown -> HTML）
+const formatContent = (content: string): string => {
+  if (!content) return ''
+  try {
+    return marked.parse(content) as string
+  } catch {
+    return `<pre style="white-space: pre-wrap;">${content}</pre>`
+  }
+}
+
 // 获取操作标签类型
 const getActionTagType = (action: string): 'success' | 'warning' | 'danger' | 'info' => {
   const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
-    '买入': 'success',
-    '卖出': 'danger',
-    '分析': 'primary' as any,
-    '决策': 'warning',
+    '强烈推荐买入': 'success',
+    '谨慎买入': 'success',
+    '建议卖出': 'danger',
+    '减仓': 'warning',
+    '观望': 'info',
+    '空仓': 'info',
   }
   return map[action] || 'info'
-}
-
-// 获取状态标签类型
-const getStatusTagType = (status: string): 'success' | 'warning' | 'danger' | 'info' => {
-  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
-    'completed': 'success',
-    'running': 'warning',
-    'failed': 'danger',
-    'pending': 'info',
-  }
-  return map[status] || 'info'
-}
-
-// 获取状态标签文案
-const getStatusLabel = (status: string): string => {
-  const map: Record<string, string> = {
-    'completed': '已完成',
-    'running': '运行中',
-    'failed': '失败',
-    'pending': '等待中',
-  }
-  return map[status] || status
 }
 
 // 运行AI交易
@@ -352,8 +624,6 @@ const handleStop = async () => {
     progressStatus.value = 'exception'
     currentStep.value = '已手动停止'
     ElMessage.info('AI交易任务已停止')
-
-    await fetchRecords()
   } catch {
     // 用户取消
   }
@@ -383,8 +653,8 @@ const startPolling = () => {
         currentStep.value = '交易完成'
         running.value = false
 
+        await fetchResult()
         ElMessage.success('AI交易任务完成')
-        await fetchRecords()
       } else if (task.status === 'failed') {
         if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null }
         if (timer) { clearInterval(timer); timer = null }
@@ -395,7 +665,6 @@ const startPolling = () => {
 
         const errMsg = task.error_message || '交易过程中发生错误'
         ElMessage.error(errMsg)
-        await fetchRecords()
       }
     } catch (error) {
       console.error('轮询AI交易任务状态失败:', error)
@@ -403,25 +672,99 @@ const startPolling = () => {
   }, 3000)
 }
 
-// 获取操作记录
-const fetchRecords = async () => {
+// 获取完整结果
+const fetchResult = async () => {
+  if (!currentTaskId.value) return
+
   try {
-    loadingRecords.value = true
-    const res = await aiTradingApi.getRecords({ mode: tradingMode.value })
-    if (res.success && res.data) {
-      records.value = res.data.items || []
+    const res = await aiTradingApi.getResult(currentTaskId.value)
+    if (!res.success || !res.data) return
+
+    const data = res.data
+    hasResult.value = true
+    resultTime.value = new Date().toLocaleString('zh-CN')
+    activeResultTab.value = '0'
+
+    // 填充账户信息
+    if (data.account_info) {
+      resultData.accountInfo = data.account_info
     }
-  } catch (error: any) {
-    // 后端接口尚未就绪时静默处理，不弹出错误提示
-    console.warn('获取操作记录失败（后端接口可能尚未实现）:', error?.message || error)
-  } finally {
-    loadingRecords.value = false
+
+    // 填充持仓
+    if (data.positions && Array.isArray(data.positions)) {
+      resultData.positions = data.positions
+    }
+
+    // 填充分析师结果
+    if (data.analyst_results && Array.isArray(data.analyst_results)) {
+      resultData.analystResults = data.analyst_results.map((r: any) => ({
+        name: r.name,
+        conclusion: r.conclusion,
+        tagType: r.tag_type as 'success' | 'warning' | 'danger' | 'info',
+        content: r.content,
+      }))
+    }
+
+    // 填充提前终止信息
+    resultData.earlyStop = !!data.early_stop
+    resultData.earlyStopReason = data.early_stop_reason || ''
+
+    // 填充交易信号
+    if (data.trading_signals && Array.isArray(data.trading_signals)) {
+      resultData.tradingSignals = data.trading_signals
+    }
+
+    // 填充下单结果
+    if (data.order_results && Array.isArray(data.order_results)) {
+      resultData.orderResults = data.order_results
+    }
+
+    // 填充决策结果
+    if (data.decision) {
+      resultData.decision = data.decision
+    }
+  } catch (error) {
+    console.error('获取AI交易结果失败:', error)
+    ElMessage.error('获取结果失败')
   }
 }
 
-onMounted(() => {
-  fetchRecords()
-})
+// 导出结果
+const handleExport = () => {
+  if (!hasResult.value) {
+    ElMessage.warning('暂无结果可导出')
+    return
+  }
+  const data = JSON.stringify(resultData, null, 2)
+  const blob = new Blob([data], { type: 'application/json' })
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `AI交易结果_${new Date().toISOString().slice(0, 10)}.json`
+  document.body.appendChild(a)
+  a.click()
+  window.URL.revokeObjectURL(url)
+  document.body.removeChild(a)
+  ElMessage.success('结果导出成功')
+}
+
+// 重新运行
+const handleReset = () => {
+  hasResult.value = false
+  resultData.accountInfo = null
+  resultData.positions = []
+  resultData.analystResults = []
+  resultData.tradingSignals = []
+  resultData.orderResults = []
+  resultData.decision = null
+  resultData.earlyStop = false
+  resultData.earlyStopReason = ''
+  progress.value = 0
+  elapsedTime.value = 0
+  currentStep.value = ''
+  progressStatus.value = ''
+  currentTaskId.value = ''
+}
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
@@ -469,8 +812,9 @@ onUnmounted(() => {
   }
 
   .trading-container {
+    .team-card,
     .control-card,
-    .records-card {
+    .results-card {
       border-radius: 16px;
       border: none;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
@@ -493,7 +837,9 @@ onUnmounted(() => {
             font-weight: 600;
           }
 
-          .card-actions {
+          .result-meta {
+            display: flex;
+            align-items: center;
             color: white;
           }
         }
@@ -501,6 +847,132 @@ onUnmounted(() => {
 
       :deep(.el-card__body) {
         padding: 24px;
+      }
+    }
+
+    // 分析师团队网格
+    .analysts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+
+      .analyst-card {
+        display: flex;
+        align-items: flex-start;
+        padding: 20px;
+        border: 2px solid #e2e8f0;
+        border-radius: 12px;
+        transition: all 0.3s ease;
+
+        &:hover {
+          border-color: #3b82f6;
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+        }
+
+        .analyst-avatar {
+          width: 52px;
+          height: 52px;
+          border-radius: 12px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin-right: 16px;
+          flex-shrink: 0;
+
+          .analyst-emoji {
+            font-size: 24px;
+          }
+        }
+
+        .analyst-content {
+          flex: 1;
+          min-width: 0;
+
+          .analyst-name {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1a202c;
+            margin-bottom: 4px;
+          }
+
+          .analyst-desc {
+            font-size: 12px;
+            color: #64748b;
+            margin-bottom: 8px;
+          }
+
+          .analyst-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+
+            .analyst-tag {
+              font-size: 11px;
+              border-radius: 4px;
+            }
+          }
+        }
+      }
+    }
+
+    // 协同流程
+    .flow-section {
+      padding-top: 20px;
+      border-top: 1px solid #f0f0f0;
+
+      .section-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #1a202c;
+        margin: 0 0 16px 0;
+      }
+
+      .flow-steps {
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        gap: 10px;
+        flex-wrap: wrap;
+
+        .flow-step {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 6px;
+
+          .step-number {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 16px;
+          }
+
+          .step-text {
+            font-size: 13px;
+            font-weight: 500;
+            color: #374151;
+          }
+
+          .step-condition {
+            font-size: 11px;
+            color: #e6a23c;
+            white-space: nowrap;
+          }
+        }
+
+        .flow-arrow {
+          color: #c0c4cc;
+          font-size: 20px;
+          margin-top: 12px;
+        }
       }
     }
 
@@ -619,19 +1091,203 @@ onUnmounted(() => {
       }
     }
 
-    // 操作记录
-    .records-table {
-      width: 100%;
+    // 结果区域通用
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #1a202c;
+      margin: 0 0 16px 0;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #e2e8f0;
+    }
 
-      .stock-tag {
-        margin-right: 4px;
-        margin-bottom: 2px;
+    .risk-disclaimer {
+      margin-bottom: 20px;
+    }
+
+    // 账户信息
+    .account-section {
+      margin-bottom: 24px;
+
+      .account-card {
+        display: flex;
+        gap: 32px;
+        padding: 16px;
+        background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+        border-radius: 12px;
+
+        .account-item {
+          .label {
+            font-size: 13px;
+            color: #64748b;
+          }
+          .value {
+            font-size: 20px;
+            font-weight: 700;
+            color: #1e40af;
+            margin-left: 4px;
+          }
+        }
       }
+
+      .no-position {
+        margin-top: 12px;
+        text-align: center;
+        padding: 16px;
+        background: #f8fafc;
+        border-radius: 12px;
+      }
+    }
+
+    // 分析师结论
+    .analyst-results {
+      margin-bottom: 24px;
+
+      .result-pane {
+        padding: 16px 0;
+
+        .result-summary {
+          margin-bottom: 16px;
+        }
+
+        .result-detail {
+          :deep(h2) {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a202c;
+            margin: 0 0 12px 0;
+          }
+
+          :deep(p) {
+            font-size: 14px;
+            line-height: 1.8;
+            color: #374151;
+            margin: 0 0 8px 0;
+          }
+
+          :deep(ul) {
+            padding-left: 20px;
+            margin: 0;
+          }
+
+          :deep(li) {
+            font-size: 14px;
+            line-height: 1.8;
+            color: #374151;
+          }
+
+          :deep(strong) {
+            color: #1a202c;
+          }
+        }
+      }
+    }
+
+    // 交易信号
+    .signals-section {
+      margin-bottom: 24px;
+    }
+
+    // 下单结果
+    .orders-section {
+      margin-bottom: 24px;
+
+      .orders-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+
+        .order-item {
+          padding: 16px;
+          border-radius: 12px;
+          border: 1px solid #e2e8f0;
+
+          &.order-success {
+            background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+            border-color: #86efac;
+          }
+
+          &.order-failed {
+            background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+            border-color: #fca5a5;
+          }
+
+          .order-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+
+            .order-code {
+              font-weight: 600;
+              font-size: 15px;
+              color: #1a202c;
+            }
+          }
+
+          .order-detail {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            font-size: 13px;
+            color: #64748b;
+
+            .order-error {
+              color: #ef4444;
+              font-weight: 500;
+            }
+          }
+        }
+      }
+    }
+
+    // 决策区域
+    .decision-section {
+      margin-bottom: 24px;
+
+      .decision-card {
+        background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+        border-radius: 12px;
+        padding: 24px;
+
+        .label {
+          font-weight: 600;
+          color: #1e40af;
+          margin-right: 8px;
+        }
+
+        .decision-action {
+          margin-bottom: 16px;
+          display: flex;
+          align-items: center;
+        }
+
+        .decision-reasoning,
+        .decision-position,
+        .decision-risk {
+          margin-top: 12px;
+
+          p {
+            margin: 8px 0 0;
+            font-size: 14px;
+            line-height: 1.8;
+            color: #374151;
+          }
+        }
+      }
+    }
+
+    // 操作按钮
+    .result-actions {
+      display: flex;
+      gap: 12px;
+      padding-top: 16px;
+      border-top: 1px solid #e2e8f0;
     }
 
     // 空状态
     .empty-section {
-      padding: 40px 0;
+      padding: 60px 0;
 
       .empty-icon {
         margin-bottom: 16px;

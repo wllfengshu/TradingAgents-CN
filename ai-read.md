@@ -83,6 +83,8 @@
 当运行“AI选股”功能时，每调用一个接口就进行缓存，当运行结束，就清空缓存。
 
 
+背景：
+这是基于网上的TradingAgents-CN开源项目做的二次开发的项目，我删掉了很多无用的代码。我需要你按照如下要求来协助我进行二次开发。
 注意事项：
 1、我当前电脑是Windows环境，使用powershell执行命令行，多行命令需要使用分号分隔。
 2、第一次执行命令前需要启动虚拟环境： .venv\Scripts\activate
@@ -91,7 +93,15 @@
 4、该项目使用了mongodb和redis，我已经把环境都启动好了。
 5、如下文件目录，你直接忽略：./github ./idea ./venv /data /eval_results /logs /results .env.back .env.example .gitignore .python-version .error.log
 6、你写的代码务必要仿照现有的交互、页面风格来做，保证风格统一
-7、“AI选股”功能的服务端代码路径是app/services/ai_selector_service.py
 你的任务：
-1、我已经在“frontend/src/router/index.ts”里面有一个“AI交易”菜单，你需要实现这个菜单的路由跳转，点击后打开“AI交易”页面。
-2、“AI交易”页面上面是选择“实盘模式”和“模拟模式”，然后是“运行”按钮，下面是操作记录展示区（以列表的形式展示）。你先设计页面。
+1、“AI选股”功能已经实现了，前端页面在“frontend/src/views/AiSelector”目录中，后端代码在“app/services/ai_selector_service.py”。它是多Agent协同来选出股票。
+2、“单个股票”分析功能也实现了，前端页面在“frontend/src/views/Analysis/SingleAnalysis.vue”中，后端代码在“app/services/analysis_service.py”。它是多Agent协同来分析股票。
+3、我现在要你完成“AI交易”功能，前端页面在“frontend/src/views/AITrading”目录中，前后端代码可以参考“AI选股”功能的代码来实现。
+“AI交易”功能是：
+（1）先获取账户持仓情况（我封装了xtquant 工具模块 — 封装 miniQMT 连接、账户查询、下单操作。代码在“app/utils/xtquant_util.py”中。但是我当前电脑环境没有安装miniQMT，所以这个类不可用，我需要你自己mock一个）
+（2）如果有持仓，先调用“单个股票”分析功能，同时并发调用“AI选股”功能，把持仓情况、股票分析结果、AI选股结果等数据传给“仓位管理分析师Agent”，让“仓位管理分析师Agent”给出卖卖信号（以什么价格买或者卖出多少股）；然后把买卖信号给到“交易决策分析师Agent”，“交易决策分析师Agent”调用xtquant_util.py工具类进行下单。
+（3）如果没有持仓，和步骤二的区别是不需要调用“单个股票”分析功能，其他逻辑一样。
+
+你先把“AI交易”页面设计出来；然后再开始写后端逻辑
+
+

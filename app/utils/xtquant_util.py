@@ -357,3 +357,156 @@ def create_qmt_util_from_settings() -> QMTUtil:
         account_id=cfg.account_id,
         session_id=cfg.session_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Mock QMT（开发/测试环境使用，无需安装 miniQMT）
+# ---------------------------------------------------------------------------
+
+class MockQMTUtil:
+    """
+    QMTUtil 的模拟实现，用于开发/测试环境。
+    提供与 QMTUtil 完全一致的接口，返回预设的模拟数据。
+    """
+
+    def __init__(self, **kwargs):
+        self._connected = False
+        logger.info("MockQMTUtil 初始化（模拟模式）")
+
+    # ------------------------------------------------------------------
+    # 连接管理
+    # ------------------------------------------------------------------
+
+    def connect(self) -> bool:
+        logger.info("MockQMTUtil 模拟连接成功")
+        self._connected = True
+        return True
+
+    def disconnect(self) -> None:
+        logger.info("MockQMTUtil 模拟断开连接")
+        self._connected = False
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+        return False
+
+    def _require_connection(self) -> None:
+        if not self._connected:
+            raise RuntimeError("MockQMT 未连接，请先调用 connect()")
+
+    # ------------------------------------------------------------------
+    # 账户查询
+    # ------------------------------------------------------------------
+
+    def get_account_info(self) -> AccountInfo:
+        """返回模拟账户信息"""
+        self._require_connection()
+        return AccountInfo(
+            cash=100000.00,
+            total_value=256800.00,
+            frozen_cash=0.00,
+        )
+
+    def get_positions(self) -> List[Position]:
+        """返回模拟持仓列表"""
+        self._require_connection()
+        return [
+            Position(
+                code="600519.SH",
+                name="贵州茅台",
+                volume=100,
+                cost_price=1680.00,
+                current_price=1725.50,
+            ),
+            Position(
+                code="000858.SZ",
+                name="五粮液",
+                volume=300,
+                cost_price=145.20,
+                current_price=152.80,
+            ),
+            Position(
+                code="601318.SH",
+                name="中国平安",
+                volume=500,
+                cost_price=42.50,
+                current_price=48.30,
+            ),
+        ]
+
+    # ------------------------------------------------------------------
+    # 实时行情
+    # ------------------------------------------------------------------
+
+    def get_realtime_quote(self, codes: List[str]) -> Dict[str, Dict]:
+        """返回模拟实时行情"""
+        self._require_connection()
+        mock_quotes = {
+            "600519.SH": {"lastPrice": 1725.50, "open": 1718.00, "high": 1732.00, "low": 1715.00, "volume": 28560, "amount": 49320000},
+            "000858.SZ": {"lastPrice": 152.80, "open": 151.50, "high": 153.60, "low": 151.00, "volume": 45200, "amount": 6905000},
+            "601318.SH": {"lastPrice": 48.30, "open": 47.80, "high": 48.65, "low": 47.60, "volume": 125000, "amount": 6037000},
+        }
+        result = {}
+        for code in codes:
+            if code in mock_quotes:
+                result[code] = mock_quotes[code]
+            else:
+                result[code] = {"lastPrice": 10.00, "open": 10.00, "high": 10.50, "low": 9.50, "volume": 10000, "amount": 100000}
+        return result
+
+    # ------------------------------------------------------------------
+    # 下单操作
+    # ------------------------------------------------------------------
+
+    def buy(
+        self,
+        code: str,
+        amount: float,
+        price: Optional[float] = None,
+        remark: str = "AI量化买入",
+    ) -> Optional[int]:
+        """模拟买入操作"""
+        self._require_connection()
+        quote = self.get_realtime_quote([code])
+        current_price = price or quote.get(code, {}).get("lastPrice", 10.0)
+        volume = int(amount / current_price / 100) * 100
+        if volume <= 0:
+            logger.warning(f"[Mock] 买入金额 {amount} 不足以购买 1 手 {code}，跳过")
+            return None
+        import random
+        order_id = random.randint(100000, 999999)
+        logger.info(
+            f"[Mock] 买入下单: {code} x{volume}股 @ {current_price:.2f}, "
+            f"金额≈{volume * current_price:.0f}元, order_id={order_id}"
+        )
+        return order_id
+
+    def sell(
+        self,
+        code: str,
+        price: Optional[float] = None,
+        volume: Optional[int] = None,
+        remark: str = "AI量化卖出",
+    ) -> Optional[int]:
+        """模拟卖出操作"""
+        self._require_connection()
+        if volume is None:
+            positions = self.get_positions()
+            pos = next((p for p in positions if p.code == code), None)
+            if pos is None or pos.volume <= 0:
+                logger.warning(f"[Mock] 未持有 {code}，跳过卖出")
+                return None
+            volume = pos.volume
+        quote = self.get_realtime_quote([code])
+        sell_price = price or quote.get(code, {}).get("lastPrice", 10.0)
+        import random
+        order_id = random.randint(100000, 999999)
+        logger.info(
+            f"[Mock] 卖出下单: {code} x{volume}股 @ {sell_price:.2f}, "
+            f"金额≈{volume * sell_price:.0f}元, order_id={order_id}"
+        )
+        return order_id

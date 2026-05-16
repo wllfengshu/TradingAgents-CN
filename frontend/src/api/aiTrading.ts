@@ -16,6 +16,61 @@ export interface AiTradingTaskStatus {
   error_message?: string
 }
 
+export interface AiTradingResult {
+  task_id: string
+  status: string
+  progress: number
+  current_step: string
+  elapsed_time: number
+  early_stop?: boolean
+  early_stop_reason?: string
+  account_info: {
+    cash: number
+    total_value: number
+    frozen_cash: number
+  }
+  positions: Array<{
+    code: string
+    name: string
+    volume: number
+    cost_price: number
+    current_price: number
+  }>
+  analyst_results: Array<{
+    name: string
+    conclusion: string
+    tag_type: string
+    content: string
+  }>
+  trading_signals: Array<{
+    code: string
+    name: string
+    action: string
+    price: number
+    volume: number
+    amount: number
+    reason: string
+  }>
+  order_results: Array<{
+    code: string
+    name: string
+    action: string
+    price: number
+    volume: number
+    order_id: string | null
+    success: boolean
+    error: string | null
+  }>
+  decision: {
+    action: string
+    reasoning: string
+    position_suggestion?: string
+    risk_warning?: string
+  }
+  decision_report: string
+  completed_at: string
+}
+
 export interface AiTradingRecord {
   id: string
   mode: 'paper' | 'live'
@@ -48,6 +103,13 @@ export const aiTradingApi = {
   getStatus(taskId: string) {
     return request.get<any, ApiResponse<AiTradingTaskStatus>>(
       `/api/ai-trading/status/${taskId}`
+    )
+  },
+
+  /** 获取任务结果 */
+  getResult(taskId: string) {
+    return request.get<any, ApiResponse<AiTradingResult>>(
+      `/api/ai-trading/result/${taskId}`
     )
   },
 

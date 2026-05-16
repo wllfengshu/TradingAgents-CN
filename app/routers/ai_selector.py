@@ -72,7 +72,12 @@ async def get_task_status(
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
         # Fix: 校验任务归属，防止越权查询他人任务
-        if task.get("user_id") != user["id"]:
+        task_user_id = task.get("user_id")
+        if task_user_id != user["id"]:
+            logger.warning(
+                f"AI选股状态权限校验失败(403): task_id={task_id}, "
+                f"task.user_id={task_user_id}, current_user.id={user['id']}"
+            )
             raise HTTPException(status_code=403, detail="无权访问此任务")
         return {"success": True, "data": task}
     except HTTPException:
@@ -94,7 +99,12 @@ async def get_task_result(
         if not result:
             raise HTTPException(status_code=404, detail="任务不存在")
         # Fix: 校验任务归属，防止越权查询他人任务
-        if result.get("user_id") != user["id"]:
+        result_user_id = result.get("user_id")
+        if result_user_id != user["id"]:
+            logger.warning(
+                f"AI选股结果权限校验失败(403): task_id={task_id}, "
+                f"result.user_id={result_user_id}, current_user.id={user['id']}"
+            )
             raise HTTPException(status_code=403, detail="无权访问此任务")
         return {"success": True, "data": result}
     except HTTPException:
@@ -131,9 +141,20 @@ async def get_task_history_detail(
         service = get_ai_selector_service()
         result = await service.get_task_result(task_id)
         if not result:
+            logger.warning(f"AI选股记录详情查询: task_id={task_id} 未找到记录")
             raise HTTPException(status_code=404, detail="记录不存在")
         # Fix: 校验任务归属，防止越权查询他人任务
-        if result.get("user_id") != user["id"]:
+        result_user_id = result.get("user_id")
+        logger.info(
+            f"AI选股记录详情权限校验: task_id={task_id}, "
+            f"result.user_id={result_user_id}, current_user.id={user['id']}, "
+            f"result_keys={list(result.keys())[:10]}"
+        )
+        if result_user_id != user["id"]:
+            logger.warning(
+                f"AI选股记录详情权限校验失败(403): task_id={task_id}, "
+                f"result.user_id={result_user_id}, current_user.id={user['id']}"
+            )
             raise HTTPException(status_code=403, detail="无权访问此记录")
         return {"success": True, "data": result}
     except HTTPException:
