@@ -82,3 +82,16 @@
 1、这里面很多接口调用了多次，比如stock_zt_pool_em这个接口。我需要你做一下缓存。做成和java的threadlocal类似的效果，
 当运行“AI选股”功能时，每调用一个接口就进行缓存，当运行结束，就清空缓存。
 
+
+注意事项：
+1、我当前电脑是Windows环境，使用powershell执行命令行，多行命令需要使用分号分隔。
+2、第一次执行命令前需要启动虚拟环境： .venv\Scripts\activate
+3、当前项目分前后端，后端启动命令是： python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+前端启动命令是： cd frontend; npm run dev
+4、该项目使用了mongodb和redis，我已经把环境都启动好了。
+5、如下文件目录，你直接忽略：./github ./idea ./venv /data /eval_results /logs /results .env.back .env.example .gitignore .python-version .error.log
+6、你写的代码务必要仿照现有的交互、页面风格来做，保证风格统一
+7、“AI选股”功能的服务端代码路径是app/services/ai_selector_service.py
+你的任务：
+1、我已经在“frontend/src/router/index.ts”里面有一个“AI交易”菜单，你需要实现这个菜单的路由跳转，点击后打开“AI交易”页面。
+2、“AI交易”页面上面是选择“实盘模式”和“模拟模式”，然后是“运行”按钮，下面是操作记录展示区（以列表的形式展示）。你先设计页面。

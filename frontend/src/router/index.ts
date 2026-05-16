@@ -423,6 +423,46 @@ const routes: RouteRecordRaw[] = [
       }
     ]
   },
+  {
+    path: '/ai-trading',
+    name: 'AiTrading',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: {
+      title: 'AI交易',
+      icon: 'TrendCharts',
+      requiresAuth: true,
+      transition: 'slide-up'
+    },
+    children: [
+      {
+        path: 'home',
+        name: 'AiTradingHome',
+        component: () => import('@/views/AiTrading/index.vue'),
+        meta: {
+          title: '立即选股',
+          requiresAuth: true
+        }
+      },
+      {
+        path: 'records',
+        name: 'AiTradingRecords',
+        component: () => import('@/views/AiTrading/Records.vue'),
+        meta: {
+          title: '交易记录',
+          requiresAuth: true
+        }
+      },
+      {
+        path: 'records/:id',
+        name: 'AiTradingRecordDetail',
+        component: () => import('@/views/AiTrading/RecordDetail.vue'),
+        meta: {
+          title: '记录详情',
+          requiresAuth: true
+        }
+      }
+    ]
+  },
 
   {
     path: '/:pathMatch(.*)*',

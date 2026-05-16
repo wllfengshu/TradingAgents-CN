@@ -47,6 +47,15 @@
       <template #title>模拟交易</template>
     </el-menu-item>
 
+    <el-sub-menu index="/ai-trading">
+      <template #title>
+        <el-icon><CreditCard /></el-icon>
+        <span>AI交易</span>
+      </template>
+      <el-menu-item index="/ai-trading/home">立即交易</el-menu-item>
+      <el-menu-item index="/ai-trading/records">交易记录</el-menu-item>
+    </el-sub-menu>
+
 
     <!-- 分析报告已移至“股票分析”子菜单，保留注释便于追踪 -->
     <!--

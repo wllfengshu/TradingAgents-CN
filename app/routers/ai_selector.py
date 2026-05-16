@@ -2,7 +2,7 @@
 AI选股API路由
 """
 
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 import logging
@@ -36,8 +36,8 @@ async def run_ai_selector(
 
         task_id = result["task_id"]
         user_id = user["id"]
-        quick_model = request.quick_model
-        deep_model = request.deep_model
+        task_id = result["task_id"]
+        user_id = user["id"]
 
         async def run_task():
             try:
@@ -71,6 +71,9 @@ async def get_task_status(
         task = await service.get_task_status(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
+        # Fix: 校验任务归属，防止越权查询他人任务
+        if task.get("user_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="无权访问此任务")
         return {"success": True, "data": task}
     except HTTPException:
         raise
@@ -90,6 +93,9 @@ async def get_task_result(
         result = await service.get_task_result(task_id)
         if not result:
             raise HTTPException(status_code=404, detail="任务不存在")
+        # Fix: 校验任务归属，防止越权查询他人任务
+        if result.get("user_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="无权访问此任务")
         return {"success": True, "data": result}
     except HTTPException:
         raise
@@ -100,8 +106,9 @@ async def get_task_result(
 
 @router.get("/history", response_model=Dict[str, Any])
 async def get_task_history(
-    page: int = 1,
-    page_size: int = 20,
+    # Fix: 添加分页参数校验，防止 page_size=100000 导致性能问题
+    page: int = Query(default=1, ge=1, description="页码，从1开始"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页条数，最多100"),
     user: dict = Depends(get_current_user),
 ):
     """获取AI选股历史记录列表"""
@@ -125,6 +132,9 @@ async def get_task_history_detail(
         result = await service.get_task_result(task_id)
         if not result:
             raise HTTPException(status_code=404, detail="记录不存在")
+        # Fix: 校验任务归属，防止越权查询他人任务
+        if result.get("user_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="无权访问此记录")
         return {"success": True, "data": result}
     except HTTPException:
         raise
