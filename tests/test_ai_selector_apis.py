@@ -347,7 +347,7 @@ class TestComputeFunctions(unittest.TestCase):
         """测试龙头指标计算完整流程"""
         from app.services.ai_selector_service import compute_leader_indicators
 
-        result = compute_leader_indicators()
+        result = compute_leader_indicators(ApiCache())
         print(result)
         self.assertIsInstance(result, dict, "结果应为字典")
 

@@ -540,8 +540,6 @@ def compute_force_indicators(api_cache: ApiCache) -> Dict[str, Any]:
 def compute_leader_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """股票龙头分析师指标计算：连板/板块排名/成交量等"""
     try:
-        import akshare as ak
-
         result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
         # 1. 涨停池（龙头候选）
@@ -597,9 +595,6 @@ def compute_leader_indicators(api_cache: ApiCache) -> Dict[str, Any]:
 def compute_risk_indicators(api_cache: ApiCache, candidate_stock_codes: List[str] = None) -> Dict[str, Any]:
     """风险分析师指标计算：排除ST/新股/退市等，并拉取候选股票实时行情"""
     try:
-        import akshare as ak
-        import pandas as pd
-
         result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
         # 1. 次新股（使用新浪数据源，东方财富接口被限制）
@@ -1302,12 +1297,11 @@ class AiSelectorService:
         5. 风险分析师 -> 风险高则终止，无风险则传安全标的给决策分析师
         6. 决策分析师 -> 给出最终选股决策
         """
-        start_time = time.time()
-
-        api_cache = ApiCache()
-
         try:
             await self._update_status(task_id, "running", 5, "正在初始化AI选股分析...")
+
+            start_time = time.time()
+            api_cache = ApiCache()
 
             await self._update_status(task_id, "running", 8, "正在初始化AI模型...")
             config = await asyncio.to_thread(self._build_llm_config)
@@ -1488,6 +1482,7 @@ class AiSelectorService:
                     return [str(s) for s in data["main_sectors"] if s]
         except Exception:
             pass
+
         import re
         match = re.search(r'主线板块[：:]\s*(.+?)[\n。]', report)
         if match:
@@ -1505,6 +1500,7 @@ class AiSelectorService:
                     return stocks[:3]
         except Exception:
             pass
+
         import re
         codes = re.findall(r'\b(\d{6})\b', report)
         if codes:
@@ -1522,6 +1518,7 @@ class AiSelectorService:
                     return stocks[:2]
         except Exception:
             pass
+
         import re
         codes = re.findall(r'\b(\d{6})\b', report)
         if codes:
