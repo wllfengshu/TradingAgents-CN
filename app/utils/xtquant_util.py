@@ -348,14 +348,10 @@ class QMTUtil:
 
 
 def create_qmt_util_from_settings() -> QMTUtil:
-    """从全局 settings 创建 QMTUtil 实例"""
-    from config.settings import settings
-
-    cfg = settings.qmt
     return QMTUtil(
-        install_path=cfg.install_path,
-        account_id=cfg.account_id,
-        session_id=cfg.session_id,
+        install_path=r"D:\GJZQqmt\国金证券QMT交易端",
+        account_id="",
+        session_id=9999,
     )
 
 

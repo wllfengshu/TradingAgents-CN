@@ -117,7 +117,8 @@
       "PowerShell(& .venv\\\\Scripts\\\\python.exe -c \"from app.services.ai_trading_service import get_ai_trading_service; print\\('OK'\\)\" 2>$null)",
       "Bash(.venv/Scripts/python.exe *)",
       "PowerShell(Get-NetTCPConnection *)",
-      "PowerShell(Stop-Process *)"
+      "PowerShell(Stop-Process *)",
+      "Bash(python *)"
     ]
   }
 }

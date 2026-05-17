@@ -7,6 +7,8 @@ import sys
 import unittest
 import traceback
 
+from app.services.ai_selector_service import ApiCache
+
 sys.stdout.reconfigure(encoding="utf-8")
 
 import akshare as ak
@@ -317,7 +319,7 @@ class TestComputeFunctions(unittest.TestCase):
         """测试板块指标计算完整流程"""
         from app.services.ai_selector_service import compute_sector_indicators
 
-        result = compute_sector_indicators()
+        result = compute_sector_indicators(ApiCache())
         print(result)
         self.assertIsInstance(result, dict, "结果应为字典")
 
@@ -331,7 +333,7 @@ class TestComputeFunctions(unittest.TestCase):
         """测试合力指标计算完整流程"""
         from app.services.ai_selector_service import compute_force_indicators
 
-        result = compute_force_indicators()
+        result = compute_force_indicators(ApiCache())
         print(result)
         self.assertIsInstance(result, dict, "结果应为字典")
 

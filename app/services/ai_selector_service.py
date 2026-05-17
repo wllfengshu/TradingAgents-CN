@@ -28,16 +28,15 @@ from app.services.simple_analysis_service import (
 )
 from app.core.database import get_mongo_db
 from ..utils.stock_utils import is_main_board_stock
+import pandas as pd
+import akshare as ak
+from datetime import time as _dtime
 
 logger = logging.getLogger("app.services.ai_selector_service")
 
 
 class ApiCache:
     """API调用缓存，在单次AI选股运行期间缓存akshare接口调用结果，运行结束后清空
-
-    类似Java的ThreadLocal效果：每次AI选股运行时创建，运行期间同一接口只调用一次，
-    运行结束后清空缓存，不同任务的缓存互不干扰。
-    线程安全：使用 Lock 防止多线程并发时的重复调用和竞态问题。
     """
 
     def __init__(self):
@@ -60,7 +59,6 @@ class ApiCache:
 
         # 日志记录在锁外，避免长时间持锁
         try:
-            import pandas as pd
             if isinstance(result, pd.DataFrame):
                 logger.info(
                     f"[底层接口数据] {cache_key} -> "
@@ -88,27 +86,23 @@ class ApiCache:
 def compute_market_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """大盘分析师指标计算：指数/北向资金/涨跌比等"""
     try:
-        import akshare as ak
-
         result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
         # 添加非交易时段提示，防止 LLM 误判数据时效
         try:
-            from datetime import time as _dtime
             _now_sh = datetime.now(ZoneInfo("Asia/Shanghai"))
             _weekday = _now_sh.weekday()
             _t = _now_sh.time()
             _is_trading = (
                 _weekday < 5 and (
-                    _dtime(9, 15) <= _t <= _dtime(11, 30) or
-                    _dtime(13, 0) <= _t <= _dtime(15, 30)
+                    _dtime(9, 30) <= _t <= _dtime(11, 30) or
+                    _dtime(13, 0) <= _t <= _dtime(15, 00)
                 )
             )
             if not _is_trading:
                 _reason = "周末" if _weekday >= 5 else f"非交易时段（{_now_sh.strftime('%H:%M')}）"
                 result["数据时效提示"] = (
-                    f"⚠️ 当前为{_reason}，以下行情数据为上一交易日快照，并非实时数据，"
-                    f"请在 A 股交易时间（工作日 9:15-11:30 / 13:00-15:30）内运行以获取实时数据。"
+                    f"当前为{_reason}，以下行情数据为上一交易日快照，并非实时数据，"
                 )
         except Exception:
             pass
@@ -198,50 +192,70 @@ def compute_market_indicators(api_cache: ApiCache) -> Dict[str, Any]:
             logger.error(f"获取沪深港通成交数据失败: {e}")
             result["沪深港通成交"] = "获取失败"
 
-        # 3a2. 北向资金ETF成交额（替代已停止公布的北向成交净买额）
-        # 使用A50/MSCI/互联互通相关ETF的成交额之和，作为外资参与活跃度的替代指标
+        # 3a2. 北向资金ETF方向指标（改进：以涨跌幅方向为主，成交额仅作活跃度参考）
+        # ⚠️ ETF成交额不区分买卖方向；ETF平均涨跌幅>0=外资看多，<0=外资看空
         try:
             etf_spot = api_cache.call("fund_etf_spot_em", ak.fund_etf_spot_em)
             if etf_spot is not None and not etf_spot.empty:
-                # 筛选北向资金相关ETF：A50、MSCI、互联互通等追踪外资偏好的ETF
                 north_etf = etf_spot[etf_spot["名称"].str.contains("A50|MSCI|互联互通|陆股通", na=False)]
                 if not north_etf.empty:
-                    total_amount = north_etf["成交额"].sum()
-                    total_amount_yi = round(total_amount / 1e8, 2)
-                    # 按涨跌幅加权平均，反映北向ETF整体涨跌情况
                     avg_change = round(north_etf["涨跌幅"].mean(), 2)
-                    etf_count = len(north_etf)
+                    bull_count = int((north_etf["涨跌幅"] > 0).sum())
+                    bear_count = int((north_etf["涨跌幅"] < 0).sum())
+                    total_amount_yi = round(north_etf["成交额"].sum() / 1e8, 2)
+                    direction_label = "偏多" if avg_change > 0 else ("偏空" if avg_change < 0 else "中性")
                     if isinstance(result.get("沪深港通成交"), dict):
-                        result["沪深港通成交"]["北向资金ETF成交额(亿)"] = total_amount_yi
-                        result["沪深港通成交"]["北向资金ETF平均涨跌幅(%)"] = avg_change
-                        result["沪深港通成交"]["北向资金ETF数量"] = etf_count
+                        result["沪深港通成交"]["北向ETF方向信号_平均涨跌幅(%)"] = float(round(avg_change, 2))
+                        result["沪深港通成交"]["北向ETF方向信号_涨跌方向"] = direction_label
+                        result["沪深港通成交"]["北向ETF上涨只数"] = bull_count
+                        result["沪深港通成交"]["北向ETF下跌只数"] = bear_count
+                        result["沪深港通成交"]["北向ETF成交额合计(亿,仅活跃度参考)"] = total_amount_yi
                         result["沪深港通成交"]["说明"] = (
-                            "北向成交净买额已停止公布，以A50/MSCI/互联互通ETF成交额作为外资活跃度替代指标。"
-                            "ETF成交额越大表示外资参与度越高。"
+                            "北向成交净买额已停止公布。"
+                            "【方向信号】北向ETF平均涨跌幅>0为偏多/外资看多，<0为偏空/外资看空，比成交额更可靠。"
+                            "【活跃度】ETF成交额仅反映活跃度，不代表资金净流向。"
                         )
         except Exception as e:
-            logger.error(f"获取北向资金ETF成交额失败: {e}")
+            logger.error(f"获取北向资金ETF数据失败: {e}")
 
-        # 3b. 北向资金增持个股排行前10（替代原沪股通活跃股）
-        try:
-            hold_rank = api_cache.call("stock_hsgt_hold_stock_em:北向:今日排行", ak.stock_hsgt_hold_stock_em, market="北向", indicator="今日排行")
-            if hold_rank is not None and not hold_rank.empty:
-                top10 = hold_rank.head(10)
-                result["沪深港通活跃股前10"] = [
-                    {
-                        "排名": str(row["序号"]) if "序号" in hold_rank.columns else str(i + 1),
-                        "代码": str(row["代码"]) if "代码" in hold_rank.columns else "",
-                        "名称": str(row["名称"]) if "名称" in hold_rank.columns else "",
-                        "涨跌幅(%)": str(row["今日涨跌幅"]) if "今日涨跌幅" in hold_rank.columns else "",
-                        "增持市值(万)": str(row["今日增持估计-市值"]) if "今日增持估计-市值" in hold_rank.columns else "",
-                        "持股市值(万)": str(row["今日持股-市值"]) if "今日持股-市值" in hold_rank.columns else "",
-                        "所属行业": str(row["所属板块"]) if "所属板块" in hold_rank.columns else "",
-                    }
-                    for i, (_, row) in enumerate(top10.iterrows())
-                ]
-        except Exception as e:
-            logger.error(f"获取沪深港通活跃股失败: {e}")
-            result["沪深港通活跃股前10"] = "获取失败"
+        # 3b. 北向资金增持个股排行——同时输出全量净持仓变动聚合（更可靠的方向验证）
+        # try:
+        #     hold_rank = api_cache.call("stock_hsgt_hold_stock_em:北向:今日排行", ak.stock_hsgt_hold_stock_em, market="北向", indicator="今日排行")
+        #     if hold_rank is not None and not hold_rank.empty:
+        #         # ── 全量聚合：以持股变动估算净资金方向 ──────────────────────────────
+        #         if "今日增持估计-市值" in hold_rank.columns:
+        #             vals = pd.to_numeric(hold_rank["今日增持估计-市值"], errors="coerce").dropna()
+        #             net_increase_total = round(float(vals.sum()) / 1e4, 2)      # 万→亿级
+        #             increase_count = int((vals > 0).sum())
+        #             decrease_count = int((vals < 0).sum())
+        #             net_direction = "净增持" if net_increase_total > 0 else ("净减持" if net_increase_total < 0 else "持平")
+        #             result["北向资金净持仓聚合"] = {
+        #                 "全市场净增持估计(万元)": net_increase_total,
+        #                 "增持个股数": increase_count,
+        #                 "减持个股数": decrease_count,
+        #                 "净方向": net_direction,
+        #                 "说明": (
+        #                     "基于全量北向持股今日增持估计市值求和，净值>0说明北向整体增持A股，<0说明整体减持。"
+        #                     "与ETF方向信号结合使用：两者同向则外资信号更可靠。"
+        #                 ),
+        #             }
+        #         # ── 增持排行前10（定性参考） ──────────────────────────────────────
+        #         top10 = hold_rank.head(10)
+        #         result["沪深港通活跃股前10"] = [
+        #             {
+        #                 "排名": str(row["序号"]) if "序号" in hold_rank.columns else str(i + 1),
+        #                 "代码": str(row["代码"]) if "代码" in hold_rank.columns else "",
+        #                 "名称": str(row["名称"]) if "名称" in hold_rank.columns else "",
+        #                 "涨跌幅(%)": str(row["今日涨跌幅"]) if "今日涨跌幅" in hold_rank.columns else "",
+        #                 "增持市值(万)": str(row["今日增持估计-市值"]) if "今日增持估计-市值" in hold_rank.columns else "",
+        #                 "持股市值(万)": str(row["今日持股-市值"]) if "今日持股-市值" in hold_rank.columns else "",
+        #                 "所属行业": str(row["所属板块"]) if "所属板块" in hold_rank.columns else "",
+        #             }
+        #             for i, (_, row) in enumerate(top10.iterrows())
+        #         ]
+        # except Exception as e:
+        #     logger.error(f"获取沪深港通活跃股失败: {e}")
+        #     result["沪深港通活跃股前10"] = "获取失败"
 
         # 3c. 行业资金成交集中度（使用同花顺行业资金流数据）
         try:
@@ -294,14 +308,11 @@ def compute_market_indicators(api_cache: ApiCache) -> Dict[str, Any]:
 def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """主线板块分析师指标计算：涨停集中度/5日强度等"""
     try:
-        import akshare as ak
-
         result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
         # 1. 板块涨跌幅排行（使用同花顺数据源，东方财富接口被限制）
         # 尽量提取所有列，包含5日/10日涨跌幅
         try:
-            import pandas as pd
             sector_rank = api_cache.call("stock_board_industry_summary_ths", ak.stock_board_industry_summary_ths)
             if sector_rank is not None and not sector_rank.empty:
                 top_sectors = sector_rank.nlargest(10, "涨跌幅") if "涨跌幅" in sector_rank.columns else sector_rank.head(10)
@@ -320,13 +331,12 @@ def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
 
         # 2. 涨停股统计（保留全部字段，尤其是连板数、所属行业，供LLM分析涨停集中度）
         try:
-            import pandas as pd
             today_str = datetime.now().strftime("%Y%m%d")
             zt_stocks = api_cache.call(f"stock_zt_pool_em:{today_str}", ak.stock_zt_pool_em, date=today_str)
             if zt_stocks is not None and not zt_stocks.empty:
                 result["涨停统计"] = {
                     "涨停数量": len(zt_stocks),
-                    "涨停股列表": [
+                    "涨停股列表top30": [
                         {col: str(row[col]) for col in zt_stocks.columns if col != "序号"}
                         for _, row in zt_stocks.head(30).iterrows()
                     ] if len(zt_stocks) > 0 else [],
@@ -337,7 +347,6 @@ def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
 
         # 3. 连板股统计（强势股池：连续涨停2板及以上的股票，保留全字段）
         try:
-            import pandas as pd
             today_str = datetime.now().strftime("%Y%m%d")
             lb_stocks = api_cache.call(f"stock_zt_pool_strong_em:{today_str}", ak.stock_zt_pool_strong_em, date=today_str)
             if lb_stocks is not None and not lb_stocks.empty:
@@ -348,7 +357,7 @@ def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
                 max_len = 50 if lb_stocks_length > 50 else lb_stocks_length
                 result["强势股池统计"] = {
                     "强势股池数量": lb_stocks_length,
-                    "强势股池股列表(前50)": [
+                    "强势股池股列表top50": [
                         {col: str(row[col]) for col in lb_stocks.columns if col != "序号"}
                         for _, row in lb_stocks.head(max_len).iterrows()
                     ] if lb_stocks_length > 0 else [],
@@ -356,6 +365,94 @@ def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"获取连板统计失败: {e}")
             result["强势股池统计"] = "获取失败"
+
+        # 4. 封板比（Seal Ratio）——衡量涨停板封单意愿强度
+        # 封板比 = 封板资金 / 成交额，越高说明主力封板意愿越强、涨停越牢固
+        try:
+            today_str = datetime.now().strftime("%Y%m%d")
+            # 复用已缓存的涨停池数据
+            zt_for_seal = api_cache.call(f"stock_zt_pool_em:{today_str}", ak.stock_zt_pool_em, date=today_str)
+            if zt_for_seal is not None and not zt_for_seal.empty:
+                seal_df = zt_for_seal.copy()
+                # 过滤停牌（成交额为0）
+                if "成交额" in seal_df.columns:
+                    seal_df = seal_df[pd.to_numeric(seal_df["成交额"], errors="coerce") > 0]
+                seal_ratios = []
+                if "封板资金" in seal_df.columns and "成交额" in seal_df.columns:
+                    seal_df["_封板资金_num"] = pd.to_numeric(seal_df["封板资金"], errors="coerce")
+                    seal_df["_成交额_num"] = pd.to_numeric(seal_df["成交额"], errors="coerce")
+                    seal_df["_封板比"] = seal_df["_封板资金_num"] / seal_df["_成交额_num"].replace(0, float("nan"))
+                    valid = seal_df["_封板比"].dropna()
+                    if not valid.empty:
+                        avg_seal = round(float(valid.mean()), 3)
+                        high_seal_count = int((valid > 1.0).sum())   # 封板比>1意味着封单超过当日成交额，极牢固
+                        seal_ratios = [
+                            {
+                                "代码": str(row["代码"]) if "代码" in seal_df.columns else "",
+                                "名称": str(row["名称"]) if "名称" in seal_df.columns else "",
+                                "封板比": round(float(row["_封板比"]), 3),
+                                "连板数": str(row["连板数"]) if "连板数" in seal_df.columns else "",
+                            }
+                            for _, row in seal_df.nlargest(10, "_封板比").iterrows()
+                            if not pd.isna(row["_封板比"])
+                        ]
+                        result["封板比统计"] = {
+                            "平均封板比": avg_seal,
+                            "封板比>1的个股数(极牢固)": high_seal_count,
+                            "封板比前10": seal_ratios,
+                            "说明": (
+                                "封板比 = 封板资金/成交额。>1表示封单超过全日成交额，主力锁仓意愿极强；"
+                                "平均封板比越高，整体涨停质量越好，明日溢价概率更高。"
+                            ),
+                        }
+        except Exception as e:
+            logger.error(f"计算封板比失败: {e}")
+            result["封板比统计"] = "获取失败"
+
+        # 5. 炸板率（Broken Limit Rate）——市场惜售意愿的反向指标
+        # 炸板率 = 曾涨停但未收涨停数 / (当日涨停收盘数 + 炸板数)
+        # 炸板率越高说明市场获利了结意愿强、情绪不稳定
+        try:
+            today_str = datetime.now().strftime("%Y%m%d")
+            dtgc_stocks = api_cache.call(
+                f"stock_zt_pool_dtgc_em:{today_str}", ak.stock_zt_pool_dtgc_em, date=today_str
+            )
+            zt_count_ref = result.get("涨停统计", {})
+            zt_closed = zt_count_ref.get("涨停数量", 0) if isinstance(zt_count_ref, dict) else 0
+            if dtgc_stocks is not None and not dtgc_stocks.empty:
+                broken_count = len(dtgc_stocks)
+                total_attempts = zt_closed + broken_count
+                broken_rate = round(broken_count / max(total_attempts, 1) * 100, 1)
+                emotion_label = (
+                    "情绪极度不稳" if broken_rate >= 40 else
+                    "情绪偏弱" if broken_rate >= 25 else
+                    "情绪正常" if broken_rate >= 10 else
+                    "情绪偏强"
+                )
+                result["炸板统计"] = {
+                    "炸板数": broken_count,
+                    "涨停收盘数": zt_closed,
+                    "炸板率(%)": broken_rate,
+                    "情绪判断": emotion_label,
+                    "炸板股列表(前10)": [
+                        {col: str(row[col]) for col in dtgc_stocks.columns if col != "序号"}
+                        for _, row in dtgc_stocks.head(10).iterrows()
+                    ],
+                    "说明": (
+                        "炸板率 = 炸板数/(涨停收盘数+炸板数)。"
+                        "<10%为情绪偏强（主力锁仓）；≥25%为情绪偏弱（散户派发）；≥40%为情绪极度不稳，慎追板。"
+                    ),
+                }
+            else:
+                result["炸板统计"] = {
+                    "炸板数": 0,
+                    "涨停收盘数": zt_closed,
+                    "炸板率(%)": 0.0,
+                    "情绪判断": "情绪偏强（无炸板）",
+                }
+        except Exception as e:
+            logger.error(f"计算炸板率失败: {e}")
+            result["炸板统计"] = "获取失败"
 
         return result
 
@@ -369,15 +466,13 @@ def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
 def compute_force_indicators(api_cache: ApiCache) -> Dict[str, Any]:
     """市场合力分析师指标计算：主力+散户双向净流入等"""
     try:
-        import akshare as ak
-
         result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
         # 1. 行业资金流向（使用同花顺行业资金流，替代东方财富接口）
         try:
             industry_fund = api_cache.call("stock_fund_flow_industry:即时", ak.stock_fund_flow_industry, symbol="即时")
             if industry_fund is not None and not industry_fund.empty:
-                result["主力资金流向前20"] = []
+                result["主力资金流向top20"] = []
                 for _, row in industry_fund.head(20).iterrows():
                     item = {}
                     if "行业" in industry_fund.columns:
@@ -392,7 +487,7 @@ def compute_force_indicators(api_cache: ApiCache) -> Dict[str, Any]:
                         item["流出资金(亿)"] = str(row["流出资金"])
                     if "领涨股" in industry_fund.columns:
                         item["领涨股"] = str(row["领涨股"])
-                    result["主力资金流向前20"].append(item)
+                    result["主力资金流向top20"].append(item)
         except Exception as e:
             logger.error(f"获取主力资金流向失败: {e}")
             result["主力资金流向"] = "获取失败"
@@ -411,7 +506,7 @@ def compute_force_indicators(api_cache: ApiCache) -> Dict[str, Any]:
                 if "净额" in stock_fund.columns:
                     stock_fund = stock_fund.sort_values("净额", ascending=False)
                 top_inflow = stock_fund.head(20)
-                result["个股主力净流入前20"] = []
+                result["个股主力净流入top20"] = []
                 for _, row in top_inflow.iterrows():
                     item = {}
                     if "股票代码" in stock_fund.columns:
@@ -428,7 +523,7 @@ def compute_force_indicators(api_cache: ApiCache) -> Dict[str, Any]:
                         item["流出资金"] = str(row["流出资金"])
                     if "换手率" in stock_fund.columns:
                         item["换手率"] = str(row["换手率"])
-                    result["个股主力净流入前20"].append(item)
+                    result["个股主力净流入top20"].append(item)
         except Exception as e:
             logger.error(f"获取个股资金流向失败: {e}")
             result["个股资金流向"] = "获取失败"
@@ -542,8 +637,37 @@ def compute_risk_indicators(api_cache: ApiCache, candidate_stock_codes: List[str
                 logger.error(f"获取候选标的实时行情失败: {e}")
                 result["候选标的实时行情"] = "获取失败"
 
-        # 3. ST / 退市 / 停牌 / 板块规则由 RISK_ANALYST_PROMPT 中的风险排查规则定义，
-        # 此处不重复写入数据，保持数据层与提示层分离
+        # 3. 候选股票基本面数据（防止纯资金流策略选出垃圾股）
+        # 获取 PE、PB、总市值等基础财务指标，作为基本面安全底线过滤
+        if candidate_stock_codes:
+            try:
+                fundamentals = {}
+                for code in candidate_stock_codes[:3]:   # 最多3支，控制API调用次数
+                    try:
+                        info_df = api_cache.call(
+                            f"stock_individual_info_em:{code}",
+                            ak.stock_individual_info_em,
+                            symbol=code,
+                        )
+                        if info_df is not None and not info_df.empty and "item" in info_df.columns and "value" in info_df.columns:
+                            info_dict = dict(zip(info_df["item"].astype(str), info_df["value"].astype(str)))
+                            fundamentals[code] = {
+                                "市盈率_动(PE)": info_dict.get("市盈率(动)", "N/A"),
+                                "市净率(PB)": info_dict.get("市净率", "N/A"),
+                                "总市值": info_dict.get("总市值", "N/A"),
+                                "流通市值": info_dict.get("流通市值", "N/A"),
+                                "所属行业": info_dict.get("行业", "N/A"),
+                            }
+                        else:
+                            fundamentals[code] = {"提示": "无法获取基本面数据"}
+                    except Exception as e_code:
+                        logger.error(f"获取候选股基本面数据失败 {code}: {e_code}")
+                        fundamentals[code] = {"提示": f"获取失败: {e_code}"}
+                if fundamentals:
+                    result["候选标的基本面"] = fundamentals
+            except Exception as e:
+                logger.error(f"批量获取候选标的基本面失败: {e}")
+                result["候选标的基本面"] = "获取失败"
 
         return result
 
@@ -565,13 +689,15 @@ MARKET_ANALYST_PROMPT = """你是一位资深的大盘分析师，专注于分�
 {indicators_data}
 
 **数据说明**：
-- "近5日收盘价(从旧到新)" 提供了上证/深证最近5个交易日的收盘序列，请据此判断趋势方向。
-- "5日涨跌幅(%)" 为近5个交易日的累计涨跌幅，正值表示上涨趋势，负值表示下跌趋势。
+- "近5日收盘价(从旧到新)" 提供了上证/深证最近5个交易日的收盘序列（共5个数据点），请据此判断趋势方向。
+- "5日涨跌幅(%)" 基于 **5个bar区间**（即T-5交易日收盘价 → T日收盘价，共5个区间），与近5日序列的口径略有不同——前者衡量区间累计涨跌，后者展示逐日走势，两者需结合看：序列方向一致且区间涨跌幅同向，趋势信号更可靠。
+- "北向ETF方向信号_涨跌方向" 以A50/MSCI/互联互通ETF的平均涨跌幅判断外资情绪（偏多/偏空/中性），比ETF成交额更可靠。
+- "北向资金净持仓聚合.净方向" 是基于全量北向持股增持估计市值求和的净方向（净增持/净减持/持平），与ETF方向信号结合：**两者同向则外资信号强，两者分歧则信号弱**，需降低权重。
 
 请基于上述数据，从以下维度进行分析：
 
-1. **指数走势判断**：结合近5日收盘价序列和5日涨跌幅，判断上证/深成当前处于上涨、下跌还是震荡趋势？幅度如何？
-2. **沪深港通资金分析**：注意北向成交净买额已停止公布（值为0），改用"北向资金ETF成交额(亿)"替代——越大说明外资参与度越高。南向资金仍可正常使用。重点关注外资增持方向和行业资金集中度。
+1. **指数走势判断**：结合近5日收盘价序列和5日区间涨跌幅，判断上证/深成当前处于上涨、下跌还是震荡趋势？幅度如何？
+2. **外资方向分析**：对比"北向ETF方向信号"与"北向资金净持仓聚合"两个指标是否同向？同向则外资信号可靠；若分歧，说明外资行为分化，应降低权重。重点关注南向资金和行业资金集中度。
 3. **涨跌比分析**：上涨/下跌家数比值如何？是普涨（上涨占比>60%）、普跌（<40%）还是分化？
 4. **综合判断**：综合指数趋势、资金方向、市场广度，给出偏多/偏空/中性结论。
 
@@ -605,18 +731,23 @@ SECTOR_ANALYST_PROMPT = """你是一位资深的主线板块分析师，专注�
 - "涨幅前10板块" 包含今日涨跌幅，以及数据源提供的5日/10日涨跌幅（如有），请优先引用这些字段判断板块强度而非主观猜测。
 - "涨停统计.涨停股列表" 包含各涨停股的所属行业/板块字段（如有），请统计哪些行业的涨停股最多，判断资金聚焦方向。
 - "强势股池统计" 是连续涨停2板及以上的股票，连板数越高说明市场热度越集中。
+- "封板比统计" 反映涨停质量：平均封板比越高（尤其>1），说明主力锁仓意愿越强，涨停板越牢固，次日溢价概率更高。
+- "炸板统计" 反映市场获利了结意愿：炸板率<10%为情绪偏强；≥25%为情绪偏弱，追板需谨慎；≥40%为情绪极度不稳，建议不追。
 
 请基于上述数据，从以下维度进行分析：
 
 1. **板块涨停集中度**：统计涨停股中各行业/板块的数量，哪个方向涨停股最多？是否有明确的板块效应？
 2. **板块持续强度**：若数据中包含5日/10日涨跌幅，对比今日与近期涨幅判断是启动还是持续；若无多日数据，说明仅做今日判断。
-3. **连板高度**：当前市场连板最多的股票是几板？高度板的存在说明市场情绪如何？
-4. **主线认定**：结合上述三个维度，哪个板块具备"量升、涨停集中、有高度连板股"的主线特征？
+3. **连板高度与市场情绪**：
+   - 当前市场连板最多的股票是几板？高度板存在说明情绪如何？
+   - 结合**封板比**判断涨停质量：封板比高=主力真实锁仓，封板比低=散户堆砌，容易炸板。
+   - 结合**炸板率**判断市场惜售意愿：炸板率高说明获利盘多，市场情绪脆弱，不宜激进追板。
+4. **主线认定**：结合上述维度，哪个板块具备"量升、涨停集中、少炸板、封板比高"的主线特征？
 
 请给出明确的板块分析结论：
 - 当前主线板块（1-2个，须有数据支撑）
 - 核心逻辑（各板块走强的具体依据，引用数据）
-- 持续性判断：持续/一日游，依据是什么？
+- 持续性判断：持续/一日游，依据是什么？（必须引用封板比或炸板率数据）
 
 在分析报告的最后，请用如下JSON格式输出结构化结论（放在```json代码块中）：
 ```json
@@ -624,11 +755,14 @@ SECTOR_ANALYST_PROMPT = """你是一位资深的主线板块分析师，专注�
   "has_main_sector": true,
   "main_sectors": ["板块1", "板块2"],
   "max_consecutive_limit": 3,
+  "avg_seal_ratio": 0.8,
+  "broken_limit_rate": 15.0,
   "sustainability": "持续/一日游",
   "reasoning": "简要逻辑（含具体数据依据）"
 }}
 ```
 注意：只有当板块涨停数量明显集中（同一板块≥3支涨停）、或有高度连板（≥3板）时，才判断has_main_sector为true；否则设为false。
+若炸板率≥40%，无论涨停数量多少，sustainability必须设为"一日游"。
 
 使用中文输出，简洁专业。"""
 
@@ -683,15 +817,21 @@ LEADER_ANALYST_PROMPT = """你是一位资深的股票龙头分析师，专注�
 
 {indicators_data}
 
+**⚠️ A股 T+1 风险提示（必须考虑）**：
+- A股实行T+1制度：当日买入的涨停股次日才能卖出，存在隔夜缺口风险。
+- 历史数据显示，3板以上高位连板股次日开板（炸板）后低开概率显著上升，需在推荐时明确标注连板位置风险。
+- **优先推荐"低位首板"**（距近30日最高价跌幅≥30%的首次涨停）：启动位置低、获利盘少、次日溢价概率更高。
+- **谨慎推荐高位连板（≥3板且股价接近近期高位）**：即便今日涨停，若连板高度已远超同期市场平均水平，追高风险极大，须在 reason 中明确说明。
+
 **分析指引**：
 - 优先在"涨停龙头股前20"中查找候选股票的代码，若出现则说明今日已涨停，重点关注其"连板数"字段——连板数越高龙头地位越稳。
-- 同时在"强势股前20"中查找候选股，若出现说明今日涨幅居前且有成交量支撑。
+- 优先在"涨停龙头股前20"中查找候选股票的代码，若出现则说明今日已涨停，重点关注其"连板数"字段——连板数越高龙头地位越稳，但同时追高风险越大。
 - 若候选股在两个列表中均未出现，说明今日表现一般，需降低评级。
 - "换手率"是流动性和市场关注度的重要指标，>5%为活跃标志。
 
 请基于上述分析，从以下维度研判候选股：
 
-1. **连板属性**：候选股中是否有连板股？连板数是多少？在当前市场连板高度中处于什么位置（龙头/跟风/尾部）？
+1. **连板属性与位置风险**：候选股中是否有连板股？连板数是多少？在当前市场连板高度中处于什么位置（龙头/跟风/尾部）？股价是否处于低位启动（近30日跌幅明显）还是高位追涨（接近近期高点）？
 2. **龙头地位**：该股今日是否涨停或涨幅居前？在所属板块中是领头羊还是跟风股？
 3. **量价配合**：换手率与成交额是否同步放大？是否有"放量涨停"或"缩量跌停"等异常信号？
 4. **板块共振**：候选股所属板块今日表现如何？龙头股应与板块形成共振，而非逆势。
@@ -699,17 +839,18 @@ LEADER_ANALYST_PROMPT = """你是一位资深的股票龙头分析师，专注�
 请从候选股票中筛选出最多1到2支龙头股（宁缺毋滥）：
 - 龙头股推荐及理由（必须引用数据中的具体字段值）
 - 所属板块及该板块今日表现
-- 龙头强度评级：强（连板≥3或涨停封板比高）、中（涨停但非连板）、弱（未涨停）
+- 龙头强度评级：强（低位连板≥2或低位首板封板比高）、中（涨停但高位或非连板）、弱（未涨停）
+- **T+1风险评估**：明确说明该股是否为高位连板（>=3板且接近近期高点），以便决策分析师综合风险
 
 在分析报告的最后，请用如下JSON格式输出结构化结论（放在```json代码块中）：
 ```json
 {{
   "leading_stocks": [
-    {{"code": "股票代码", "name": "股票名称", "sector": "所属板块", "consecutive_limit": 连板数或0, "strength": "强/中/弱", "in_zt_pool": true或false}}
+    {{"code": "股票代码", "name": "股票名称", "sector": "所属板块", "consecutive_limit": 连板数或0, "strength": "强/中/弱", "in_zt_pool": true或false, "position_risk": "低位/中位/高位", "t1_risk_note": "T+1隔夜风险说明"}}
   ]
 }}
 ```
-注意：leading_stocks只推荐能从数据中找到支撑的股票；如候选股全部表现平庸，leading_stocks返回空数组。
+注意：leading_stocks只推荐能从数据中找到支撑的股票；如候选股全部表现平庸或全部为高位高风险，leading_stocks返回空数组。
 
 使用中文输出，简洁专业。"""
 
@@ -739,7 +880,14 @@ RISK_ANALYST_PROMPT = """你是一位资深的风险分析师，专注于排除�
 2. **代码合规检查**：代码是否属于主板范围？（600/601/603/605/000/001/002/003开头为主板）
 3. **次新股核查**：是否出现在次新股列表中？
 4. **涨幅异常核查**：基于实时行情中的"涨跌幅"，若今日涨跌幅>9.8%（即涨停），叠加是否已有多个连板，评估追高风险。
-5. **流动性核查**：基于实时行情中的"成交额"和"换手率"，成交额<5000万或换手率<0.5%视为流动性不足，高风险。
+5. **高位连板追板风险（T+1隔夜风险）**：
+   - 若龙头分析师在 t1_risk_note 中标注"高位"且连板数≥3，评估为**高追板风险**——须在 excluded_stocks 中标注追高风险，或在 safe_stocks 中附加警示。
+   - 原则：**低位（近30日内涨幅<30%的首次涨停）优先于高位连板**；高位3板及以上，非极端强势市场不建议追入。
+6. **基本面安全底线**（参考"候选标的基本面"数据）：
+   - 市盈率(动) PE < 0（亏损）：标记为中高风险，须说明亏损状态。
+   - 市盈率(动) PE > 200 或无法获取：说明估值极高或数据缺失，需特别注意。
+   - 总市值 < 20亿 ：流通盘极小，容易被操控，标记为中风险。
+   - 若无法获取基本面数据，在报告中注明"基本面数据未获取，该维度无法评估"，不得因此直接排除。
 
 请给出明确的风险分析结论：
 - 对每只推荐标的的逐项风险评估
@@ -752,7 +900,7 @@ RISK_ANALYST_PROMPT = """你是一位资深的风险分析师，专注于排除�
 {{
   "risk_level": "低/中/高",
   "safe_stocks": [
-    {{"code": "股票代码", "name": "股票名称"}}
+    {{"code": "股票代码", "name": "股票名称", "risk_notes": "风险提示（如高位连板T+1风险、PE偏高等；无则填无）"}}
   ],
   "excluded_stocks": [
     {{"code": "股票代码", "name": "股票名称", "reason": "排除原因（引用具体字段值）"}}

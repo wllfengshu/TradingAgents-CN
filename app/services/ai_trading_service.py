@@ -8,6 +8,7 @@ AI交易服务
 """
 
 import asyncio
+import re
 import uuid
 import json
 import logging
@@ -19,7 +20,6 @@ from zoneinfo import ZoneInfo
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from app.utils.json_compressor import compress_json_for_llm
 from app.utils.xtquant_util import MockQMTUtil, AccountInfo, Position
 from langchain_core.messages import HumanMessage
 
@@ -27,7 +27,9 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from app.services.simple_analysis_service import (
     create_analysis_config,
     get_provider_and_url_by_model_sync,
+    get_simple_analysis_service,
 )
+from app.models.analysis import SingleAnalysisRequest, AnalysisParameters
 from app.core.database import get_mongo_db
 from app.services.ai_selector_service import AiSelectorService, ApiCache
 
@@ -61,8 +63,9 @@ POSITION_MANAGER_PROMPT = """你是一位资深的仓位管理分析师，负责
 
 请基于以上信息，从以下维度进行分析：
 
-1. **持仓评估**：
+1. **持仓评估与止损**：
    - 当前持仓的股票基本面和技术面是否依然健康？
+   - **止损规则**：单只股票浮亏超过8%时必须给出卖出信号（减仓或清仓），浮亏超过5%时需明确提示风险并考虑减仓
    - 是否有股票需要减仓或清仓？给出具体理由。
 
 2. **新机会评估**：
@@ -72,11 +75,12 @@ POSITION_MANAGER_PROMPT = """你是一位资深的仓位管理分析师，负责
 3. **资金配置**：
    - 可用资金如何分配？优先加仓已有持仓还是新建仓？
    - 总仓位建议（占可用资金的比例）。
+   - 单只股票持仓不宜超过总资产的25%。
 
 4. **买卖信号**：
    - 对每只需要操作的股票，给出明确信号：买入/卖出/持有
-   - 买入：建议价格和金额（或股数）
-   - 卖出：建议价格和股数（全部卖出或部分减仓）
+   - 买入：建议价格和金额（或股数），建议价格不得超过该股涨停价
+   - 卖出：建议价格和股数（全部卖出或部分减仓），建议价格不得低于该股跌停价
 
 在分析报告的最后，请用如下JSON格式输出结构化的买卖信号（放在```json代码块中）：
 ```json
@@ -126,15 +130,20 @@ TRADING_DECISION_PROMPT = """你是一位资深的交易决策分析师，负责
 
 1. **信号审核**：
    - 该信号是否有充分的分析依据？
-   - 价格是否合理（与当前市价偏离不大）？
+   - 价格是否合理（与当前市价偏离不超过2%，且在涨跌停范围内）？
    - 金额/数量是否在可承受范围内？
 
 2. **风控检查**：
-   - 单笔交易金额是否超过可用资金的30%？
-   - 单只股票持仓是否超过总资产的40%？
-   - 是否存在过度集中的风险？
+   - 单笔买入金额是否超过可用资金的30%或总资产的25%？
+   - 单只股票持仓是否超过总资产的25%？
+   - 全部买入信号的总金额是否超过可用资金的60%（避免一次性满仓）？
+   - 是否存在板块过度集中的风险（同一板块买入不超过2只）？
 
-3. **执行决策**：
+3. **止损优先**：
+   - 仓位管理分析师给出的止损卖出信号，原则上必须通过审核
+   - 浮亏超过8%的持仓，应优先止损再考虑新买入
+
+4. **执行决策**：
    - 对审核通过的信号，确认执行
    - 对审核不通过的信号，给出拒绝理由
    - 可调整信号参数（如降低买入金额）
@@ -191,7 +200,7 @@ class AiTradingService:
         from app.services.model_capability_service import get_model_capability_service
 
         capability_service = get_model_capability_service()
-        research_depth = "标准"
+        research_depth = "深度"
 
         quick_model, deep_model = capability_service.recommend_models_for_depth(research_depth)
         logger.info(f"AI交易 - 自动推荐模型: quick={quick_model}, deep={deep_model}")
@@ -231,11 +240,11 @@ class AiTradingService:
         return graph.quick_thinking_llm, graph.deep_thinking_llm
 
     def _invoke_llm(self, llm, messages, analyst_name: str = "") -> Any:
-        """LLM调用，带指数退避重试"""
+        """LLM调用，带指数退避重试（仅对可恢复异常重试）"""
         @retry(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=1, min=2, max=10),
-            retry=retry_if_exception_type(Exception),
+            retry=retry_if_exception_type((TimeoutError, ConnectionError, OSError)),
             reraise=True,
         )
         def _do_invoke():
@@ -253,16 +262,16 @@ class AiTradingService:
 
         prompt = prompt_template.format(**format_params)
 
-        logger.info(
-            f"[LLM提示词] [{analyst_name}] 提示词长度={len(prompt)}\n"
-            f"{'='*60}\n{prompt}\n{'='*60}"
+        logger.info(f"[LLM提示词] [{analyst_name}] 提示词长度={len(prompt)}")
+        logger.debug(
+            f"[LLM提示词] [{analyst_name}] 完整内容:\n{'='*60}\n{prompt}\n{'='*60}"
         )
 
         try:
             response = self._invoke_llm(llm, [HumanMessage(content=prompt)], analyst_name)
             report = response.content
             logger.info(f"AI交易 [{analyst_name}] 分析完成，报告长度: {len(report)}")
-            logger.info(
+            logger.debug(
                 f"[LLM输出] [{analyst_name}] 输出长度={len(report)}\n"
                 f"{'='*60}\n{report}\n{'='*60}"
             )
@@ -277,7 +286,6 @@ class AiTradingService:
 
     def _extract_json_block(self, text: str) -> Optional[Dict]:
         """从文本中提取最后一个```json代码块并解析"""
-        import re
         try:
             matches = re.findall(r'```json\s*(.*?)\s*```', text, re.DOTALL)
             if matches:
@@ -286,27 +294,69 @@ class AiTradingService:
             logger.error(f"解析JSON代码块失败: {e}")
         return None
 
+    def _validate_signal_fields(self, signal: Dict) -> Optional[str]:
+        """校验单个信号的字段合法性，返回错误信息；通过返回None"""
+        code = signal.get("code", "")
+        if not code or not isinstance(code, str):
+            return "缺少股票代码"
+
+        action = signal.get("action", "")
+        if action not in ("买入", "卖出", "持有"):
+            return f"非法action: {action}"
+
+        price = signal.get("price")
+        if price is not None and (not isinstance(price, (int, float)) or price <= 0):
+            return f"价格不合法: {price}"
+
+        volume = signal.get("volume")
+        if volume is not None:
+            if not isinstance(volume, (int, float)) or volume <= 0:
+                return f"数量不合法: {volume}"
+            if action == "买入" and isinstance(volume, (int, float)) and int(volume) % 100 != 0:
+                return f"买入数量{volume}不是100的整数倍"
+
+        amount = signal.get("amount")
+        if amount is not None and (not isinstance(amount, (int, float)) or amount <= 0):
+            return f"金额不合法: {amount}"
+
+        return None
+
     def _extract_trading_signals(self, report: str) -> List[Dict]:
-        """从仓位管理分析师报告中提取交易信号"""
+        """从仓位管理分析师报告中提取交易信号，并校验字段"""
         try:
             data = self._extract_json_block(report)
             if data and "signals" in data:
                 signals = data["signals"]
                 if isinstance(signals, list):
-                    # 过滤掉"持有"信号，只保留需要操作的信号
-                    return [s for s in signals if s.get("action") != "持有"]
+                    valid_signals = []
+                    for s in signals:
+                        if s.get("action") == "持有":
+                            continue
+                        error = self._validate_signal_fields(s)
+                        if error:
+                            logger.warning(f"LLM信号字段校验失败，已丢弃: {s} - {error}")
+                            continue
+                        valid_signals.append(s)
+                    return valid_signals
         except Exception:
             pass
         return []
 
     def _extract_approved_signals(self, report: str) -> List[Dict]:
-        """从交易决策分析师报告中提取审核通过的信号"""
+        """从交易决策分析师报告中提取审核通过的信号，并校验字段"""
         try:
             data = self._extract_json_block(report)
             if data and "approved_signals" in data:
                 signals = data["approved_signals"]
                 if isinstance(signals, list):
-                    return signals
+                    valid_signals = []
+                    for s in signals:
+                        error = self._validate_signal_fields(s)
+                        if error:
+                            logger.warning(f"LLM审核信号字段校验失败，已丢弃: {s} - {error}")
+                            continue
+                        valid_signals.append(s)
+                    return valid_signals
         except Exception:
             pass
         return []
@@ -369,25 +419,24 @@ class AiTradingService:
         if not analysis_result:
             return f"{stock_code} {stock_name}: 分析未产出结果"
 
-        # 从分析结果中提取关键信息
         parts = [f"【{stock_code} {stock_name}】"]
 
-        # 提取决策结果
         decision = analysis_result.get("decision", {})
         if decision:
-            parts.append(f"分析结论：{decision.get('action', '未知')}")
+            action = decision.get("action", "未知")
+            parts.append(f"分析结论：{action}")
             reasoning = decision.get("reasoning", "")
             if reasoning:
                 parts.append(f"分析依据：{reasoning[:500]}")
 
-        # 提取各分析师结论
-        analyst_results = analysis_result.get("analyst_results", [])
-        if analyst_results:
-            for r in analyst_results:
-                name = r.get("name", "")
-                conclusion = r.get("conclusion", "")
-                if conclusion and conclusion not in ("已跳过", "未执行"):
-                    parts.append(f"  - {name}: {conclusion}")
+        # 从reports中提取各模块摘要
+        reports = analysis_result.get("reports", {})
+        if reports:
+            for name, content in reports.items():
+                if isinstance(content, str) and len(content) > 50:
+                    # 只取前200字作为摘要
+                    summary = content[:200].replace('#', '').replace('*', '').strip()
+                    parts.append(f"  - {name}: {summary}...")
 
         return "\n".join(parts)
 
@@ -396,19 +445,23 @@ class AiTradingService:
     # ============================================================
 
     async def create_task(self, user_id: str, mode: str = "paper") -> Dict[str, Any]:
-        """创建AI交易任务"""
+        """创建AI交易任务（原子操作，防止并发创建）"""
+        if mode not in ("paper", "live"):
+            raise ValueError(f"非法交易模式: {mode}，仅支持 paper/live")
+
         task_id = str(uuid.uuid4())
 
         try:
             db = get_mongo_db()
 
-            # 防止并发执行
-            running_task = await db.ai_trading_tasks.find_one(
-                {"user_id": user_id, "status": {"$in": ["pending", "running"]}}
+            # 原子操作：仅当无运行中任务时才插入，利用findOneAndUpdate避免竞态
+            result = await db.ai_trading_tasks.find_one_and_update(
+                {"user_id": user_id, "status": {"$in": ["pending", "running"]}},
+                {"$set": {"_check_exists": True}},
             )
-            if running_task:
+            if result:
                 raise ValueError(
-                    f"已有AI交易任务正在执行（ID: {running_task['task_id'][:8]}...），"
+                    f"已有AI交易任务正在执行（ID: {result['task_id'][:8]}...），"
                     f"请等待当前任务完成后再试"
                 )
 
@@ -419,8 +472,8 @@ class AiTradingService:
                 "status": "pending",
                 "progress": 0,
                 "current_step": "",
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
+                "created_at": datetime.now(ZoneInfo("UTC")),
+                "updated_at": datetime.now(ZoneInfo("UTC")),
             })
         except ValueError:
             raise
@@ -430,7 +483,7 @@ class AiTradingService:
         return {"task_id": task_id, "status": "pending", "message": "AI交易任务已创建"}
 
     async def execute_task(self, task_id: str, user_id: str = None, mode: str = "paper"):
-        """执行AI交易任务（后台运行）
+        """执行AI交易任务（后台运行），总超时10分钟
 
         完整流程：
         1. 获取账户持仓情况
@@ -439,6 +492,19 @@ class AiTradingService:
         3. 仓位管理分析师：综合数据给出买卖信号
         4. 交易决策分析师：审核信号，执行下单
         """
+        try:
+            result = await asyncio.wait_for(
+                self._execute_task_inner(task_id, user_id, mode),
+                timeout=600,  # 10分钟总超时
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.error(f"AI交易任务超时: {task_id}")
+            await self._update_status(task_id, "failed", 0, "任务超时（超过10分钟）", error_message="任务超时")
+            raise RuntimeError("AI交易任务超时，已自动终止")
+
+    async def _execute_task_inner(self, task_id: str, user_id: str, mode: str = "paper"):
+        """execute_task的内部实现"""
         start_time = time.time()
         api_cache = ApiCache()
 
@@ -455,10 +521,22 @@ class AiTradingService:
         try:
             await self._update_status(task_id, "running", 5, "正在初始化AI交易分析...")
 
+            # 交易时段校验（实盘模式必须，模拟模式仅警告）
+            if not self._is_trading_hours():
+                tz = ZoneInfo("Asia/Shanghai")
+                now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+                if mode == "live":
+                    logger.warning(f"AI交易 非交易时段拒绝实盘下单: {now_str}")
+                    raise ValueError(f"当前非A股交易时段({now_str})，实盘模式不允许下单。交易时间: 工作日 9:30-11:30 / 13:00-15:00")
+                else:
+                    logger.warning(f"AI交易 非交易时段，模拟模式继续: {now_str}")
+
             # 构建配置并创建LLM
             await self._update_status(task_id, "running", 8, "正在初始化AI模型...")
             config = await asyncio.to_thread(self._build_llm_config)
             quick_llm, deep_llm = await asyncio.to_thread(self._create_llm_instances, config)
+
+            await self._raise_if_cancelled(task_id)
 
             # ====== Step 1: 获取账户持仓 ======
             await self._update_status(task_id, "running", 10, "正在查询账户持仓...")
@@ -489,6 +567,8 @@ class AiTradingService:
             })
 
             # ====== Step 2: 并发调用分析+选股 ======
+            await self._raise_if_cancelled(task_id)
+
             if has_position:
                 await self._update_status(task_id, "running", 15, "正在并发执行持仓分析+AI选股...")
 
@@ -540,11 +620,15 @@ class AiTradingService:
                             })
 
             # ====== Step 3: 仓位管理分析师 ======
+            await self._raise_if_cancelled(task_id)
             await self._update_status(task_id, "running", 60, "仓位管理分析师生成买卖信号...")
 
             positions_info = self._format_positions_for_prompt(positions)
+            position_code_name_map = {p.code: p.name for p in positions}
             position_analysis_str = "\n\n".join(
-                self._format_analysis_result_for_prompt(code, "", result)
+                self._format_analysis_result_for_prompt(
+                    code, position_code_name_map.get(code, ""), result
+                )
                 for code, result in position_analysis_results.items()
             ) if position_analysis_results else "无持仓个股分析结果（空仓）"
 
@@ -583,6 +667,7 @@ class AiTradingService:
             })
 
             # ====== Step 4: 交易决策分析师 ======
+            await self._raise_if_cancelled(task_id)
             if trading_signals:
                 await self._update_status(task_id, "running", 80, "交易决策分析师审核信号...")
 
@@ -624,14 +709,15 @@ class AiTradingService:
                 })
 
                 # ====== Step 5: 执行下单 ======
+                await self._raise_if_cancelled(task_id)
                 if approved_signals and mode == "live":
                     await self._update_status(task_id, "running", 90, "正在执行下单...")
                     order_results = await asyncio.to_thread(
-                        self._execute_orders, approved_signals
+                        self._execute_orders, approved_signals, account_info, positions
                     )
                 elif approved_signals and mode == "paper":
                     await self._update_status(task_id, "running", 90, "模拟模式：生成模拟下单结果...")
-                    order_results = self._simulate_orders(approved_signals)
+                    order_results = self._simulate_orders(approved_signals, account_info, positions)
                 else:
                     order_results = []
 
@@ -683,7 +769,7 @@ class AiTradingService:
                 "order_results": order_results,
                 "decision": decision,
                 "decision_report": decision_report,
-                "completed_at": datetime.utcnow().isoformat(),
+                "completed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
             }
 
             try:
@@ -697,7 +783,7 @@ class AiTradingService:
                         "current_step": "交易完成",
                         "result": serializable_result,
                         "elapsed_time": round(elapsed, 2),
-                        "updated_at": datetime.utcnow(),
+                        "updated_at": datetime.now(ZoneInfo("UTC")),
                     }}
                 )
             except Exception as e:
@@ -705,6 +791,10 @@ class AiTradingService:
 
             return result
 
+        except asyncio.CancelledError:
+            logger.info(f"AI交易任务已被用户取消: {task_id}")
+            await self._update_status(task_id, "failed", 0, "用户手动取消", error_message="用户手动取消")
+            return {"task_id": task_id, "status": "cancelled", "message": "任务已取消"}
         except Exception as e:
             logger.error(f"AI交易任务执行失败: {e}", exc_info=True)
             await self._update_status(task_id, "failed", 0, f"交易失败: {str(e)}", error_message=str(e))
@@ -719,13 +809,44 @@ class AiTradingService:
     async def _run_position_analysis(self, positions: List[Position],
                                      quick_llm, deep_llm,
                                      api_cache: ApiCache) -> Dict[str, Dict]:
-        """并发分析所有持仓股票"""
-        tasks = {}
-        for pos in positions:
-            tasks[pos.code] = self._analyze_single_stock(
-                pos.code, pos.name, quick_llm, deep_llm, api_cache
-            )
+        """并发分析所有持仓股票，使用SimpleAnalysisService的完整多Agent分析"""
+        analysis_service = get_simple_analysis_service()
 
+        async def _analyze_one(code: str, name: str) -> Dict:
+            logger.info(f"AI交易 持仓分析: {code} {name}")
+            try:
+                request = SingleAnalysisRequest(
+                    symbol=code.replace(".SH", "").replace(".SZ", ""),
+                    parameters=AnalysisParameters(
+                        market_type="A股",
+                        research_depth="标准",
+                        selected_analysts=["market", "fundamentals", "news"],
+                        quick_analysis_model=None,
+                        deep_analysis_model=None,
+                    ),
+                )
+                # 创建分析任务
+                task_result = await analysis_service.create_analysis_task("ai_trading", request)
+                analysis_task_id = task_result["task_id"]
+
+                # 执行分析
+                await analysis_service.execute_analysis_background(analysis_task_id, "ai_trading", request)
+
+                # 获取结果
+                task_data = await analysis_service.get_task_status(analysis_task_id)
+                if task_data and task_data.get("result_data"):
+                    result_data = task_data["result_data"]
+                    return {
+                        "report": result_data.get("summary", "分析完成"),
+                        "decision": result_data.get("decision", {"action": "持有", "reasoning": "分析完成"}),
+                        "reports": result_data.get("reports", {}),
+                    }
+                return {"report": "分析未产出结果", "decision": {"action": "持有", "reasoning": "分析结果获取失败"}}
+            except Exception as e:
+                logger.error(f"持仓分析 {code} 失败: {e}", exc_info=True)
+                return {"report": f"分析失败: {str(e)}", "decision": {"action": "持有", "reasoning": f"分析失败: {str(e)}"}}
+
+        tasks = {pos.code: _analyze_one(pos.code, pos.name) for pos in positions}
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
         output = {}
@@ -737,119 +858,6 @@ class AiTradingService:
                 output[code] = result
 
         return output
-
-    HOLDING_ANALYSIS_PROMPT = """你是一位资深的股票分析师，请对以下股票进行快速分析评估。
-
-## 股票信息
-- 代码：{code}
-- 名称：{name}
-- 当前持仓：{volume}股
-- 成本价：{cost_price}
-- 当前价：{current_price}
-- 浮动盈亏：{pnl}元（{pnl_pct}%）
-
-## 持仓数据
-{position_data}
-
----
-
-请从以下维度进行简要分析：
-
-1. **基本面判断**：该股票所属行业当前景气度如何？公司基本面是否健康？
-2. **技术面判断**：当前价格相对成本价的位置如何？短期趋势向上还是向下？
-3. **持仓建议**：基于当前盈亏情况，建议继续持有、加仓还是减仓？
-
-在分析报告的最后，请用如下JSON格式输出结构化结论（放在```json代码块中）：
-```json
-{{
-  "action": "持有/加仓/减仓/清仓",
-  "confidence": 0.7,
-  "target_price": 建议目标价(数字),
-  "stop_loss_price": 建议止损价(数字),
-  "reasoning": "简要理由"
-}}
-```
-
-使用中文输出，简洁专业。"""
-
-    async def _analyze_single_stock(self, code: str, name: str,
-                                     quick_llm, deep_llm,
-                                     api_cache: ApiCache) -> Dict:
-        """分析单只持仓股票（使用LLM直接分析）"""
-        logger.info(f"AI交易 持仓分析: {code} {name}")
-
-        try:
-            # 获取该股票的实时数据
-            position_data = self._get_stock_market_data(code, api_cache)
-
-            # 查找持仓信息
-            qmt = self._get_qmt_util()
-            with qmt:
-                positions = qmt.get_positions()
-            pos = next((p for p in positions if p.code == code), None)
-
-            volume = pos.volume if pos else 0
-            cost_price = pos.cost_price if pos else 0
-            current_price = pos.current_price if pos else 0
-            pnl = (current_price - cost_price) * volume if pos else 0
-            pnl_pct = ((current_price - cost_price) / cost_price * 100) if pos and cost_price > 0 else 0
-
-            report = await asyncio.to_thread(
-                self._run_analyst, quick_llm, f"持仓分析-{name}",
-                self.HOLDING_ANALYSIS_PROMPT,
-                extra_params={
-                    "code": code,
-                    "name": name,
-                    "volume": str(volume),
-                    "cost_price": f"{cost_price:.2f}",
-                    "current_price": f"{current_price:.2f}",
-                    "pnl": f"{pnl:+.2f}",
-                    "pnl_pct": f"{pnl_pct:+.2f}",
-                    "position_data": position_data,
-                }
-            )
-
-            # 提取JSON结论
-            conclusion_data = self._extract_json_block(report)
-
-            return {
-                "report": report,
-                "decision": conclusion_data or {"action": "持有", "reasoning": "分析未产出结构化结论"},
-            }
-        except Exception as e:
-            logger.error(f"持仓分析 {code} 失败: {e}")
-            return {"report": f"分析失败: {str(e)}", "decision": {"action": "持有", "reasoning": f"分析失败: {str(e)}"}}
-
-    def _get_stock_market_data(self, code: str, api_cache: ApiCache) -> str:
-        """获取股票市场数据用于分析"""
-        try:
-            import akshare as ak
-            import pandas as pd
-
-            parts = []
-
-            # 获取近期K线数据
-            try:
-                # akshare使用不带后缀的代码
-                ak_code = code.replace(".SH", "").replace(".SZ", "")
-                daily = api_cache.call(f"stock_zh_a_hist:{ak_code}", ak.stock_zh_a_hist,
-                                       symbol=ak_code, period="daily", adjust="qfq")
-                if daily is not None and not daily.empty:
-                    recent = daily.tail(20)
-                    parts.append(f"近20日K线数据（最新{len(recent)}条）：")
-                    for _, row in recent.iterrows():
-                        date_str = str(row.get("日期", row.get("date", "")))
-                        close = row.get("收盘", row.get("close", 0))
-                        volume = row.get("成交量", row.get("volume", 0))
-                        parts.append(f"  {date_str}: 收盘{close}, 成交量{volume}")
-            except Exception as e:
-                parts.append(f"获取K线数据失败: {e}")
-
-            return "\n".join(parts) if parts else "暂无市场数据"
-        except ImportError:
-            return "akshare未安装，暂无市场数据"
-        except Exception as e:
-            return f"获取市场数据失败: {e}"
 
     async def _run_ai_selector(self, quick_llm, deep_llm,
                                api_cache: ApiCache) -> Dict:
@@ -869,12 +877,72 @@ class AiTradingService:
     # 下单执行
     # ============================================================
 
-    def _execute_orders(self, approved_signals: List[Dict]) -> List[Dict]:
-        """执行审核通过的交易信号（实盘）"""
+    def _validate_signal(self, signal: Dict, account_info: AccountInfo,
+                         positions: List[Position]) -> Optional[str]:
+        """校验交易信号的合法性，返回错误信息；通过返回None"""
+        code = signal.get("code", "")
+        action = signal.get("action", "")
+        price = signal.get("price")
+        volume = signal.get("volume")
+        amount = signal.get("amount")
+
+        # action 合法性
+        if action not in ("买入", "卖出"):
+            return f"非法操作类型: {action}"
+
+        # code 格式校验（如 600000.SH / 000001.SZ）
+        if not re.match(r"^\d{6}\.(SZ|SH)$", code):
+            return f"股票代码格式不合法: {code}"
+
+        # price 校验
+        if price is not None and (not isinstance(price, (int, float)) or price <= 0):
+            return f"价格不合法: {price}"
+
+        if action == "买入":
+            # 买入必须有金额
+            if not amount or (isinstance(amount, (int, float)) and amount <= 0):
+                return f"买入金额不合法: {amount}"
+            # 单笔买入不超过可用资金30%，且不超过总资产25%（基于总资产的集中度控制）
+            max_by_cash = account_info.cash * 0.3
+            max_by_total = account_info.total_value * 0.25
+            max_amount = min(max_by_cash, max_by_total)
+            if amount > max_amount:
+                return f"买入金额{amount:.0f}超过单笔限额({max_amount:.0f}，取可用资金30%与总资产25%的较小值)"
+            # 可用资金不足
+            if amount > account_info.cash:
+                return f"买入金额{amount:.0f}超过可用资金{account_info.cash:.0f}"
+
+        elif action == "卖出":
+            # 卖出必须指定volume，不允许None（防止误全仓卖出）
+            if volume is None:
+                return "卖出未指定数量，为防止误操作拒绝执行"
+            # 卖出允许零股（残股），只要求不超过持仓量
+            if volume <= 0:
+                return f"卖出数量不合法: {volume}"
+            # 持仓校验
+            pos = next((p for p in positions if p.code == code), None)
+            if pos is None:
+                return f"未持有 {code}，无法卖出"
+            if volume > pos.volume:
+                return f"卖出数量{volume}超过持仓量{pos.volume}"
+
+        return None
+
+    def _execute_orders(self, approved_signals: List[Dict],
+                        account_info: AccountInfo,
+                        positions: List[Position]) -> List[Dict]:
+        """执行审核通过的交易信号（实盘），带前置业务校验
+
+        每笔下单后刷新账户和持仓数据，防止多笔下单时超额/超卖。
+        """
         results = []
         qmt = self._get_qmt_util()
 
         with qmt:
+            # 每笔下单前重新获取最新账户和持仓，避免超额下单
+            fresh_account = account_info
+            fresh_positions = positions
+
             for signal in approved_signals:
                 code = signal.get("code", "")
                 name = signal.get("name", "")
@@ -883,13 +951,41 @@ class AiTradingService:
                 volume = signal.get("volume")
                 amount = signal.get("amount")
 
+                # 前置校验（使用最新账户数据）
+                validation_error = self._validate_signal(signal, fresh_account, fresh_positions)
+                if validation_error:
+                    logger.warning(f"交易信号校验失败: {code} {action} - {validation_error}")
+                    results.append({
+                        "code": code,
+                        "name": name,
+                        "action": action,
+                        "price": price,
+                        "volume": volume,
+                        "order_id": None,
+                        "success": False,
+                        "error": f"校验失败: {validation_error}",
+                    })
+                    continue
+
                 try:
                     if action == "买入":
+                        # 买入时重新计算volume确保100整数倍
+                        buy_price = price
+                        if buy_price is None:
+                            quote = qmt.get_realtime_quote([code])
+                            buy_price = quote.get(code, {}).get("lastPrice", 0)
+                            if buy_price <= 0:
+                                raise ValueError(f"无法获取 {code} 当前价格")
+                        buy_volume = int(amount / buy_price / 100) * 100
+                        if buy_volume <= 0:
+                            raise ValueError(f"金额{amount}不足以购买1手{code}")
+
                         order_id = qmt.buy(
                             code=code,
-                            amount=amount or 0,
+                            amount=amount,
                             price=price,
                         )
+                        volume = buy_volume
                     elif action == "卖出":
                         order_id = qmt.sell(
                             code=code,
@@ -909,6 +1005,14 @@ class AiTradingService:
                         "success": order_id is not None,
                         "error": None if order_id else "下单失败",
                     })
+
+                    # 下单成功后刷新账户和持仓，后续校验使用最新数据
+                    if order_id:
+                        try:
+                            fresh_account = qmt.get_account_info()
+                            fresh_positions = qmt.get_positions()
+                        except Exception as refresh_err:
+                            logger.warning(f"刷新账户数据失败: {refresh_err}")
                 except Exception as e:
                     results.append({
                         "code": code,
@@ -923,50 +1027,71 @@ class AiTradingService:
 
         return results
 
-    def _simulate_orders(self, approved_signals: List[Dict]) -> List[Dict]:
-        """模拟下单（模拟模式）"""
-        import random
+    def _simulate_orders(self, approved_signals: List[Dict],
+                        account_info: AccountInfo = None,
+                        positions: List[Position] = None) -> List[Dict]:
+        """模拟下单（纯内存构造，不调用真实QMT接口），含业务校验和交易成本估算"""
         results = []
+        # 模拟账户状态追踪，避免超额下单
+        sim_cash = account_info.cash if account_info else float("inf")
+        sim_holdings = {p.code: p.volume for p in positions} if positions else {}
 
-        qmt = self._get_qmt_util()
-        with qmt:
-            for signal in approved_signals:
-                code = signal.get("code", "")
-                name = signal.get("name", "")
-                action = signal.get("action", "")
-                price = signal.get("price")
-                volume = signal.get("volume")
-                amount = signal.get("amount")
+        for signal in approved_signals:
+            code = signal.get("code", "")
+            name = signal.get("name", "")
+            action = signal.get("action", "")
+            price = signal.get("price", 0)
+            volume = signal.get("volume", 0)
+            amount = signal.get("amount", 0)
 
-                try:
-                    if action == "买入":
-                        order_id = qmt.buy(code=code, amount=amount or 0, price=price)
-                    elif action == "卖出":
-                        order_id = qmt.sell(code=code, price=price, volume=volume)
-                    else:
-                        order_id = None
-
+            # 业务校验
+            if account_info and positions:
+                validation_error = self._validate_signal(signal, AccountInfo(
+                    cash=sim_cash,
+                    total_value=account_info.total_value,
+                    frozen_cash=account_info.frozen_cash,
+                ), [
+                    Position(code=k, name="", volume=v, cost_price=0, current_price=0)
+                    for k, v in sim_holdings.items()
+                ])
+                if validation_error:
                     results.append({
-                        "code": code,
-                        "name": name,
-                        "action": action,
-                        "price": price,
-                        "volume": volume,
-                        "order_id": f"MOCK-{order_id}" if order_id else None,
-                        "success": order_id is not None,
-                        "error": None if order_id else "模拟下单失败",
+                        "code": code, "name": name, "action": action,
+                        "price": price, "volume": volume, "amount": amount,
+                        "order_id": None, "success": False,
+                        "error": f"模拟校验失败: {validation_error}",
                     })
-                except Exception as e:
-                    results.append({
-                        "code": code,
-                        "name": name,
-                        "action": action,
-                        "price": price,
-                        "volume": volume,
-                        "order_id": None,
-                        "success": False,
-                        "error": str(e),
-                    })
+                    continue
+
+            # 计算模拟交易成本（佣金万2.5 + 印花税千1卖出 + 过户费十万分之一）
+            simulated_cost = 0.0
+            if action == "买入" and price and volume:
+                trade_amount = price * volume
+                commission = max(trade_amount * 0.00025, 5.0)  # 佣金万2.5，最低5元
+                transfer_fee = trade_amount * 0.00001  # 过户费
+                simulated_cost = commission + transfer_fee
+                sim_cash -= (trade_amount + simulated_cost)
+            elif action == "卖出" and price and volume:
+                trade_amount = price * volume
+                commission = max(trade_amount * 0.00025, 5.0)
+                stamp_tax = trade_amount * 0.001  # 印花税千1
+                transfer_fee = trade_amount * 0.00001
+                simulated_cost = commission + stamp_tax + transfer_fee
+                sim_cash += (trade_amount - simulated_cost)
+                sim_holdings[code] = sim_holdings.get(code, 0) - volume
+
+            results.append({
+                "code": code,
+                "name": name,
+                "action": action,
+                "price": price,
+                "volume": volume,
+                "amount": amount,
+                "simulated_cost": round(simulated_cost, 2),
+                "order_id": f"PAPER-{uuid.uuid4().hex[:8]}",
+                "success": True,
+                "error": None,
+            })
 
         return results
 
@@ -1014,6 +1139,15 @@ class AiTradingService:
     # 辅助方法
     # ============================================================
 
+    def _is_trading_hours(self) -> bool:
+        """判断当前是否为A股交易时段（工作日 9:30-11:30 / 13:00-15:00）"""
+        from datetime import time as dtime
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        if now.weekday() >= 5:
+            return False
+        t = now.time()
+        return (dtime(9, 30) <= t <= dtime(11, 30)) or (dtime(13, 0) <= t <= dtime(15, 0))
+
     def _extract_analysis_conclusion(self, result: Dict) -> str:
         """从个股分析结果中提取结论"""
         decision = result.get("decision", {})
@@ -1051,6 +1185,23 @@ class AiTradingService:
         else:
             return str(obj)
 
+    async def _check_cancelled(self, task_id: str) -> bool:
+        """检查任务是否已被用户停止"""
+        try:
+            db = get_mongo_db()
+            task = await db.ai_trading_tasks.find_one(
+                {"task_id": task_id},
+                {"status": 1}
+            )
+            return task is not None and task.get("status") == "failed"
+        except Exception:
+            return False
+
+    async def _raise_if_cancelled(self, task_id: str):
+        """如果任务已被取消，抛出异常中断执行"""
+        if await self._check_cancelled(task_id):
+            raise asyncio.CancelledError(f"任务 {task_id} 已被用户取消")
+
     async def _update_status(self, task_id: str, status: str, progress: int,
                              current_step: str, error_message: str = None):
         """更新任务状态"""
@@ -1060,7 +1211,7 @@ class AiTradingService:
                 "status": status,
                 "progress": progress,
                 "current_step": current_step,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(ZoneInfo("UTC")),
             }
             if error_message:
                 update_data["error_message"] = error_message
@@ -1092,8 +1243,15 @@ class AiTradingService:
                 {"task_id": task_id},
                 {"_id": 0}
             )
-            if task and task.get("status") == "completed":
-                return task.get("result", task)
+            if not task:
+                logger.warning(f"get_task_result: task_id={task_id} 未找到记录")
+                return None
+            if task.get("status") == "completed":
+                result = task.get("result", task)
+                # result 子文档不含 user_id，需要从 task 顶层补上，否则路由层权限校验会 403
+                if result and "user_id" not in result:
+                    result["user_id"] = task.get("user_id")
+                return result
             return task
         except Exception as e:
             logger.error(f"获取AI交易任务结果失败: {e}")

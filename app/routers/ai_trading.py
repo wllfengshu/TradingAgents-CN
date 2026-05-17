@@ -72,7 +72,12 @@ async def get_task_status(
         task = await service.get_task_status(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
-        if task.get("user_id") != user["id"]:
+        task_user_id = task.get("user_id")
+        if task_user_id != user["id"]:
+            logger.error(
+                f"AI交易状态权限校验失败(403): task_id={task_id}, "
+                f"task.user_id={task_user_id}, current_user.id={user['id']}"
+            )
             raise HTTPException(status_code=403, detail="无权访问此任务")
         return {"success": True, "data": task}
     except HTTPException:
@@ -93,7 +98,12 @@ async def get_task_result(
         result = await service.get_task_result(task_id)
         if not result:
             raise HTTPException(status_code=404, detail="任务不存在")
-        if result.get("user_id") != user["id"]:
+        result_user_id = result.get("user_id")
+        if result_user_id != user["id"]:
+            logger.warning(
+                f"AI交易结果权限校验失败(403): task_id={task_id}, "
+                f"result.user_id={result_user_id}, current_user.id={user['id']}"
+            )
             raise HTTPException(status_code=403, detail="无权访问此任务")
         return {"success": True, "data": result}
     except HTTPException:
@@ -114,7 +124,12 @@ async def stop_task(
         task = await service.get_task_status(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
-        if task.get("user_id") != user["id"]:
+        task_user_id = task.get("user_id")
+        if task_user_id != user["id"]:
+            logger.warning(
+                f"AI交易停止权限校验失败(403): task_id={task_id}, "
+                f"task.user_id={task_user_id}, current_user.id={user['id']}"
+            )
             raise HTTPException(status_code=403, detail="无权操作此任务")
 
         # 标记任务为失败状态（停止）
