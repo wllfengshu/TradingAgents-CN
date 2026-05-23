@@ -37,6 +37,12 @@ from app.services.ai_selector.ai_selector_service import AiSelectorService, ApiC
 
 logger = logging.getLogger("app.services.ai_trading_service")
 
+_CN_TZ = ZoneInfo("Asia/Shanghai")
+
+def _now_cn() -> datetime:
+    """返回上海时区"""
+    return datetime.now(_CN_TZ).replace(tzinfo=None)
+
 
 # ============================================================
 # Agent提示词模板

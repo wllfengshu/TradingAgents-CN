@@ -36,16 +36,10 @@ from croniter import croniter
 
 logger = logging.getLogger(__name__)
 
-
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 
-
 def _now_cn() -> datetime:
-    """返回上海时区的 naive datetime，用于持久化到 MongoDB。
-
-    Why: 前端按本地时间直接渲染 created_at/updated_at/completed_at，
-    若写入 UTC 会导致显示比真实时间早 8 小时。
-    """
+    """返回上海时区"""
     return datetime.now(_CN_TZ).replace(tzinfo=None)
 
 
