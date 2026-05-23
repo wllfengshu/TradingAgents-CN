@@ -42,12 +42,12 @@ def is_main_board_stock(code: str) -> bool:
     main_board_prefixes = ("600", "601", "603", "605", "000", "001", "002", "003")
     return code.startswith(main_board_prefixes)
 
-def make_serializable(self, obj):
+def make_serializable(obj):
     """将对象转换为可序列化的格式"""
     if isinstance(obj, dict):
-        return {k: self.make_serializable(v) for k, v in obj.items()}
+        return {k: make_serializable(v) for k, v in obj.items()}
     elif isinstance(obj, list):
-        return [self.make_serializable(v) for v in obj]
+        return [make_serializable(v) for v in obj]
     elif isinstance(obj, datetime):
         return obj.isoformat()
     elif isinstance(obj, (int, float, str, bool, type(None))):
@@ -55,7 +55,7 @@ def make_serializable(self, obj):
     else:
         return str(obj)
 
-def extract_json_block(self, text: str) -> Optional[Dict]:
+def extract_json_block(text: str) -> Optional[Dict]:
     """从文本中提取最后一个```json代码块并解析"""
     try:
         matches = re.findall(r'```json\s*(.*?)\s*```', text, re.DOTALL)
