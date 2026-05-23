@@ -4,12 +4,11 @@ AI选股API路由
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 import logging
-import asyncio
 
 from app.routers.auth_db import get_current_user
-from app.services.ai_selector_service import get_ai_selector_service
+from app.services.ai_selector.ai_selector_service import get_ai_selector_service
 
 router = APIRouter()
 logger = logging.getLogger("webapi")

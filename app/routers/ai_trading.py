@@ -4,12 +4,11 @@ AI交易API路由
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 import logging
-import asyncio
 
 from app.routers.auth_db import get_current_user
-from app.services.ai_trading_service import get_ai_trading_service
+from app.services.ai_trading.ai_trading_service import get_ai_trading_service
 
 router = APIRouter()
 logger = logging.getLogger("webapi")
@@ -156,6 +155,9 @@ async def stop_task(
 @router.get("/records", response_model=Dict[str, Any])
 async def get_records(
     mode: Optional[str] = None,
+    status: Optional[str] = None,
+    start_date: Optional[str] = Query(default=None, description="开始日期，格式 YYYY-MM-DD"),
+    end_date: Optional[str] = Query(default=None, description="结束日期，格式 YYYY-MM-DD"),
     page: int = Query(default=1, ge=1, description="页码"),
     page_size: int = Query(default=20, ge=1, le=100, description="每页条数"),
     user: dict = Depends(get_current_user),
@@ -163,8 +165,68 @@ async def get_records(
     """获取AI交易操作记录"""
     try:
         service = get_ai_trading_service()
-        result = await service.get_records(user["id"], mode=mode, page=page, page_size=page_size)
+        result = await service.get_records(
+            user["id"],
+            mode=mode,
+            status=status,
+            start_date=start_date,
+            end_date=end_date,
+            page=page,
+            page_size=page_size,
+        )
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"❌ 获取AI交易记录失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/records/{task_id}", response_model=Dict[str, Any])
+async def get_record_detail(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """获取AI交易记录详情"""
+    try:
+        service = get_ai_trading_service()
+        result = await service.get_task_result(task_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="记录不存在")
+
+        result_user_id = result.get("user_id")
+        if result_user_id != user["id"]:
+            logger.warning(
+                f"AI交易记录详情权限校验失败(403): task_id={task_id}, "
+                f"result.user_id={result_user_id}, current_user.id={user['id']}"
+            )
+            raise HTTPException(status_code=403, detail="无权访问此记录")
+
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 获取AI交易记录详情失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/records/{task_id}", response_model=Dict[str, Any])
+async def delete_record(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """删除AI交易记录"""
+    try:
+        from app.core.database import get_mongo_db
+
+        db = get_mongo_db()
+        result = await db.ai_trading_tasks.delete_one(
+            {"task_id": task_id, "user_id": user["id"]}
+        )
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="记录不存在")
+
+        return {"success": True, "message": "记录已删除"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 删除AI交易记录失败: {e}")
         raise HTTPException(status_code=400, detail=str(e))

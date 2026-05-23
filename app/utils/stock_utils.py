@@ -2,9 +2,18 @@
 股票处理-通用工具类
 """
 
-import os
-from typing import Optional
+import re
+from datetime import datetime
+import asyncio
+import uuid
+import json
+import logging
+import time
+import threading
+from datetime import datetime
+from typing import Dict, Any, Optional, List
 
+logger = logging.getLogger(__name__)
 
 def is_main_board_stock(code: str) -> bool:
     """判断股票是否属于主板（排除科创板、创业板、北交所）
@@ -32,3 +41,27 @@ def is_main_board_stock(code: str) -> bool:
     # 主板：沪市 600/601/603/605，深市 000/001/002/003
     main_board_prefixes = ("600", "601", "603", "605", "000", "001", "002", "003")
     return code.startswith(main_board_prefixes)
+
+def make_serializable(self, obj):
+    """将对象转换为可序列化的格式"""
+    if isinstance(obj, dict):
+        return {k: self.make_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [self.make_serializable(v) for v in obj]
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    else:
+        return str(obj)
+
+def extract_json_block(self, text: str) -> Optional[Dict]:
+    """从文本中提取最后一个```json代码块并解析"""
+    try:
+        matches = re.findall(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+        if matches:
+            return json.loads(matches[-1])
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error(f"解析JSON代码块失败: {e}")
+    return None
+

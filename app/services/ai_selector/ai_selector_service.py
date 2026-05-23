@@ -5,6 +5,7 @@ AI选股服务
 每个Agent先使用代码计算指标，然后将计算结果发送给LLM分析
 """
 
+import re
 import asyncio
 import uuid
 import json
@@ -14,286 +15,82 @@ import threading
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo
-
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-
 from app.utils.json_compressor import compress_json_for_llm
-
+from app.utils.stock_utils import make_serializable, is_main_board_stock, extract_json_block
 from langchain_core.messages import HumanMessage
-
 from tradingagents.graph.trading_graph import TradingAgentsGraph
-from app.services.simple_analysis_service import (
-    create_analysis_config,
-    get_provider_and_url_by_model_sync,
-)
+from app.services.simple_analysis_service import create_analysis_config, get_provider_and_url_by_model_sync
 from app.core.database import get_mongo_db
-from ..utils.stock_utils import is_main_board_stock
 import pandas as pd
-import akshare as ak
-from datetime import time as _dtime
+from app.utils.api_cache import ApiCache
+from app.services.ai_selector.compute_indicators import *
+from app.services.model_capability_service import get_model_capability_service
 
-logger = logging.getLogger("app.services.ai_selector_service")
-
-
-class ApiCache:
-    """API调用缓存，在单次AI选股运行期间缓存akshare接口调用结果，运行结束后清空
-    """
-
-    def __init__(self):
-        self._cache: Dict[str, Any] = {}
-        self._hits = 0
-        self._misses = 0
-        self._lock = threading.Lock()  # Fix: 保证线程安全
-
-    def call(self, cache_key: str, func, *args, **kwargs):
-        """调用API并缓存结果，如果已有缓存则直接返回（线程安全）"""
-        with self._lock:
-            if cache_key in self._cache:
-                self._hits += 1
-                logger.info(f"API缓存命中: {cache_key}")
-                return self._cache[cache_key]
-            # 在锁内调用 API，防止并发时同一 key 被重复请求（TOCTOU）
-            result = func(*args, **kwargs)
-            self._cache[cache_key] = result
-            self._misses += 1
-
-        # 日志记录在锁外，避免长时间持锁
-        try:
-            if isinstance(result, pd.DataFrame):
-                logger.info(
-                    f"[底层接口数据] {cache_key} -> "
-                    f"shape={result.shape}, columns={list(result.columns)}\n"
-                    f"{result.head(5).to_string(index=False)}"
-                )
-            else:
-                logger.info(f"[底层接口数据] {cache_key} -> {result}")
-        except Exception as _log_err:
-            logger.error(f"[底层接口数据] {cache_key} -> 日志记录失败: {_log_err}")
-        return result
-
-    def clear(self):
-        if self._hits > 0 or self._misses > 0:
-            logger.info(f"API缓存清空，命中{self._hits}次，未命中{self._misses}次")
-        self._cache.clear()
-        self._hits = 0
-        self._misses = 0
+logger = logging.getLogger("app.services.ai_selector.compute_indicators")
 
 
 # ============================================================
-# 指标计算函数
+# 指标计算函数（这里是统筹和收集各个数据指标，具体的计算指标放到app/services/ai_selector/compute_indicators.py中）
 # ============================================================
 
-def compute_market_indicators(api_cache: ApiCache) -> Dict[str, Any]:
+
+def compute_market_indicators(api_cache) -> Dict[str, Any]:
     """大盘分析师指标计算：指数/北向资金/涨跌比等"""
     try:
-        result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        result: Dict[str, Any] = {"计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-        # 添加非交易时段提示，防止 LLM 误判数据时效
-        try:
-            _now_sh = datetime.now(ZoneInfo("Asia/Shanghai"))
-            _weekday = _now_sh.weekday()
-            _t = _now_sh.time()
-            _is_trading = (
-                _weekday < 5 and (
-                    _dtime(9, 30) <= _t <= _dtime(11, 30) or
-                    _dtime(13, 0) <= _t <= _dtime(15, 00)
-                )
-            )
-            if not _is_trading:
-                _reason = "周末" if _weekday >= 5 else f"非交易时段（{_now_sh.strftime('%H:%M')}）"
-                result["数据时效提示"] = (
-                    f"当前为{_reason}，以下行情数据为上一交易日快照，并非实时数据，"
-                )
-        except Exception:
-            pass
-
-        # 1. 上证指数（含5日趋势）
-        try:
-            sh_index = api_cache.call("stock_zh_index_daily:sh000001", ak.stock_zh_index_daily, symbol="sh000001")
-            if sh_index is not None and not sh_index.empty:
-                latest = sh_index.iloc[-1]
-                prev = sh_index.iloc[-2] if len(sh_index) > 1 else latest
-                # Fix: base5 取 5 日前的收盘价（iloc[-6]），用于计算 5 日涨跌幅（5 个区间）
-                # 展示用的 close5 则取最近 5 日（iloc[-5:]），共 5 个数据点，与名称一致
-                base5_row = sh_index.iloc[-6] if len(sh_index) >= 6 else sh_index.iloc[0]
-                base5 = float(base5_row["close"])
-                change5d = round((float(latest["close"]) - base5) / base5 * 100, 2)
-                recent5 = sh_index.iloc[-5:] if len(sh_index) >= 5 else sh_index
-                close5 = [round(float(v), 2) for v in recent5["close"].tolist()]
-                result["上证指数"] = {
-                    "收盘价": float(latest["close"]),
-                    "今日涨跌幅(%)": round((float(latest["close"]) - float(prev["close"])) / float(prev["close"]) * 100, 2),
-                    "5日涨跌幅(%)": change5d,
-                    "近5日收盘价(从旧到新)": close5,
-                    "成交量": int(latest["volume"]) if "volume" in latest else None,
-                }
-        except Exception as e:
-            logger.error(f"获取上证指数失败: {e}")
-            result["上证指数"] = "获取失败"
+        # 1. 上证指数
+        result["上证指数"] = stock_zh_index_daily(api_cache)
 
         # 2. 深证成指（含5日趋势）
-        try:
-            sz_index = api_cache.call("stock_zh_index_daily:sz399001", ak.stock_zh_index_daily, symbol="sz399001")
-            if sz_index is not None and not sz_index.empty:
-                latest = sz_index.iloc[-1]
-                prev = sz_index.iloc[-2] if len(sz_index) > 1 else latest
-                # Fix: 同上证逻辑，base5 与展示数据分开
-                base5_row = sz_index.iloc[-6] if len(sz_index) >= 6 else sz_index.iloc[0]
-                base5 = float(base5_row["close"])
-                change5d = round((float(latest["close"]) - base5) / base5 * 100, 2)
-                recent5 = sz_index.iloc[-5:] if len(sz_index) >= 5 else sz_index
-                close5 = [round(float(v), 2) for v in recent5["close"].tolist()]
-                result["深证成指"] = {
-                    "收盘价": float(latest["close"]),
-                    "今日涨跌幅(%)": round((float(latest["close"]) - float(prev["close"])) / float(prev["close"]) * 100, 2),
-                    "5日涨跌幅(%)": change5d,
-                    "近5日收盘价(从旧到新)": close5,
-                }
-        except Exception as e:
-            logger.error(f"获取深证成指失败: {e}")
-            result["深证成指"] = "获取失败"
+        result["深证成指"] = stock_zh_index_daily_sz(api_cache)
 
-        # 3. 沪深港通资金（替代已停止公布的北向资金净流入数据）
         # 3a. 沪深港通每日资金流向汇总
-        try:
-            hsgt_summary = api_cache.call("stock_hsgt_fund_flow_summary_em", ak.stock_hsgt_fund_flow_summary_em)
-            if hsgt_summary is not None and not hsgt_summary.empty:
-                hsgt_data = {}
-                for _, row in hsgt_summary.iterrows():
-                    block_name = str(row["板块"]) if "板块" in hsgt_summary.columns else ""
-                    direction = str(row["资金方向"]) if "资金方向" in hsgt_summary.columns else ""
-                    net_buy = row["成交净买额"] if "成交净买额" in hsgt_summary.columns else None
-                    fund_inflow = row["资金净流入"] if "资金净流入" in hsgt_summary.columns else None
-                    up_count = row["上涨数"] if "上涨数" in hsgt_summary.columns else None
-                    down_count = row["下跌数"] if "下跌数" in hsgt_summary.columns else None
-                    related_index = str(row["相关指数"]) if "相关指数" in hsgt_summary.columns else ""
-                    index_change = row["指数涨跌幅"] if "指数涨跌幅" in hsgt_summary.columns else None
+        result["沪深港通成交"] = stock_hsgt_fund_flow_summary(api_cache)
 
-                    import pandas as pd
-                    entry = {}
-                    if pd.notna(net_buy):
-                        entry["成交净买额(亿)"] = round(float(net_buy), 2)
-                    if pd.notna(fund_inflow):
-                        entry["资金净流入(亿)"] = round(float(fund_inflow), 2)
-                    if pd.notna(up_count):
-                        entry["上涨数"] = int(float(up_count))
-                    if pd.notna(down_count):
-                        entry["下跌数"] = int(float(down_count))
-                    if related_index:
-                        entry["相关指数"] = related_index
-                    if pd.notna(index_change):
-                        entry["指数涨跌幅(%)"] = float(index_change)
+        # 3a2. 北向资金ETF方向指标（合并到 "沪深港通成交" 字段）
+        north_etf_patch = stock_north_etf_direction(api_cache)
+        if north_etf_patch and isinstance(result.get("沪深港通成交"), dict):
+            result["沪深港通成交"].update(north_etf_patch)
 
-                    hsgt_data[f"{block_name}({direction})"] = entry
+        # 3c. 行业资金成交集中度
+        result["沪深港通行业成交集中度"] = stock_industry_concentration(api_cache)
 
-                hsgt_data["说明"] = "沪深港通资金流向汇总，北向成交净买额已停止公布，改用北向资金ETF成交额作为替代指标"
-                result["沪深港通成交"] = hsgt_data
-        except Exception as e:
-            logger.error(f"获取沪深港通成交数据失败: {e}")
-            result["沪深港通成交"] = "获取失败"
+        # 4. 涨跌比
+        result["涨跌统计"] = stock_up_down_count(api_cache)
 
-        # 3a2. 北向资金ETF方向指标（改进：以涨跌幅方向为主，成交额仅作活跃度参考）
-        # ⚠️ ETF成交额不区分买卖方向；ETF平均涨跌幅>0=外资看多，<0=外资看空
-        try:
-            etf_spot = api_cache.call("fund_etf_spot_em", ak.fund_etf_spot_em)
-            if etf_spot is not None and not etf_spot.empty:
-                north_etf = etf_spot[etf_spot["名称"].str.contains("A50|MSCI|互联互通|陆股通", na=False)]
-                if not north_etf.empty:
-                    avg_change = round(north_etf["涨跌幅"].mean(), 2)
-                    bull_count = int((north_etf["涨跌幅"] > 0).sum())
-                    bear_count = int((north_etf["涨跌幅"] < 0).sum())
-                    total_amount_yi = round(north_etf["成交额"].sum() / 1e8, 2)
-                    direction_label = "偏多" if avg_change > 0 else ("偏空" if avg_change < 0 else "中性")
-                    if isinstance(result.get("沪深港通成交"), dict):
-                        result["沪深港通成交"]["北向ETF方向信号_平均涨跌幅(%)"] = float(round(avg_change, 2))
-                        result["沪深港通成交"]["北向ETF方向信号_涨跌方向"] = direction_label
-                        result["沪深港通成交"]["北向ETF上涨只数"] = bull_count
-                        result["沪深港通成交"]["北向ETF下跌只数"] = bear_count
-                        result["沪深港通成交"]["北向ETF成交额合计(亿,仅活跃度参考)"] = total_amount_yi
-                        result["沪深港通成交"]["说明"] = (
-                            "北向成交净买额已停止公布。"
-                            "【方向信号】北向ETF平均涨跌幅>0为偏多/外资看多，<0为偏空/外资看空，比成交额更可靠。"
-                            "【活跃度】ETF成交额仅反映活跃度，不代表资金净流向。"
-                        )
-        except Exception as e:
-            logger.error(f"获取北向资金ETF数据失败: {e}")
+        # GDP与PMI（采购经理指数）：宏观经济的体温计。特别是财新PMI和官方制造业PMI，如果低于50%的荣枯线，说明经济收缩，大盘很难有趋势性牛市。
 
-        # 3b. 北向资金增持个股排行——同时输出全量净持仓变动聚合（更可靠的方向验证）
-        # try:
-        #     hold_rank = api_cache.call("stock_hsgt_hold_stock_em:北向:今日排行", ak.stock_hsgt_hold_stock_em, market="北向", indicator="今日排行")
-        #     if hold_rank is not None and not hold_rank.empty:
-        #         # ── 全量聚合：以持股变动估算净资金方向 ──────────────────────────────
-        #         if "今日增持估计-市值" in hold_rank.columns:
-        #             vals = pd.to_numeric(hold_rank["今日增持估计-市值"], errors="coerce").dropna()
-        #             net_increase_total = round(float(vals.sum()) / 1e4, 2)      # 万→亿级
-        #             increase_count = int((vals > 0).sum())
-        #             decrease_count = int((vals < 0).sum())
-        #             net_direction = "净增持" if net_increase_total > 0 else ("净减持" if net_increase_total < 0 else "持平")
-        #             result["北向资金净持仓聚合"] = {
-        #                 "全市场净增持估计(万元)": net_increase_total,
-        #                 "增持个股数": increase_count,
-        #                 "减持个股数": decrease_count,
-        #                 "净方向": net_direction,
-        #                 "说明": (
-        #                     "基于全量北向持股今日增持估计市值求和，净值>0说明北向整体增持A股，<0说明整体减持。"
-        #                     "与ETF方向信号结合使用：两者同向则外资信号更可靠。"
-        #                 ),
-        #             }
-        #         # ── 增持排行前10（定性参考） ──────────────────────────────────────
-        #         top10 = hold_rank.head(10)
-        #         result["沪深港通活跃股前10"] = [
-        #             {
-        #                 "排名": str(row["序号"]) if "序号" in hold_rank.columns else str(i + 1),
-        #                 "代码": str(row["代码"]) if "代码" in hold_rank.columns else "",
-        #                 "名称": str(row["名称"]) if "名称" in hold_rank.columns else "",
-        #                 "涨跌幅(%)": str(row["今日涨跌幅"]) if "今日涨跌幅" in hold_rank.columns else "",
-        #                 "增持市值(万)": str(row["今日增持估计-市值"]) if "今日增持估计-市值" in hold_rank.columns else "",
-        #                 "持股市值(万)": str(row["今日持股-市值"]) if "今日持股-市值" in hold_rank.columns else "",
-        #                 "所属行业": str(row["所属板块"]) if "所属板块" in hold_rank.columns else "",
-        #             }
-        #             for i, (_, row) in enumerate(top10.iterrows())
-        #         ]
-        # except Exception as e:
-        #     logger.error(f"获取沪深港通活跃股失败: {e}")
-        #     result["沪深港通活跃股前10"] = "获取失败"
+        # CPI（居民消费价格指数）与PPI（工业生产者出厂价格指数）：通胀与通缩的监控器。温和的通胀（CPI在2%-3%左右）利好股市，但如果PPI过高，会挤压中下游企业的利润。
 
-        # 3c. 行业资金成交集中度（使用同花顺行业资金流数据）
-        try:
-            industry_flow = api_cache.call("stock_fund_flow_industry:即时", ak.stock_fund_flow_industry, symbol="即时")
-            if industry_flow is not None and not industry_flow.empty:
-                top8 = industry_flow.head(8)
-                result["沪深港通行业成交集中度"] = [
-                    {
-                        "行业": str(row["行业"]) if "行业" in industry_flow.columns else "",
-                        "行业涨跌幅(%)": str(row["行业-涨跌幅"]) if "行业-涨跌幅" in industry_flow.columns else "",
-                        "净额(亿)": str(row["净额"]) if "净额" in industry_flow.columns else "",
-                        "流入资金(亿)": str(row["流入资金"]) if "流入资金" in industry_flow.columns else "",
-                        "领涨股": str(row["领涨股"]) if "领涨股" in industry_flow.columns else "",
-                    }
-                    for _, row in top8.iterrows()
-                ]
-        except Exception as e:
-            logger.error(f"获取行业资金分布失败: {e}")
-            result["沪深港通行业成交集中度"] = "获取失败"
+        # 国债利率（特别是10年期国债收益率）：无风险利率的代表。收益率下行通常利好股市（资金成本变低）；反之，收益率飙升会导致股市估值承压。
 
-        # 4. 涨跌比（使用新浪数据源，东方财富接口被限制）
-        try:
-            stock_changes = api_cache.call("stock_zh_a_spot", ak.stock_zh_a_spot)
-            if stock_changes is not None and not stock_changes.empty:
-                up_count = len(stock_changes[stock_changes["涨跌幅"] > 0])
-                down_count = len(stock_changes[stock_changes["涨跌幅"] < 0])
-                flat_count = len(stock_changes[stock_changes["涨跌幅"] == 0])
-                total = up_count + down_count + flat_count
-                result["涨跌统计"] = {
-                    "上涨": up_count,
-                    "下跌": down_count,
-                    "平盘": flat_count,
-                    "涨跌比": round(up_count / max(down_count, 1), 2),
-                    "上涨占比": round(up_count / max(total, 1) * 100, 2),
-                }
-        except Exception as e:
-            logger.error(f"获取涨跌统计失败: {e}")
-            result["涨跌统计"] = "获取失败"
+        # 人民币汇率（离岸/在岸人民币）：外资流向的晴雨表。人民币升值预期下，北向资金往往大幅流入A股；贬值压力大时，权重股（如白马股、金融股）通常表现不佳。
+
+        # 一、 宏观与基本面（决定“有没有大行情”）
+        # 这是大盘的“天”，决定了市场的中长期趋势和资金的风险偏好。
+        # GDP与PMI（采购经理指数）：宏观经济的体温计。特别是财新PMI和官方制造业PMI，如果低于50%的荣枯线，说明经济收缩，大盘很难有趋势性牛市。
+        # CPI（居民消费价格指数）与PPI（工业生产者出厂价格指数）：通胀与通缩的监控器。温和的通胀（CPI在2%-3%左右）利好股市，但如果PPI过高，会挤压中下游企业的利润。
+        # 国债利率（特别是10年期国债收益率）：无风险利率的代表。收益率下行通常利好股市（资金成本变低）；反之，收益率飙升会导致股市估值承压。
+        # 人民币汇率（离岸/在岸人民币）：外资流向的晴雨表。人民币升值预期下，北向资金往往大幅流入A股；贬值压力大时，权重股（如白马股、金融股）通常表现不佳。
+        # 二、 资金与流动性（决定“行情能走多远”）
+        # 资金是水，股价是船。没有增量资金的牛市都是假牛市。
+        # 央行公开市场操作（OMO/MLF）与社融数据（M1/M2）：流动性的总闸门。M1增速 - M2增速的差值如果扩大，通常意味着企业和居民手中的活钱变多，投资意愿增强，是大盘走强的强烈信号。
+        # 两市成交额（成交量）：行情的“燃料”。大盘要启动，通常需要沪深两市的成交额维持在8000亿-1万亿以上。如果持续缩量，说明资金都在观望，容易形成阴跌。
+        # 北向资金（外资）流向：A股的“聪明钱”。单日净流入/流出超百亿，往往预示着大盘阶段性的顶或底。目前北向资金的持仓和流向仍是重要的风向标。
+        # 融资融券余额（两融余额）：内资杠杆资金的情绪指标。两融余额快速攀升，说明市场风险偏好极高，但也意味着一旦下跌容易引发踩踏。
+        # 三、 技术与趋势面（反映“多空交战结果”）
+        # 这是实战派每天必看的“战报”，用来寻找买卖点。
+        # 主要宽基指数（上证/深成指/创业板/科创50）：不要只看上证。如果上证涨但创业板大跌，往往是“赚指数不赚钱”的二八分化行情。
+        # 均线系统（如20日/60日/120日均线）：趋势的生命线。大盘站稳20日均线，属于短期强势；跌破60日均线，则需要警惕中期趋势走弱。
+        # MACD / KDJ / BOLL（布林带）等指标：用于辅助判断超买超卖和背离。比如大盘指数创新高，但MACD红柱缩短（顶背离），往往是动能衰竭的预警。
+        # 四、 市场情绪与微观结构（感受“真实的体感温度”）
+        # 有时候大盘没跌，但个股哀鸿遍野，这就需要看情绪指标。
+        # 涨跌家数比与赚钱效应：全市场上涨股票数量是2000家还是4000家？这比单纯看指数涨跌真实得多。
+        # 涨停/跌停家数 & 连板高度：短线资金活跃度的极致体现。如果出现百股涨停，且有10连板以上的妖股，说明市场情绪极度亢奋；反之，如果跌停家数超50家，且高位股集体补跌，说明处于退潮期。
+        # 板块轮动节奏（主线清晰度）：大盘健康上涨时，通常有清晰的主线（如AI、新能源、高股息等）。如果每天都是“电风扇”行情（一天轮动五六个题材），说明主力资金没有共识，大盘大概率要变盘向下。
+        # 股指期货升贴水（如沪深300股指期货）：如果期货大幅升水（比现货贵），说明大资金对未来乐观；如果大幅贴水，则是悲观避险情绪主导。
 
         return result
 
@@ -305,154 +102,28 @@ def compute_market_indicators(api_cache: ApiCache) -> Dict[str, Any]:
         return {"错误": str(e)}
 
 
-def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
+def compute_sector_indicators(api_cache) -> Dict[str, Any]:
     """主线板块分析师指标计算：涨停集中度/5日强度等"""
     try:
-        result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        result: Dict[str, Any] = {
+            "指标来源": "akshare实时数据",
+            "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
-        # 1. 板块涨跌幅排行（使用同花顺数据源，东方财富接口被限制）
-        # 尽量提取所有列，包含5日/10日涨跌幅
-        try:
-            sector_rank = api_cache.call("stock_board_industry_summary_ths", ak.stock_board_industry_summary_ths)
-            if sector_rank is not None and not sector_rank.empty:
-                top_sectors = sector_rank.nlargest(10, "涨跌幅") if "涨跌幅" in sector_rank.columns else sector_rank.head(10)
-                result["涨幅前10板块"] = []
-                for _, row in top_sectors.iterrows():
-                    item = {}
-                    for col in sector_rank.columns:
-                        if col in ["序号"]:
-                            continue
-                        val = row[col]
-                        item[col] = round(float(val), 2) if pd.notna(val) and isinstance(val, (int, float)) else (str(val) if pd.notna(val) else "")
-                    result["涨幅前10板块"].append(item)
-        except Exception as e:
-            logger.error(f"获取板块排行失败: {e}")
-            result["涨幅前10板块"] = "获取失败"
+        # 1. 板块涨跌幅排行
+        result["涨幅前10板块"] = stock_board_industry_rank(api_cache)
 
-        # 2. 涨停股统计（保留全部字段，尤其是连板数、所属行业，供LLM分析涨停集中度）
-        try:
-            today_str = datetime.now().strftime("%Y%m%d")
-            zt_stocks = api_cache.call(f"stock_zt_pool_em:{today_str}", ak.stock_zt_pool_em, date=today_str)
-            if zt_stocks is not None and not zt_stocks.empty:
-                result["涨停统计"] = {
-                    "涨停数量": len(zt_stocks),
-                    "涨停股列表top30": [
-                        {col: str(row[col]) for col in zt_stocks.columns if col != "序号"}
-                        for _, row in zt_stocks.head(30).iterrows()
-                    ] if len(zt_stocks) > 0 else [],
-                }
-        except Exception as e:
-            logger.error(f"获取涨停统计失败: {e}")
-            result["涨停统计"] = "获取失败"
+        # 2. 涨停股统计
+        result["涨停统计"] = stock_zt_pool_stats(api_cache)
 
-        # 3. 连板股统计（强势股池：连续涨停2板及以上的股票，保留全字段）
-        try:
-            today_str = datetime.now().strftime("%Y%m%d")
-            lb_stocks = api_cache.call(f"stock_zt_pool_strong_em:{today_str}", ak.stock_zt_pool_strong_em, date=today_str)
-            if lb_stocks is not None and not lb_stocks.empty:
-                # 过滤掉成交额为0的停牌股票
-                if "成交额" in lb_stocks.columns:
-                    lb_stocks = lb_stocks[lb_stocks["成交额"].astype(float) > 0]
-                lb_stocks_length = len(lb_stocks)
-                max_len = 50 if lb_stocks_length > 50 else lb_stocks_length
-                result["强势股池统计"] = {
-                    "强势股池数量": lb_stocks_length,
-                    "强势股池股列表top50": [
-                        {col: str(row[col]) for col in lb_stocks.columns if col != "序号"}
-                        for _, row in lb_stocks.head(max_len).iterrows()
-                    ] if lb_stocks_length > 0 else [],
-                }
-        except Exception as e:
-            logger.error(f"获取连板统计失败: {e}")
-            result["强势股池统计"] = "获取失败"
+        # 3. 连板股统计（强势股池）
+        result["强势股池统计"] = stock_lb_pool_stats(api_cache)
 
-        # 4. 封板比（Seal Ratio）——衡量涨停板封单意愿强度
-        # 封板比 = 封板资金 / 成交额，越高说明主力封板意愿越强、涨停越牢固
-        try:
-            today_str = datetime.now().strftime("%Y%m%d")
-            # 复用已缓存的涨停池数据
-            zt_for_seal = api_cache.call(f"stock_zt_pool_em:{today_str}", ak.stock_zt_pool_em, date=today_str)
-            if zt_for_seal is not None and not zt_for_seal.empty:
-                seal_df = zt_for_seal.copy()
-                # 过滤停牌（成交额为0）
-                if "成交额" in seal_df.columns:
-                    seal_df = seal_df[pd.to_numeric(seal_df["成交额"], errors="coerce") > 0]
-                seal_ratios = []
-                if "封板资金" in seal_df.columns and "成交额" in seal_df.columns:
-                    seal_df["_封板资金_num"] = pd.to_numeric(seal_df["封板资金"], errors="coerce")
-                    seal_df["_成交额_num"] = pd.to_numeric(seal_df["成交额"], errors="coerce")
-                    seal_df["_封板比"] = seal_df["_封板资金_num"] / seal_df["_成交额_num"].replace(0, float("nan"))
-                    valid = seal_df["_封板比"].dropna()
-                    if not valid.empty:
-                        avg_seal = round(float(valid.mean()), 3)
-                        high_seal_count = int((valid > 1.0).sum())   # 封板比>1意味着封单超过当日成交额，极牢固
-                        seal_ratios = [
-                            {
-                                "代码": str(row["代码"]) if "代码" in seal_df.columns else "",
-                                "名称": str(row["名称"]) if "名称" in seal_df.columns else "",
-                                "封板比": round(float(row["_封板比"]), 3),
-                                "连板数": str(row["连板数"]) if "连板数" in seal_df.columns else "",
-                            }
-                            for _, row in seal_df.nlargest(10, "_封板比").iterrows()
-                            if not pd.isna(row["_封板比"])
-                        ]
-                        result["封板比统计"] = {
-                            "平均封板比": avg_seal,
-                            "封板比>1的个股数(极牢固)": high_seal_count,
-                            "封板比前10": seal_ratios,
-                            "说明": (
-                                "封板比 = 封板资金/成交额。>1表示封单超过全日成交额，主力锁仓意愿极强；"
-                                "平均封板比越高，整体涨停质量越好，明日溢价概率更高。"
-                            ),
-                        }
-        except Exception as e:
-            logger.error(f"计算封板比失败: {e}")
-            result["封板比统计"] = "获取失败"
+        # 4. 封板比
+        result["封板比统计"] = stock_seal_ratio(api_cache)
 
-        # 5. 炸板率（Broken Limit Rate）——市场惜售意愿的反向指标
-        # 炸板率 = 曾涨停但未收涨停数 / (当日涨停收盘数 + 炸板数)
-        # 炸板率越高说明市场获利了结意愿强、情绪不稳定
-        try:
-            today_str = datetime.now().strftime("%Y%m%d")
-            dtgc_stocks = api_cache.call(
-                f"stock_zt_pool_dtgc_em:{today_str}", ak.stock_zt_pool_dtgc_em, date=today_str
-            )
-            zt_count_ref = result.get("涨停统计", {})
-            zt_closed = zt_count_ref.get("涨停数量", 0) if isinstance(zt_count_ref, dict) else 0
-            if dtgc_stocks is not None and not dtgc_stocks.empty:
-                broken_count = len(dtgc_stocks)
-                total_attempts = zt_closed + broken_count
-                broken_rate = round(broken_count / max(total_attempts, 1) * 100, 1)
-                emotion_label = (
-                    "情绪极度不稳" if broken_rate >= 40 else
-                    "情绪偏弱" if broken_rate >= 25 else
-                    "情绪正常" if broken_rate >= 10 else
-                    "情绪偏强"
-                )
-                result["炸板统计"] = {
-                    "炸板数": broken_count,
-                    "涨停收盘数": zt_closed,
-                    "炸板率(%)": broken_rate,
-                    "情绪判断": emotion_label,
-                    "炸板股列表(前10)": [
-                        {col: str(row[col]) for col in dtgc_stocks.columns if col != "序号"}
-                        for _, row in dtgc_stocks.head(10).iterrows()
-                    ],
-                    "说明": (
-                        "炸板率 = 炸板数/(涨停收盘数+炸板数)。"
-                        "<10%为情绪偏强（主力锁仓）；≥25%为情绪偏弱（散户派发）；≥40%为情绪极度不稳，慎追板。"
-                    ),
-                }
-            else:
-                result["炸板统计"] = {
-                    "炸板数": 0,
-                    "涨停收盘数": zt_closed,
-                    "炸板率(%)": 0.0,
-                    "情绪判断": "情绪偏强（无炸板）",
-                }
-        except Exception as e:
-            logger.error(f"计算炸板率失败: {e}")
-            result["炸板统计"] = "获取失败"
+        # 5. 炸板率（需要依赖涨停统计中的"涨停数量"）
+        result["炸板统计"] = stock_broken_limit_rate(api_cache, result.get("涨停统计"))
 
         return result
 
@@ -463,70 +134,28 @@ def compute_sector_indicators(api_cache: ApiCache) -> Dict[str, Any]:
         return {"错误": str(e)}
 
 
-def compute_force_indicators(api_cache: ApiCache) -> Dict[str, Any]:
+def compute_force_indicators(api_cache) -> Dict[str, Any]:
     """市场合力分析师指标计算：主力+散户双向净流入等"""
     try:
-        result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        result: Dict[str, Any] = {
+            "指标来源": "akshare实时数据",
+            "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
-        # 1. 行业资金流向（使用同花顺行业资金流，替代东方财富接口）
-        try:
-            industry_fund = api_cache.call("stock_fund_flow_industry:即时", ak.stock_fund_flow_industry, symbol="即时")
-            if industry_fund is not None and not industry_fund.empty:
-                result["主力资金流向top20"] = []
-                for _, row in industry_fund.head(20).iterrows():
-                    item = {}
-                    if "行业" in industry_fund.columns:
-                        item["行业"] = str(row["行业"])
-                    if "行业-涨跌幅" in industry_fund.columns:
-                        item["涨跌幅(%)"] = str(row["行业-涨跌幅"])
-                    if "净额" in industry_fund.columns:
-                        item["净额(亿)"] = str(row["净额"])
-                    if "流入资金" in industry_fund.columns:
-                        item["流入资金(亿)"] = str(row["流入资金"])
-                    if "流出资金" in industry_fund.columns:
-                        item["流出资金(亿)"] = str(row["流出资金"])
-                    if "领涨股" in industry_fund.columns:
-                        item["领涨股"] = str(row["领涨股"])
-                    result["主力资金流向top20"].append(item)
-        except Exception as e:
-            logger.error(f"获取主力资金流向失败: {e}")
+        # 1. 行业资金流向
+        industry_top20 = stock_industry_fund_flow(api_cache)
+        if industry_top20 == "获取失败":
+            # 保留与原逻辑一致：失败时字段名为 "主力资金流向"，成功时为 "主力资金流向top20"
             result["主力资金流向"] = "获取失败"
+        else:
+            result["主力资金流向top20"] = industry_top20
 
-        # 2. 个股资金流向（使用同花顺个股资金流，替代东方财富接口）
-        # 只保留主板股票，排除科创板(688)、创业板(300/301)、北交所(8开头)
-        try:
-            stock_fund = api_cache.call("stock_fund_flow_individual:即时", ak.stock_fund_flow_individual, symbol="即时")
-            if stock_fund is not None and not stock_fund.empty:
-                # 过滤：只保留主板股票
-                if "股票代码" in stock_fund.columns:
-                    stock_fund = stock_fund[stock_fund["股票代码"].astype(str).apply(is_main_board_stock)]
-                    logger.info(f"个股资金流向过滤后剩余主板股票: {len(stock_fund)} 条")
-
-                # 按净额降序排序，确保 top20 是资金净流入最多的主板股
-                if "净额" in stock_fund.columns:
-                    stock_fund = stock_fund.sort_values("净额", ascending=False)
-                top_inflow = stock_fund.head(20)
-                result["个股主力净流入top20"] = []
-                for _, row in top_inflow.iterrows():
-                    item = {}
-                    if "股票代码" in stock_fund.columns:
-                        item["代码"] = str(row["股票代码"])
-                    if "股票简称" in stock_fund.columns:
-                        item["名称"] = str(row["股票简称"])
-                    if "涨跌幅" in stock_fund.columns:
-                        item["涨跌幅"] = str(row["涨跌幅"])
-                    if "净额" in stock_fund.columns:
-                        item["净额"] = str(row["净额"])
-                    if "流入资金" in stock_fund.columns:
-                        item["流入资金"] = str(row["流入资金"])
-                    if "流出资金" in stock_fund.columns:
-                        item["流出资金"] = str(row["流出资金"])
-                    if "换手率" in stock_fund.columns:
-                        item["换手率"] = str(row["换手率"])
-                    result["个股主力净流入top20"].append(item)
-        except Exception as e:
-            logger.error(f"获取个股资金流向失败: {e}")
+        # 2. 个股资金流向
+        individual_top20 = stock_individual_fund_flow(api_cache)
+        if individual_top20 == "获取失败":
             result["个股资金流向"] = "获取失败"
+        else:
+            result["个股主力净流入top20"] = individual_top20
 
         return result
 
@@ -537,51 +166,28 @@ def compute_force_indicators(api_cache: ApiCache) -> Dict[str, Any]:
         return {"错误": str(e)}
 
 
-def compute_leader_indicators(api_cache: ApiCache) -> Dict[str, Any]:
+def compute_leader_indicators(api_cache) -> Dict[str, Any]:
     """股票龙头分析师指标计算：连板/板块排名/成交量等"""
     try:
-        result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        result: Dict[str, Any] = {
+            "指标来源": "akshare实时数据",
+            "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
         # 1. 涨停池（龙头候选）
-        try:
-            today_str = datetime.now().strftime("%Y%m%d")
-            zt_pool = api_cache.call(f"stock_zt_pool_em:{today_str}", ak.stock_zt_pool_em, date=today_str)
-            if zt_pool is not None and not zt_pool.empty:
-                # 过滤掉成交额为0的停牌股票
-                if "成交额" in zt_pool.columns:
-                    zt_pool = zt_pool[zt_pool["成交额"].astype(float) > 0]
-                zt_pool_length = len(zt_pool)
-                max_len = 20 if zt_pool_length > 20 else zt_pool_length
-                result["涨停龙头股前20"] = []
-                for _, row in zt_pool.head(max_len).iterrows():
-                    item = {}
-                    for col in zt_pool.columns:
-                        if col == "序号":
-                            continue
-                        item[col] = str(row[col])
-                    result["涨停龙头股前20"].append(item)
-        except Exception as e:
-            logger.error(f"获取涨停池失败: {e}")
+        leader = stock_zt_pool_leader(api_cache)
+        if leader == "获取失败":
+            # 与原逻辑一致：失败时字段名为 "涨停龙头股"，成功时为 "涨停龙头股前20"
             result["涨停龙头股"] = "获取失败"
+        else:
+            result["涨停龙头股前20"] = leader
 
-        # 2. 强势股（涨幅前20，使用新浪数据源，只保留主板）
-        try:
-            stock_rank = api_cache.call("stock_zh_a_spot", ak.stock_zh_a_spot)
-            if stock_rank is not None and not stock_rank.empty:
-                # 过滤主板，避免科创/创业/北交混入
-                if "代码" in stock_rank.columns:
-                    stock_rank = stock_rank[stock_rank["代码"].astype(str).apply(is_main_board_stock)]
-                top_stocks = stock_rank.nlargest(20, "涨跌幅")
-                result["强势股前20"] = []
-                for _, row in top_stocks.iterrows():
-                    item = {}
-                    for col in ["代码", "名称", "最新价", "涨跌幅", "成交量", "成交额", "换手率"]:
-                        if col in stock_rank.columns:
-                            item[col] = str(row[col])
-                    result["强势股前20"].append(item)
-        except Exception as e:
-            logger.error(f"获取强势股排行失败: {e}")
+        # 2. 强势股
+        strong = stock_strong_rank(api_cache)
+        if strong == "获取失败":
             result["强势股排行"] = "获取失败"
+        else:
+            result["强势股前20"] = strong
 
         return result
 
@@ -592,77 +198,28 @@ def compute_leader_indicators(api_cache: ApiCache) -> Dict[str, Any]:
         return {"错误": str(e)}
 
 
-def compute_risk_indicators(api_cache: ApiCache, candidate_stock_codes: List[str] = None) -> Dict[str, Any]:
+def compute_risk_indicators(api_cache, candidate_stock_codes: List[str] = None) -> Dict[str, Any]:
     """风险分析师指标计算：排除ST/新股/退市等，并拉取候选股票实时行情"""
     try:
-        result = {"指标来源": "akshare实时数据", "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        result: Dict[str, Any] = {
+            "指标来源": "akshare实时数据",
+            "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
-        # 1. 次新股（使用新浪数据源，东方财富接口被限制）
-        try:
-            new_stocks = api_cache.call("stock_zh_a_new", ak.stock_zh_a_new)
-            if new_stocks is not None and not new_stocks.empty:
-                result["次新股"] = {
-                    "数量": len(new_stocks),
-                    "部分列表": [
-                        {"代码": str(row["code"]) if "code" in new_stocks.columns else "",
-                         "名称": str(row["name"]) if "name" in new_stocks.columns else ""}
-                        for _, row in new_stocks.head(20).iterrows()
-                    ],
-                }
-        except Exception as e:
-            logger.error(f"获取次新股失败: {e}")
-            result["次新股"] = "获取失败"
+        # 1. 次新股
+        result["次新股"] = stock_new_list(api_cache)
 
-        # 2. 候选股票实时行情（让LLM能真正评估涨幅异常、流动性、ST等）
+        # 2. 候选股票实时行情
         if candidate_stock_codes:
-            try:
-                spot = api_cache.call("stock_zh_a_spot", ak.stock_zh_a_spot)
-                if spot is not None and not spot.empty and "代码" in spot.columns:
-                    target = spot[spot["代码"].isin(candidate_stock_codes)]
-                    if not target.empty:
-                        result["候选标的实时行情"] = [
-                            {col: str(row[col]) for col in
-                             ["代码", "名称", "最新价", "涨跌幅", "成交量", "成交额", "换手率", "振幅", "52周最高", "52周最低"]
-                             if col in spot.columns}
-                            for _, row in target.iterrows()
-                        ]
-                    else:
-                        result["候选标的实时行情"] = f"未找到候选代码 {candidate_stock_codes} 的实时数据"
-            except Exception as e:
-                logger.error(f"获取候选标的实时行情失败: {e}")
-                result["候选标的实时行情"] = "获取失败"
+            spot_val = stock_candidate_spot(api_cache, candidate_stock_codes)
+            if spot_val is not None:
+                result["候选标的实时行情"] = spot_val
 
-        # 3. 候选股票基本面数据（防止纯资金流策略选出垃圾股）
-        # 获取 PE、PB、总市值等基础财务指标，作为基本面安全底线过滤
+        # 3. 候选股票基本面数据
         if candidate_stock_codes:
-            try:
-                fundamentals = {}
-                for code in candidate_stock_codes[:3]:   # 最多3支，控制API调用次数
-                    try:
-                        info_df = api_cache.call(
-                            f"stock_individual_info_em:{code}",
-                            ak.stock_individual_info_em,
-                            symbol=code,
-                        )
-                        if info_df is not None and not info_df.empty and "item" in info_df.columns and "value" in info_df.columns:
-                            info_dict = dict(zip(info_df["item"].astype(str), info_df["value"].astype(str)))
-                            fundamentals[code] = {
-                                "市盈率_动(PE)": info_dict.get("市盈率(动)", "N/A"),
-                                "市净率(PB)": info_dict.get("市净率", "N/A"),
-                                "总市值": info_dict.get("总市值", "N/A"),
-                                "流通市值": info_dict.get("流通市值", "N/A"),
-                                "所属行业": info_dict.get("行业", "N/A"),
-                            }
-                        else:
-                            fundamentals[code] = {"提示": "无法获取基本面数据"}
-                    except Exception as e_code:
-                        logger.error(f"获取候选股基本面数据失败 {code}: {e_code}")
-                        fundamentals[code] = {"提示": f"获取失败: {e_code}"}
-                if fundamentals:
-                    result["候选标的基本面"] = fundamentals
-            except Exception as e:
-                logger.error(f"批量获取候选标的基本面失败: {e}")
-                result["候选标的基本面"] = "获取失败"
+            fundamentals_val = stock_candidate_fundamentals(api_cache, candidate_stock_codes)
+            if fundamentals_val is not None:
+                result["候选标的基本面"] = fundamentals_val
 
         return result
 
@@ -671,6 +228,7 @@ def compute_risk_indicators(api_cache: ApiCache, candidate_stock_codes: List[str
     except Exception as e:
         logger.error(f"计算风险指标失败: {e}")
         return {"错误": str(e)}
+
 
 
 # ============================================================
@@ -974,7 +532,6 @@ class AiSelectorService:
         
         始终使用系统自动推荐的已启用模型，确保 API Key、provider 等均来自数据库配置。
         """
-        from app.services.model_capability_service import get_model_capability_service
 
         capability_service = get_model_capability_service()
         research_depth = "标准"
@@ -1063,17 +620,22 @@ class AiSelectorService:
 
         return {"task_id": task_id, "status": "pending", "message": "AI选股任务已创建"}
 
-    async def run_analysis(self, quick_llm, deep_llm, api_cache: ApiCache) -> Dict[str, Any]:
+    async def run_analysis(self, quick_llm, deep_llm, api_cache: ApiCache,
+                           on_progress=None) -> Dict[str, Any]:
         """执行AI选股核心分析流程（不涉及任务管理/MongoDB，可供外部直接调用）
 
         Args:
             quick_llm: 快速模型LLM实例
             deep_llm: 深度模型LLM实例
             api_cache: API缓存实例
+            on_progress: 可选的异步进度回调 async (progress: int, step: str) -> None
 
         Returns:
             包含 analyst_results, decision, decision_report, early_stop 等字段的字典
         """
+        async def _report(progress: int, step: str):
+            if on_progress:
+                await on_progress(progress, step)
         analyst_results = []
         decision = None
         decision_report = ""
@@ -1091,8 +653,10 @@ class AiSelectorService:
         leading_stocks: List[Dict] = []
 
         # ====== Step 1: 大盘分析师 ======
+        await _report(15, "正在获取大盘数据...")
         market_indicators = await asyncio.to_thread(compute_market_indicators, api_cache)
 
+        await _report(20, "大盘分析师正在分析...")
         market_report = await asyncio.to_thread(
             self._run_analyst, quick_llm, "大盘分析师", MARKET_ANALYST_PROMPT, market_indicators
         )
@@ -1119,7 +683,10 @@ class AiSelectorService:
 
         # ====== Step 2: 主线板块分析师 ======
         if not early_stop_reason:
+            await _report(32, "正在获取板块数据...")
             sector_indicators = await asyncio.to_thread(compute_sector_indicators, api_cache)
+
+            await _report(38, "主线板块分析师正在分析...")
 
             market_summary = self._extract_conclusion(market_report, "大盘分析师")
             sector_report = await asyncio.to_thread(
@@ -1151,7 +718,10 @@ class AiSelectorService:
 
         # ====== Step 3: 市场合力分析师 ======
         if not early_stop_reason:
+            await _report(52, "正在获取资金流向数据...")
             force_indicators = await asyncio.to_thread(compute_force_indicators, api_cache)
+
+            await _report(57, "市场合力分析师正在分析...")
 
             force_report = await asyncio.to_thread(
                 self._run_analyst, quick_llm, "市场合力分析师", FORCE_ANALYST_PROMPT,
@@ -1183,7 +753,10 @@ class AiSelectorService:
 
         # ====== Step 4: 股票龙头分析师 ======
         if not early_stop_reason:
+            await _report(68, "正在获取龙头股数据...")
             leader_indicators = await asyncio.to_thread(compute_leader_indicators, api_cache)
+
+            await _report(73, "股票龙头分析师正在分析...")
 
             leader_report = await asyncio.to_thread(
                 self._run_analyst, quick_llm, "股票龙头分析师", LEADER_ANALYST_PROMPT,
@@ -1216,12 +789,13 @@ class AiSelectorService:
         # ====== Step 5: 风险分析师 ======
         if not early_stop_reason:
             leading_stock_codes = [s.get("code", "") for s in leading_stocks if s.get("code")]
+            await _report(82, "正在获取风险数据...")
             risk_indicators = await asyncio.to_thread(
                 compute_risk_indicators, api_cache, leading_stock_codes
             )
 
+            await _report(86, "风险分析师正在评估...")
             risk_report = await asyncio.to_thread(
-                self._run_analyst, quick_llm, "风险分析师", RISK_ANALYST_PROMPT,
                 risk_indicators,
                 extra_params={"recommended_stocks": recommended_stocks_str}
             )
@@ -1251,6 +825,7 @@ class AiSelectorService:
 
         # ====== Step 6: 决策分析师（使用深度模型） ======
         if not early_stop_reason:
+            await _report(93, "决策分析师正在综合研判...")
             decision_report = await asyncio.to_thread(
                 self._run_decision_analyst, deep_llm,
                 market_report, sector_report, force_report, leader_report, risk_report,
@@ -1297,11 +872,11 @@ class AiSelectorService:
         5. 风险分析师 -> 风险高则终止，无风险则传安全标的给决策分析师
         6. 决策分析师 -> 给出最终选股决策
         """
+        api_cache = ApiCache()
         try:
             await self._update_status(task_id, "running", 5, "正在初始化AI选股分析...")
 
             start_time = time.time()
-            api_cache = ApiCache()
 
             await self._update_status(task_id, "running", 8, "正在初始化AI模型...")
             config = await asyncio.to_thread(self._build_llm_config)
@@ -1309,8 +884,13 @@ class AiSelectorService:
 
             await self._update_status(task_id, "running", 10, "正在执行AI选股分析...")
 
+            async def _on_progress(progress: int, step: str):
+                await self._update_status(task_id, "running", progress, step)
+
             # 调用核心分析逻辑
-            analysis_result = await self.run_analysis(quick_llm, deep_llm, api_cache)
+            analysis_result = await self.run_analysis(
+                quick_llm, deep_llm, api_cache, on_progress=_on_progress
+            )
 
             # ====== 保存完整结果 ======
             elapsed = time.time() - start_time
@@ -1331,7 +911,7 @@ class AiSelectorService:
 
             try:
                 db = get_mongo_db()
-                serializable_result = self._make_serializable(result)
+                serializable_result = make_serializable(result)
                 await db.ai_selector_tasks.update_one(
                     {"task_id": task_id},
                     {"$set": {
@@ -1441,21 +1021,10 @@ class AiSelectorService:
     # 结构化数据提取方法（用于Agent间数据传递）
     # ============================================================
 
-    def _extract_json_block(self, text: str) -> Optional[Dict]:
-        """从文本中提取最后一个```json代码块并解析"""
-        import re
-        try:
-            matches = re.findall(r'```json\s*(.*?)\s*```', text, re.DOTALL)
-            if matches:
-                return json.loads(matches[-1])
-        except (json.JSONDecodeError, Exception) as e:
-            logger.error(f"解析JSON代码块失败: {e}")
-        return None
-
     def _extract_market_sentiment(self, report: str) -> str:
         """从大盘分析师报告中提取市场情绪判断"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data and "market_sentiment" in data:
                 sentiment = str(data["market_sentiment"])
                 if "偏空" in sentiment or "看空" in sentiment:
@@ -1474,7 +1043,7 @@ class AiSelectorService:
     def _extract_sector_themes(self, report: str) -> List[str]:
         """从板块分析师报告中提取主线板块列表"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data:
                 if data.get("has_main_sector") is False:
                     return []
@@ -1483,17 +1052,17 @@ class AiSelectorService:
         except Exception:
             pass
 
-        import re
-        match = re.search(r'主线板块[：:]\s*(.+?)[\n。]', report)
+        # Fix: 限制匹配长度（≤20字符），防止把整句话误识别为板块名
+        match = re.search(r'主线板块[：:]\s*(.{2,20}?)[\n。，,；;]', report)
         if match:
-            sectors = re.split(r'[、,，]', match.group(1))
+            sectors = re.split(r'[、/]', match.group(1))
             return [s.strip().strip('「」""''') for s in sectors if s.strip()]
         return []
 
     def _extract_candidate_stocks(self, report: str) -> List[Dict]:
         """从合力分析师报告中提取候选股票（2-3支）"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data and "recommended_stocks" in data:
                 stocks = data["recommended_stocks"]
                 if isinstance(stocks, list) and len(stocks) > 0:
@@ -1511,7 +1080,7 @@ class AiSelectorService:
     def _extract_leading_stocks(self, report: str) -> List[Dict]:
         """从龙头分析师报告中提取龙头股（1-2支）"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data and "leading_stocks" in data:
                 stocks = data["leading_stocks"]
                 if isinstance(stocks, list) and len(stocks) > 0:
@@ -1529,7 +1098,7 @@ class AiSelectorService:
     def _extract_risk_level(self, report: str) -> str:
         """从风险分析师报告中提取风险等级"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data and "risk_level" in data:
                 level = str(data["risk_level"])
                 if "高" in level:
@@ -1549,7 +1118,7 @@ class AiSelectorService:
     def _extract_safe_stocks(self, report: str) -> List[Dict]:
         """从风险分析师报告中提取安全标的"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data and "safe_stocks" in data:
                 stocks = data["safe_stocks"]
                 if isinstance(stocks, list) and len(stocks) > 0:
@@ -1582,11 +1151,13 @@ class AiSelectorService:
 
     def _parse_decision(self, decision_report: str) -> Dict[str, Any]:
         """解析决策分析师的结论"""
-        import re  # 统一在方法顶部导入，避免重复声明
+        import re
         try:
-            json_match = re.search(r'```json\s*(.*?)\s*```', decision_report, re.DOTALL)
-            if json_match:
-                decision = json.loads(json_match.group(1))
+            # Fix: 使用 findall 取最后一个 JSON 块，与 _extract_json_block 保持一致
+            # 避免报告中示例 JSON 在前、真实 JSON 在后时解析错误
+            matches = re.findall(r'```json\s*(.*?)\s*```', decision_report, re.DOTALL)
+            if matches:
+                decision = json.loads(matches[-1])
                 return decision
         except Exception as e:
             logger.error(f"解析决策JSON失败: {e}")
@@ -1612,7 +1183,7 @@ class AiSelectorService:
     def _extract_conclusion(self, report: str, analyst_name: str = "") -> str:
         """从分析报告中提取简要结论，优先使用 JSON 结构化数据"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data:
                 if analyst_name == "大盘分析师":
                     sentiment = str(data.get("market_sentiment", ""))
@@ -1666,19 +1237,6 @@ class AiSelectorService:
         elif "低风险" in report or "风险较低" in report or "风险低" in report or "风险可控" in report:
             return "success"
         return "warning"
-
-    def _make_serializable(self, obj):
-        """将对象转换为可序列化的格式"""
-        if isinstance(obj, dict):
-            return {k: self._make_serializable(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [self._make_serializable(v) for v in obj]
-        elif isinstance(obj, datetime):
-            return obj.isoformat()
-        elif isinstance(obj, (int, float, str, bool, type(None))):
-            return obj
-        else:
-            return str(obj)
 
     async def _update_status(self, task_id: str, status: str, progress: int,
                              current_step: str, error_message: str = None):

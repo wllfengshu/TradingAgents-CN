@@ -392,9 +392,9 @@ def _get_log_directory() -> str:
     """
     获取日志目录路径
     优先级：
-    1. 从日志配置文件读取（支持Docker环境）
-    2. 从settings配置读取
-    3. 使用默认值 ./logs
+    1. 环境变量 LOG_DIR（由 .env 提供，与 app/core/logging_config.py 保持一致）
+    2. settings.log_dir
+    3. Docker 环境默认 /app/logs，否则 ./logs
     """
     import os
     from pathlib import Path
@@ -411,46 +411,13 @@ def _get_log_directory() -> str:
         logger.info(f"🔍 [_get_log_directory] /.dockerenv存在: {dockerenv_exists}")
         logger.info(f"🔍 [_get_log_directory] 判定为Docker环境: {is_docker}")
 
-        # 尝试从日志配置文件读取
-        try:
-            import tomllib as toml_loader
-            logger.info(f"🔍 [_get_log_directory] 使用 tomllib 加载TOML")
-        except ImportError:
-            try:
-                import tomli as toml_loader
-                logger.info(f"🔍 [_get_log_directory] 使用 tomli 加载TOML")
-            except ImportError:
-                toml_loader = None
-                logger.warning(f"⚠️ [_get_log_directory] 无法导入TOML加载器")
+        # 1) 优先从环境变量 LOG_DIR 读取（与 logging_config 一致）
+        env_log_dir = os.environ.get("LOG_DIR", "").strip()
+        if env_log_dir:
+            logger.info(f"✅ [_get_log_directory] 从环境变量 LOG_DIR 读取: {env_log_dir}")
+            return env_log_dir
 
-        if toml_loader:
-            # 根据环境选择配置文件
-            profile = os.environ.get("LOGGING_PROFILE", "")
-            logger.info(f"🔍 [_get_log_directory] LOGGING_PROFILE: {profile}")
-
-            cfg_path = Path("config/logging_docker.toml") if profile.lower() == "docker" or is_docker else Path("config/logging.toml")
-            logger.info(f"🔍 [_get_log_directory] 选择配置文件: {cfg_path}")
-            logger.info(f"🔍 [_get_log_directory] 配置文件存在: {cfg_path.exists()}")
-
-            if cfg_path.exists():
-                try:
-                    with cfg_path.open("rb") as f:
-                        toml_data = toml_loader.load(f)
-
-                    logger.info(f"🔍 [_get_log_directory] 成功加载配置文件")
-
-                    # 从配置文件读取日志目录
-                    handlers_cfg = toml_data.get("logging", {}).get("handlers", {})
-                    file_handler_cfg = handlers_cfg.get("file", {})
-                    log_dir = file_handler_cfg.get("directory")
-
-                    logger.info(f"🔍 [_get_log_directory] 配置文件中的日志目录: {log_dir}")
-
-                    if log_dir:
-                        logger.info(f"✅ [_get_log_directory] 从日志配置文件读取日志目录: {log_dir}")
-                        return log_dir
-                except Exception as e:
-                    logger.warning(f"⚠️ [_get_log_directory] 读取日志配置文件失败: {e}", exc_info=True)
+        # 兼容历史 toml 读取分支（已废弃，logging.toml 已移除，请使用 LOG_* 环境变量）
 
         # 回退到settings配置
         try:

@@ -14,7 +14,7 @@ import json
 import logging
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo
 
@@ -31,7 +31,7 @@ from app.services.simple_analysis_service import (
 )
 from app.models.analysis import SingleAnalysisRequest, AnalysisParameters
 from app.core.database import get_mongo_db
-from app.services.ai_selector_service import AiSelectorService, ApiCache
+from app.services.ai_selector.ai_selector_service import AiSelectorService, ApiCache
 
 logger = logging.getLogger("app.services.ai_trading_service")
 
@@ -1258,6 +1258,9 @@ class AiTradingService:
             return None
 
     async def get_records(self, user_id: str, mode: str = None,
+                          status: str = None,
+                          start_date: str = None,
+                          end_date: str = None,
                           page: int = 1, page_size: int = 20) -> Dict[str, Any]:
         """获取AI交易操作记录"""
         try:
@@ -1265,6 +1268,24 @@ class AiTradingService:
             query = {"user_id": user_id}
             if mode:
                 query["mode"] = mode
+            if status:
+                query["status"] = status
+
+            if start_date or end_date:
+                shanghai_tz = ZoneInfo("Asia/Shanghai")
+                utc_tz = ZoneInfo("UTC")
+                created_at_query = {}
+
+                if start_date:
+                    start_dt = datetime.fromisoformat(start_date).replace(tzinfo=shanghai_tz)
+                    created_at_query["$gte"] = start_dt.astimezone(utc_tz)
+
+                if end_date:
+                    end_dt = datetime.fromisoformat(end_date).replace(tzinfo=shanghai_tz) + timedelta(days=1)
+                    created_at_query["$lt"] = end_dt.astimezone(utc_tz)
+
+                if created_at_query:
+                    query["created_at"] = created_at_query
 
             total = await db.ai_trading_tasks.count_documents(query)
             skip = (page - 1) * page_size
@@ -1274,34 +1295,15 @@ class AiTradingService:
             ).sort("created_at", -1).skip(skip).limit(page_size)
             tasks = await cursor.to_list(length=page_size)
 
-            # 转换为前端需要的记录格式
-            items = []
             for task in tasks:
-                result = task.get("result", {})
-                decision = result.get("decision", {})
-                trading_signals = result.get("trading_signals", [])
+                result = task.get("result")
+                if isinstance(result, dict) and "user_id" not in result:
+                    result["user_id"] = task.get("user_id")
 
-                # 提取涉及的股票
-                stocks = []
-                for s in trading_signals:
-                    stocks.append({"code": s.get("code", ""), "name": s.get("name", "")})
-
-                items.append({
-                    "id": task.get("task_id", ""),
-                    "mode": task.get("mode", "paper"),
-                    "action": decision.get("action", ""),
-                    "status": task.get("status", ""),
-                    "stocks": stocks,
-                    "detail": decision.get("reasoning", ""),
-                    "elapsed_time": result.get("elapsed_time"),
-                    "created_at": task.get("created_at", ""),
-                    "updated_at": task.get("updated_at", ""),
-                })
-
-            return {"items": items, "total": total, "page": page, "page_size": page_size}
+            return {"tasks": tasks, "total": total, "page": page, "page_size": page_size}
         except Exception as e:
             logger.error(f"获取AI交易记录失败: {e}")
-            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+            return {"tasks": [], "total": 0, "page": page, "page_size": page_size}
 
 
 # 单例

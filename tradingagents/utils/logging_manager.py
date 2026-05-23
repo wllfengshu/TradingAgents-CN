@@ -137,26 +137,11 @@ class TradingAgentsLogger:
         }
 
     def _load_config_file(self) -> Optional[Dict[str, Any]]:
-        """从配置文件加载日志配置"""
-        # 确定配置文件路径
-        config_paths = [
-            'config/logging_docker.toml' if os.getenv('DOCKER_CONTAINER') == 'true' else None,
-            'config/logging.toml',
-            './logging.toml'
-        ]
+        """从配置文件加载日志配置
 
-        for config_path in config_paths:
-            if config_path and Path(config_path).exists():
-                try:
-                    with open(config_path, 'r', encoding='utf-8') as f:
-                        config_data = toml.load(f)
-
-                    # 转换配置格式
-                    return self._convert_toml_config(config_data)
-                except Exception as e:
-                    _bootstrap_logger.warning(f"警告: 无法加载配置文件 {config_path}: {e}")
-                    continue
-
+        注意：项目已移除 config/logging.toml，统一改为通过 .env 中的 LOG_* 环境变量
+        及 app/core/logging_config.py 配置。此方法保留以兼容旧调用，但始终返回 None。
+        """
         return None
 
     def _convert_toml_config(self, toml_config: Dict[str, Any]) -> Dict[str, Any]:
