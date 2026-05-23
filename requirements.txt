@@ -50,6 +50,7 @@ python-multipart>=0.0.6  # 文件上传支持
 PyJWT>=2.0.0  # JWT令牌处理
 bcrypt>=4.0.0  # 密码加密
 apscheduler>=3.10.0  # 任务调度器，用于定时任务
+croniter>=2.0.0  # cron 表达式解析，用于 AI 选股调度计算下次运行时间
 aiofiles>=0.8.0  # 异步文件操作
 httpx>=0.24.0  # 异步HTTP客户端
 sse-starlette>=1.0.0  # Server-Sent Events支持

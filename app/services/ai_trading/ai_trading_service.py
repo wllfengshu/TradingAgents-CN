@@ -1,8 +1,9 @@
 """
 AI交易服务
 多Agent协同完成智能交易流程：
-1. 获取账户持仓情况
-2. 如果有持仓：并发调用"单个股票分析" + "AI选股"
+1. 获取账户信息，包含资金情况、持仓情况（这一部分先使用模拟数据）
+2. 如果有持仓：把持仓股票传给"股票分析"服务；同时并行运行“AI选股”服务；再把“持仓信息”、“股票分析结果”、“AI选股结果”传给"仓位管理分析师"；
+如果没有持仓：先运行“AI选股”服务，再把“账户信息（资金情况）”和“AI选股结果”传给"仓位管理分析师"；
 3. 仓位管理分析师：综合持仓、分析结果、选股结果，给出买卖信号
 4. 交易决策分析师：审核信号，执行下单
 """
@@ -29,6 +30,7 @@ from app.services.simple_analysis_service import (
     get_provider_and_url_by_model_sync,
     get_simple_analysis_service,
 )
+from app.utils.stock_utils import is_main_board_stock, extract_json_block, make_serializable, is_trading_hours
 from app.models.analysis import SingleAnalysisRequest, AnalysisParameters
 from app.core.database import get_mongo_db
 from app.services.ai_selector.ai_selector_service import AiSelectorService, ApiCache
@@ -284,16 +286,6 @@ class AiTradingService:
     # 结构化数据提取
     # ============================================================
 
-    def _extract_json_block(self, text: str) -> Optional[Dict]:
-        """从文本中提取最后一个```json代码块并解析"""
-        try:
-            matches = re.findall(r'```json\s*(.*?)\s*```', text, re.DOTALL)
-            if matches:
-                return json.loads(matches[-1])
-        except (json.JSONDecodeError, Exception) as e:
-            logger.error(f"解析JSON代码块失败: {e}")
-        return None
-
     def _validate_signal_fields(self, signal: Dict) -> Optional[str]:
         """校验单个信号的字段合法性，返回错误信息；通过返回None"""
         code = signal.get("code", "")
@@ -324,7 +316,7 @@ class AiTradingService:
     def _extract_trading_signals(self, report: str) -> List[Dict]:
         """从仓位管理分析师报告中提取交易信号，并校验字段"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data and "signals" in data:
                 signals = data["signals"]
                 if isinstance(signals, list):
@@ -345,7 +337,7 @@ class AiTradingService:
     def _extract_approved_signals(self, report: str) -> List[Dict]:
         """从交易决策分析师报告中提取审核通过的信号，并校验字段"""
         try:
-            data = self._extract_json_block(report)
+            data = extract_json_block(report)
             if data and "approved_signals" in data:
                 signals = data["approved_signals"]
                 if isinstance(signals, list):
@@ -483,19 +475,12 @@ class AiTradingService:
         return {"task_id": task_id, "status": "pending", "message": "AI交易任务已创建"}
 
     async def execute_task(self, task_id: str, user_id: str = None, mode: str = "paper"):
-        """执行AI交易任务（后台运行），总超时10分钟
-
-        完整流程：
-        1. 获取账户持仓情况
-        2. 如果有持仓：并发调用"单个股票分析" + "AI选股"
-           如果无持仓：仅调用"AI选股"
-        3. 仓位管理分析师：综合数据给出买卖信号
-        4. 交易决策分析师：审核信号，执行下单
+        """执行AI交易任务（后台运行）
         """
         try:
             result = await asyncio.wait_for(
                 self._execute_task_inner(task_id, user_id, mode),
-                timeout=600,  # 10分钟总超时
+                timeout=6000,  # 100分钟总超时
             )
             return result
         except asyncio.TimeoutError:
@@ -522,7 +507,7 @@ class AiTradingService:
             await self._update_status(task_id, "running", 5, "正在初始化AI交易分析...")
 
             # 交易时段校验（实盘模式必须，模拟模式仅警告）
-            if not self._is_trading_hours():
+            if not is_trading_hours():
                 tz = ZoneInfo("Asia/Shanghai")
                 now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
                 if mode == "live":
@@ -774,7 +759,7 @@ class AiTradingService:
 
             try:
                 db = get_mongo_db()
-                serializable_result = self._make_serializable(result)
+                serializable_result = make_serializable(result)
                 await db.ai_trading_tasks.update_one(
                     {"task_id": task_id},
                     {"$set": {
@@ -1139,15 +1124,6 @@ class AiTradingService:
     # 辅助方法
     # ============================================================
 
-    def _is_trading_hours(self) -> bool:
-        """判断当前是否为A股交易时段（工作日 9:30-11:30 / 13:00-15:00）"""
-        from datetime import time as dtime
-        now = datetime.now(ZoneInfo("Asia/Shanghai"))
-        if now.weekday() >= 5:
-            return False
-        t = now.time()
-        return (dtime(9, 30) <= t <= dtime(11, 30)) or (dtime(13, 0) <= t <= dtime(15, 0))
-
     def _extract_analysis_conclusion(self, result: Dict) -> str:
         """从个股分析结果中提取结论"""
         decision = result.get("decision", {})
@@ -1171,19 +1147,6 @@ class AiTradingService:
         if result.get("error"):
             return "danger"
         return "info"
-
-    def _make_serializable(self, obj):
-        """将对象转换为可序列化的格式"""
-        if isinstance(obj, dict):
-            return {k: self._make_serializable(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [self._make_serializable(v) for v in obj]
-        elif isinstance(obj, datetime):
-            return obj.isoformat()
-        elif isinstance(obj, (int, float, str, bool, type(None))):
-            return obj
-        else:
-            return str(obj)
 
     async def _check_cancelled(self, task_id: str) -> bool:
         """检查任务是否已被用户停止"""

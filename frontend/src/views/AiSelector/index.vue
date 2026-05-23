@@ -129,10 +129,11 @@
           <el-button
             size="large"
             class="schedule-btn"
-            @click="showScheduleDialog = true"
+            :class="{ 'has-schedule': !!currentSchedule }"
+            @click="handleOpenScheduleDialog"
           >
             <el-icon><Clock /></el-icon>
-            定时运行
+            {{ currentSchedule ? '已设定时' : '定时运行' }}
           </el-button>
         </div>
 
@@ -276,53 +277,106 @@
     <el-dialog
       v-model="showScheduleDialog"
       title="定时运行设置"
-      width="500px"
+      width="560px"
       :close-on-click-modal="false"
     >
-      <el-form :model="scheduleForm" label-width="100px">
-        <el-form-item label="运行频率">
-          <el-select v-model="scheduleForm.frequency" style="width: 100%">
-            <el-option label="每天" value="daily" />
-            <el-option label="每周" value="weekly" />
-            <el-option label="每月" value="monthly" />
-          </el-select>
+      <!-- 当前定时任务状态 -->
+      <div v-if="currentSchedule" class="current-schedule">
+        <el-alert type="success" :closable="false" show-icon>
+          <template #title>
+            <span>当前已设置定时任务</span>
+          </template>
+          <template #default>
+            <div class="schedule-info">
+              <span>Cron表达式：<code>{{ currentSchedule.cron_expression }}</code></span>
+              <span v-if="currentSchedule.next_run_time">
+                下次运行：{{ currentSchedule.next_run_time }}
+              </span>
+            </div>
+          </template>
+        </el-alert>
+      </div>
+
+      <el-form :model="scheduleForm" label-width="100px" class="schedule-form">
+        <el-form-item label="Cron表达式">
+          <el-input
+            v-model="scheduleForm.cronExpression"
+            placeholder="如：0 30 9 * * 1-5"
+            clearable
+            @input="handleCronInput"
+          >
+            <template #append>
+              <el-button @click="handlePreviewCron" :loading="previewingCron">
+                预览
+              </el-button>
+            </template>
+          </el-input>
+          <div class="cron-hint">
+            格式：分 时 日 月 周（5位），例如：
+            <el-tag
+              v-for="example in cronExamples"
+              :key="example.expr"
+              size="small"
+              effect="plain"
+              class="cron-example-tag"
+              @click="scheduleForm.cronExpression = example.expr; handlePreviewCron()"
+            >
+              {{ example.label }}
+            </el-tag>
+          </div>
         </el-form-item>
-        <el-form-item label="运行时间">
-          <el-time-picker
-            v-model="scheduleForm.time"
-            placeholder="选择运行时间"
-            format="HH:mm"
-            style="width: 100%"
-          />
-        </el-form-item>
-        <el-form-item v-if="scheduleForm.frequency === 'weekly'" label="运行日">
-          <el-select v-model="scheduleForm.weekday" style="width: 100%">
-            <el-option label="周一" :value="1" />
-            <el-option label="周二" :value="2" />
-            <el-option label="周三" :value="3" />
-            <el-option label="周四" :value="4" />
-            <el-option label="周五" :value="5" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="scheduleForm.frequency === 'monthly'" label="运行日期">
-          <el-input-number
-            v-model="scheduleForm.monthDay"
-            :min="1"
-            :max="28"
-            style="width: 100%"
-          />
-        </el-form-item>
+
+        <!-- 预览结果 -->
+        <div v-if="cronPreview" class="cron-preview">
+          <div class="preview-header">
+            <el-icon><Clock /></el-icon>
+            <span>含义：{{ cronPreview.description }}</span>
+          </div>
+          <div class="preview-times">
+            <span class="preview-label">下次执行时间：</span>
+            <div
+              v-for="(time, index) in cronPreview.next_run_times"
+              :key="index"
+              class="preview-time-item"
+            >
+              <span class="time-index">{{ index + 1 }}</span>
+              <span class="time-value">{{ time }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 预览错误 -->
+        <div v-if="cronError" class="cron-error">
+          <el-alert :title="cronError" type="error" :closable="false" show-icon />
+        </div>
       </el-form>
+
       <template #footer>
-        <el-button @click="showScheduleDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleScheduleSubmit">确认设置</el-button>
+        <div class="dialog-footer">
+          <div v-if="currentSchedule" class="footer-left">
+            <el-button type="danger" @click="handleDeleteSchedule" :loading="deletingSchedule">
+              取消定时
+            </el-button>
+          </div>
+          <div class="footer-right">
+            <el-button @click="showScheduleDialog = false">关闭</el-button>
+            <el-button
+              type="primary"
+              @click="handleScheduleSubmit"
+              :disabled="!scheduleForm.cronExpression || !!cronError"
+              :loading="submittingSchedule"
+            >
+              确认设置
+            </el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onUnmounted } from 'vue'
+import { ref, reactive, onUnmounted, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Cpu,
@@ -428,11 +482,22 @@ const resultData = reactive<{
 // 定时运行
 const showScheduleDialog = ref(false)
 const scheduleForm = reactive({
-  frequency: 'daily',
-  time: new Date(2026, 0, 1, 9, 30),
-  weekday: 1,
-  monthDay: 1
+  cronExpression: '',
 })
+const cronPreview = ref<{ cron_expression: string; description: string; next_run_times: string[] } | null>(null)
+const cronError = ref('')
+const previewingCron = ref(false)
+const submittingSchedule = ref(false)
+const deletingSchedule = ref(false)
+const currentSchedule = ref<{ cron_expression: string; enabled: boolean; job_id: string; next_run_time: string | null } | null>(null)
+
+// Cron 示例
+const cronExamples = [
+  { label: '每个工作日9:30', expr: '30 9 * * 1-5' },
+  { label: '每天15:00', expr: '0 15 * * *' },
+  { label: '每周一9:30', expr: '30 9 * * 1' },
+  { label: '每月1日9:30', expr: '30 9 1 * *' },
+]
 
 // 进度条状态
 const progressStatus = ref<'' | 'success' | 'exception' | 'warning'>('')
@@ -586,20 +651,107 @@ const fetchResult = async () => {
   }
 }
 
-// 定时运行
-const handleScheduleSubmit = () => {
-  const freqMap: Record<string, string> = {
-    daily: '每天',
-    weekly: '每周',
-    monthly: '每月'
+// 定时运行 - 打开对话框时加载当前配置
+const handleOpenScheduleDialog = async () => {
+  showScheduleDialog.value = true
+  cronPreview.value = null
+  cronError.value = ''
+  await fetchCurrentSchedule()
+  if (currentSchedule.value) {
+    scheduleForm.cronExpression = currentSchedule.value.cron_expression
+    handlePreviewCron()
   }
-  const freq = freqMap[scheduleForm.frequency] || scheduleForm.frequency
-  const timeStr = scheduleForm.time
-    ? new Date(scheduleForm.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-    : '09:30'
+}
 
-  ElMessage.success(`已设置${freq} ${timeStr} 定时运行AI选股`)
-  showScheduleDialog.value = false
+// 获取当前定时任务配置
+const fetchCurrentSchedule = async () => {
+  try {
+    const res = await aiSelectorApi.getSchedule()
+    if (res.success && res.data) {
+      currentSchedule.value = res.data
+    } else {
+      currentSchedule.value = null
+    }
+  } catch {
+    currentSchedule.value = null
+  }
+}
+
+// 输入Cron表达式时的防抖预览
+let cronDebounceTimer: ReturnType<typeof setTimeout> | null = null
+const handleCronInput = () => {
+  cronError.value = ''
+  cronPreview.value = null
+  if (cronDebounceTimer) clearTimeout(cronDebounceTimer)
+  if (!scheduleForm.cronExpression.trim()) return
+  cronDebounceTimer = setTimeout(() => {
+    handlePreviewCron()
+  }, 600)
+}
+
+// 预览Cron表达式
+const handlePreviewCron = async () => {
+  const expr = scheduleForm.cronExpression.trim()
+  if (!expr) {
+    cronPreview.value = null
+    cronError.value = ''
+    return
+  }
+  previewingCron.value = true
+  cronError.value = ''
+  try {
+    const res = await aiSelectorApi.previewCron(expr)
+    if (res.success && res.data) {
+      cronPreview.value = res.data
+    }
+  } catch (error: any) {
+    cronPreview.value = null
+    const msg = error?.response?.data?.detail || error?.message || '无效的Cron表达式'
+    cronError.value = msg
+  } finally {
+    previewingCron.value = false
+  }
+}
+
+// 提交定时任务
+const handleScheduleSubmit = async () => {
+  const expr = scheduleForm.cronExpression.trim()
+  if (!expr) {
+    ElMessage.warning('请输入Cron表达式')
+    return
+  }
+  submittingSchedule.value = true
+  try {
+    const res = await aiSelectorApi.createSchedule(expr)
+    if (res.success) {
+      ElMessage.success('定时任务设置成功')
+      await fetchCurrentSchedule()
+      showScheduleDialog.value = false
+    }
+  } catch (error: any) {
+    const msg = error?.response?.data?.detail || error?.message || '设置定时任务失败'
+    ElMessage.error(msg)
+  } finally {
+    submittingSchedule.value = false
+  }
+}
+
+// 删除定时任务
+const handleDeleteSchedule = async () => {
+  deletingSchedule.value = true
+  try {
+    const res = await aiSelectorApi.deleteSchedule()
+    if (res.success) {
+      ElMessage.success('定时任务已取消')
+      currentSchedule.value = null
+      scheduleForm.cronExpression = ''
+      cronPreview.value = null
+    }
+  } catch (error: any) {
+    ElMessage.error('取消定时任务失败')
+  } finally {
+    deletingSchedule.value = false
+  }
 }
 
 // 导出结果
@@ -638,6 +790,10 @@ const handleReset = () => {
 onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (pollingTimer) clearInterval(pollingTimer)
+})
+
+onMounted(() => {
+  fetchCurrentSchedule()
 })
 </script>
 
@@ -889,6 +1045,16 @@ onUnmounted(() => {
           box-shadow: 0 8px 25px rgba(59, 130, 246, 0.15);
         }
 
+        &.has-schedule {
+          border-color: #10b981;
+          color: #10b981;
+
+          &:hover {
+            background: #ecfdf5;
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.15);
+          }
+        }
+
         .el-icon {
           margin-right: 8px;
           font-size: 20px;
@@ -1063,5 +1229,121 @@ onUnmounted(() => {
 
 .rotating-icon {
   animation: rotate 2s linear infinite;
+}
+
+// 定时运行对话框样式
+.current-schedule {
+  margin-bottom: 20px;
+
+  .schedule-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+    font-size: 13px;
+
+    code {
+      background: #f0f9ff;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      color: #1e40af;
+    }
+  }
+}
+
+.schedule-form {
+  .cron-hint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #94a3b8;
+    line-height: 1.8;
+
+    .cron-example-tag {
+      cursor: pointer;
+      margin-left: 4px;
+      transition: all 0.2s;
+
+      &:hover {
+        color: #3b82f6;
+        border-color: #3b82f6;
+      }
+    }
+  }
+}
+
+.cron-preview {
+  margin-top: 16px;
+  padding: 16px;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  border-radius: 12px;
+  border: 1px solid #bae6fd;
+
+  .preview-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #0369a1;
+    margin-bottom: 12px;
+
+    .el-icon {
+      font-size: 18px;
+    }
+  }
+
+  .preview-times {
+    .preview-label {
+      font-size: 12px;
+      color: #64748b;
+      margin-bottom: 8px;
+      display: block;
+    }
+
+    .preview-time-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 0;
+
+      .time-index {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+
+      .time-value {
+        font-size: 13px;
+        color: #1e40af;
+        font-family: 'Courier New', monospace;
+        font-weight: 500;
+      }
+    }
+  }
+}
+
+.cron-error {
+  margin-top: 12px;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+
+  .footer-right {
+    display: flex;
+    gap: 8px;
+  }
 }
 </style>

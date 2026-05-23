@@ -27,8 +27,8 @@ def stock_zh_index_daily(api_cache) -> Any:
             return None
         latest = sh_index.iloc[-1]
         prev = sh_index.iloc[-2] if len(sh_index) > 1 else latest
-        # Fix: base5 取 5 日前的收盘价（iloc[-6]），用于计算 5 日涨跌幅（5 个区间）
-        # 展示用的 close5 则取最近 5 日（iloc[-5:]），共 5 个数据点，与名称一致
+        # base5 取 5 日前的收盘价（iloc[-6]），用于计算 5 日涨跌幅（5 个区间）；
+        # 展示用的 close5 取最近 5 日（iloc[-5:]），共 5 个数据点，与字段名一致
         base5_row = sh_index.iloc[-6] if len(sh_index) >= 6 else sh_index.iloc[0]
         base5 = float(base5_row["close"])
         change5d = round((float(latest["close"]) - base5) / base5 * 100, 2)
@@ -56,7 +56,7 @@ def stock_zh_index_daily_sz(api_cache) -> Any:
             return "获取失败"
         latest = sz_index.iloc[-1]
         prev = sz_index.iloc[-2] if len(sz_index) > 1 else latest
-        # Fix: 同上证逻辑，base5 与展示数据分开
+        # 同上证逻辑，base5 与展示数据分开
         base5_row = sz_index.iloc[-6] if len(sz_index) >= 6 else sz_index.iloc[0]
         base5 = float(base5_row["close"])
         change5d = round((float(latest["close"]) - base5) / base5 * 100, 2)
@@ -265,7 +265,7 @@ def stock_lb_pool_stats(api_cache) -> Any:
             return "获取失败"
         # 过滤掉成交额为0的停牌股票
         if "成交额" in lb_stocks.columns:
-            lb_stocks = lb_stocks[lb_stocks["成交额"].astype(float) > 0]
+            lb_stocks = lb_stocks[pd.to_numeric(lb_stocks["成交额"], errors="coerce").fillna(0) > 0]
         lb_stocks_length = len(lb_stocks)
         max_len = 50 if lb_stocks_length > 50 else lb_stocks_length
         return {
@@ -338,7 +338,7 @@ def stock_broken_limit_rate(api_cache, zt_stats: Any) -> Any:
     炸板率越高说明市场获利了结意愿强、情绪不稳定。
     zt_stats: 上游 stock_zt_pool_stats 的返回值，用来取"涨停数量"。
     """
-    # Fix: 当涨停统计获取失败时（非dict），跳过炸板率计算，避免 0/(0+N)=100% 的误判
+    # 当涨停统计获取失败时（非dict），跳过炸板率计算，避免 0/(0+N)=100% 的误判
     if not isinstance(zt_stats, dict):
         return {"提示": "涨停数据获取失败，无法计算炸板率"}
 
@@ -476,7 +476,7 @@ def stock_zt_pool_leader(api_cache) -> Any:
             return "获取失败"
         # 过滤掉成交额为0的停牌股票
         if "成交额" in zt_pool.columns:
-            zt_pool = zt_pool[zt_pool["成交额"].astype(float) > 0]
+            zt_pool = zt_pool[pd.to_numeric(zt_pool["成交额"], errors="coerce").fillna(0) > 0]
         zt_pool_length = len(zt_pool)
         max_len = 20 if zt_pool_length > 20 else zt_pool_length
         out: List[Dict[str, Any]] = []
@@ -604,5 +604,121 @@ def stock_candidate_fundamentals(api_cache, candidate_stock_codes: List[str]) ->
     except Exception as e:
         logger.error(f"批量获取候选标的基本面失败: {e}")
         return "获取失败"
+
+
+# ============================================================
+# 聚合函数：每个分析师对应的指标集合
+# ============================================================
+
+
+def _now_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def compute_market_indicators(api_cache) -> Dict[str, Any]:
+    """大盘分析师指标集合：指数/北向资金/涨跌比等"""
+    try:
+        result: Dict[str, Any] = {"计算时间": _now_str()}
+        result["上证指数"] = stock_zh_index_daily(api_cache)
+        result["深证成指"] = stock_zh_index_daily_sz(api_cache)
+        result["沪深港通成交"] = stock_hsgt_fund_flow_summary(api_cache)
+        north_etf_patch = stock_north_etf_direction(api_cache)
+        if north_etf_patch and isinstance(result.get("沪深港通成交"), dict):
+            result["沪深港通成交"].update(north_etf_patch)
+        result["沪深港通行业成交集中度"] = stock_industry_concentration(api_cache)
+        result["涨跌统计"] = stock_up_down_count(api_cache)
+        return result
+    except Exception as e:
+        logger.error(f"计算大盘指标失败: {e}")
+        return {"错误": str(e)}
+
+
+def compute_sector_indicators(api_cache) -> Dict[str, Any]:
+    """主线板块分析师指标集合：涨停集中度/5日强度等"""
+    try:
+        result: Dict[str, Any] = {
+            "指标来源": "akshare实时数据",
+            "计算时间": _now_str(),
+        }
+        result["涨幅前10板块"] = stock_board_industry_rank(api_cache)
+        result["涨停统计"] = stock_zt_pool_stats(api_cache)
+        result["强势股池统计"] = stock_lb_pool_stats(api_cache)
+        result["封板比统计"] = stock_seal_ratio(api_cache)
+        result["炸板统计"] = stock_broken_limit_rate(api_cache, result.get("涨停统计"))
+        return result
+    except Exception as e:
+        logger.error(f"计算板块指标失败: {e}")
+        return {"错误": str(e)}
+
+
+def compute_force_indicators(api_cache) -> Dict[str, Any]:
+    """市场合力分析师指标集合：主力+散户双向净流入等"""
+    try:
+        result: Dict[str, Any] = {
+            "指标来源": "akshare实时数据",
+            "计算时间": _now_str(),
+        }
+        industry_top20 = stock_industry_fund_flow(api_cache)
+        if industry_top20 == "获取失败":
+            result["主力资金流向"] = "获取失败"
+        else:
+            result["主力资金流向top20"] = industry_top20
+
+        individual_top20 = stock_individual_fund_flow(api_cache)
+        if individual_top20 == "获取失败":
+            result["个股资金流向"] = "获取失败"
+        else:
+            result["个股主力净流入top20"] = individual_top20
+        return result
+    except Exception as e:
+        logger.error(f"计算合力指标失败: {e}")
+        return {"错误": str(e)}
+
+
+def compute_leader_indicators(api_cache) -> Dict[str, Any]:
+    """股票龙头分析师指标集合：连板/板块排名/成交量等"""
+    try:
+        result: Dict[str, Any] = {
+            "指标来源": "akshare实时数据",
+            "计算时间": _now_str(),
+        }
+        leader = stock_zt_pool_leader(api_cache)
+        if leader == "获取失败":
+            result["涨停龙头股"] = "获取失败"
+        else:
+            result["涨停龙头股前20"] = leader
+
+        strong = stock_strong_rank(api_cache)
+        if strong == "获取失败":
+            result["强势股排行"] = "获取失败"
+        else:
+            result["强势股前20"] = strong
+        return result
+    except Exception as e:
+        logger.error(f"计算龙头指标失败: {e}")
+        return {"错误": str(e)}
+
+
+def compute_risk_indicators(api_cache, candidate_stock_codes: Optional[List[str]] = None) -> Dict[str, Any]:
+    """风险分析师指标集合：排除ST/新股/退市，并拉取候选股票实时行情/基本面"""
+    try:
+        result: Dict[str, Any] = {
+            "指标来源": "akshare实时数据",
+            "计算时间": _now_str(),
+        }
+        result["次新股"] = stock_new_list(api_cache)
+
+        if candidate_stock_codes:
+            spot_val = stock_candidate_spot(api_cache, candidate_stock_codes)
+            if spot_val is not None:
+                result["候选标的实时行情"] = spot_val
+
+            fundamentals_val = stock_candidate_fundamentals(api_cache, candidate_stock_codes)
+            if fundamentals_val is not None:
+                result["候选标的基本面"] = fundamentals_val
+        return result
+    except Exception as e:
+        logger.error(f"计算风险指标失败: {e}")
+        return {"错误": str(e)}
 
 

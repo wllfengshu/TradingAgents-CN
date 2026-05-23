@@ -15,7 +15,7 @@ import threading
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from app.utils.json_compressor import compress_json_for_llm
 from app.utils.stock_utils import make_serializable, is_main_board_stock, extract_json_block
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -24,200 +24,29 @@ from app.services.simple_analysis_service import create_analysis_config, get_pro
 from app.core.database import get_mongo_db
 import pandas as pd
 from app.utils.api_cache import ApiCache
-from app.services.ai_selector.compute_indicators import *
+from app.services.ai_selector.compute_indicators import (
+    compute_market_indicators,
+    compute_sector_indicators,
+    compute_force_indicators,
+    compute_leader_indicators,
+    compute_risk_indicators,
+)
 from app.services.model_capability_service import get_model_capability_service
+from croniter import croniter
 
-logger = logging.getLogger("app.services.ai_selector.compute_indicators")
-
-
-# ============================================================
-# 指标计算函数（这里是统筹和收集各个数据指标，具体的计算指标放到app/services/ai_selector/compute_indicators.py中）
-# ============================================================
+logger = logging.getLogger(__name__)
 
 
-def compute_market_indicators(api_cache) -> Dict[str, Any]:
-    """大盘分析师指标计算：指数/北向资金/涨跌比等"""
-    try:
-        result: Dict[str, Any] = {"计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-        # 1. 上证指数
-        result["上证指数"] = stock_zh_index_daily(api_cache)
-
-        # 2. 深证成指（含5日趋势）
-        result["深证成指"] = stock_zh_index_daily_sz(api_cache)
-
-        # 3a. 沪深港通每日资金流向汇总
-        result["沪深港通成交"] = stock_hsgt_fund_flow_summary(api_cache)
-
-        # 3a2. 北向资金ETF方向指标（合并到 "沪深港通成交" 字段）
-        north_etf_patch = stock_north_etf_direction(api_cache)
-        if north_etf_patch and isinstance(result.get("沪深港通成交"), dict):
-            result["沪深港通成交"].update(north_etf_patch)
-
-        # 3c. 行业资金成交集中度
-        result["沪深港通行业成交集中度"] = stock_industry_concentration(api_cache)
-
-        # 4. 涨跌比
-        result["涨跌统计"] = stock_up_down_count(api_cache)
-
-        # GDP与PMI（采购经理指数）：宏观经济的体温计。特别是财新PMI和官方制造业PMI，如果低于50%的荣枯线，说明经济收缩，大盘很难有趋势性牛市。
-
-        # CPI（居民消费价格指数）与PPI（工业生产者出厂价格指数）：通胀与通缩的监控器。温和的通胀（CPI在2%-3%左右）利好股市，但如果PPI过高，会挤压中下游企业的利润。
-
-        # 国债利率（特别是10年期国债收益率）：无风险利率的代表。收益率下行通常利好股市（资金成本变低）；反之，收益率飙升会导致股市估值承压。
-
-        # 人民币汇率（离岸/在岸人民币）：外资流向的晴雨表。人民币升值预期下，北向资金往往大幅流入A股；贬值压力大时，权重股（如白马股、金融股）通常表现不佳。
-
-        # 一、 宏观与基本面（决定“有没有大行情”）
-        # 这是大盘的“天”，决定了市场的中长期趋势和资金的风险偏好。
-        # GDP与PMI（采购经理指数）：宏观经济的体温计。特别是财新PMI和官方制造业PMI，如果低于50%的荣枯线，说明经济收缩，大盘很难有趋势性牛市。
-        # CPI（居民消费价格指数）与PPI（工业生产者出厂价格指数）：通胀与通缩的监控器。温和的通胀（CPI在2%-3%左右）利好股市，但如果PPI过高，会挤压中下游企业的利润。
-        # 国债利率（特别是10年期国债收益率）：无风险利率的代表。收益率下行通常利好股市（资金成本变低）；反之，收益率飙升会导致股市估值承压。
-        # 人民币汇率（离岸/在岸人民币）：外资流向的晴雨表。人民币升值预期下，北向资金往往大幅流入A股；贬值压力大时，权重股（如白马股、金融股）通常表现不佳。
-        # 二、 资金与流动性（决定“行情能走多远”）
-        # 资金是水，股价是船。没有增量资金的牛市都是假牛市。
-        # 央行公开市场操作（OMO/MLF）与社融数据（M1/M2）：流动性的总闸门。M1增速 - M2增速的差值如果扩大，通常意味着企业和居民手中的活钱变多，投资意愿增强，是大盘走强的强烈信号。
-        # 两市成交额（成交量）：行情的“燃料”。大盘要启动，通常需要沪深两市的成交额维持在8000亿-1万亿以上。如果持续缩量，说明资金都在观望，容易形成阴跌。
-        # 北向资金（外资）流向：A股的“聪明钱”。单日净流入/流出超百亿，往往预示着大盘阶段性的顶或底。目前北向资金的持仓和流向仍是重要的风向标。
-        # 融资融券余额（两融余额）：内资杠杆资金的情绪指标。两融余额快速攀升，说明市场风险偏好极高，但也意味着一旦下跌容易引发踩踏。
-        # 三、 技术与趋势面（反映“多空交战结果”）
-        # 这是实战派每天必看的“战报”，用来寻找买卖点。
-        # 主要宽基指数（上证/深成指/创业板/科创50）：不要只看上证。如果上证涨但创业板大跌，往往是“赚指数不赚钱”的二八分化行情。
-        # 均线系统（如20日/60日/120日均线）：趋势的生命线。大盘站稳20日均线，属于短期强势；跌破60日均线，则需要警惕中期趋势走弱。
-        # MACD / KDJ / BOLL（布林带）等指标：用于辅助判断超买超卖和背离。比如大盘指数创新高，但MACD红柱缩短（顶背离），往往是动能衰竭的预警。
-        # 四、 市场情绪与微观结构（感受“真实的体感温度”）
-        # 有时候大盘没跌，但个股哀鸿遍野，这就需要看情绪指标。
-        # 涨跌家数比与赚钱效应：全市场上涨股票数量是2000家还是4000家？这比单纯看指数涨跌真实得多。
-        # 涨停/跌停家数 & 连板高度：短线资金活跃度的极致体现。如果出现百股涨停，且有10连板以上的妖股，说明市场情绪极度亢奋；反之，如果跌停家数超50家，且高位股集体补跌，说明处于退潮期。
-        # 板块轮动节奏（主线清晰度）：大盘健康上涨时，通常有清晰的主线（如AI、新能源、高股息等）。如果每天都是“电风扇”行情（一天轮动五六个题材），说明主力资金没有共识，大盘大概率要变盘向下。
-        # 股指期货升贴水（如沪深300股指期货）：如果期货大幅升水（比现货贵），说明大资金对未来乐观；如果大幅贴水，则是悲观避险情绪主导。
-
-        return result
-
-    except Exception as e:
-        logger.error(f"计算大盘指标失败: {e}")
-        return {"错误": str(e)}
+_CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
-def compute_sector_indicators(api_cache) -> Dict[str, Any]:
-    """主线板块分析师指标计算：涨停集中度/5日强度等"""
-    try:
-        result: Dict[str, Any] = {
-            "指标来源": "akshare实时数据",
-            "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+def _now_cn() -> datetime:
+    """返回上海时区的 naive datetime，用于持久化到 MongoDB。
 
-        # 1. 板块涨跌幅排行
-        result["涨幅前10板块"] = stock_board_industry_rank(api_cache)
-
-        # 2. 涨停股统计
-        result["涨停统计"] = stock_zt_pool_stats(api_cache)
-
-        # 3. 连板股统计（强势股池）
-        result["强势股池统计"] = stock_lb_pool_stats(api_cache)
-
-        # 4. 封板比
-        result["封板比统计"] = stock_seal_ratio(api_cache)
-
-        # 5. 炸板率（需要依赖涨停统计中的"涨停数量"）
-        result["炸板统计"] = stock_broken_limit_rate(api_cache, result.get("涨停统计"))
-
-        return result
-
-    except Exception as e:
-        logger.error(f"计算板块指标失败: {e}")
-        return {"错误": str(e)}
-
-
-def compute_force_indicators(api_cache) -> Dict[str, Any]:
-    """市场合力分析师指标计算：主力+散户双向净流入等"""
-    try:
-        result: Dict[str, Any] = {
-            "指标来源": "akshare实时数据",
-            "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-
-        # 1. 行业资金流向
-        industry_top20 = stock_industry_fund_flow(api_cache)
-        if industry_top20 == "获取失败":
-            # 保留与原逻辑一致：失败时字段名为 "主力资金流向"，成功时为 "主力资金流向top20"
-            result["主力资金流向"] = "获取失败"
-        else:
-            result["主力资金流向top20"] = industry_top20
-
-        # 2. 个股资金流向
-        individual_top20 = stock_individual_fund_flow(api_cache)
-        if individual_top20 == "获取失败":
-            result["个股资金流向"] = "获取失败"
-        else:
-            result["个股主力净流入top20"] = individual_top20
-
-        return result
-
-    except Exception as e:
-        logger.error(f"计算合力指标失败: {e}")
-        return {"错误": str(e)}
-
-
-def compute_leader_indicators(api_cache) -> Dict[str, Any]:
-    """股票龙头分析师指标计算：连板/板块排名/成交量等"""
-    try:
-        result: Dict[str, Any] = {
-            "指标来源": "akshare实时数据",
-            "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-
-        # 1. 涨停池（龙头候选）
-        leader = stock_zt_pool_leader(api_cache)
-        if leader == "获取失败":
-            # 与原逻辑一致：失败时字段名为 "涨停龙头股"，成功时为 "涨停龙头股前20"
-            result["涨停龙头股"] = "获取失败"
-        else:
-            result["涨停龙头股前20"] = leader
-
-        # 2. 强势股
-        strong = stock_strong_rank(api_cache)
-        if strong == "获取失败":
-            result["强势股排行"] = "获取失败"
-        else:
-            result["强势股前20"] = strong
-
-        return result
-
-    except Exception as e:
-        logger.error(f"计算龙头指标失败: {e}")
-        return {"错误": str(e)}
-
-
-def compute_risk_indicators(api_cache, candidate_stock_codes: List[str] = None) -> Dict[str, Any]:
-    """风险分析师指标计算：排除ST/新股/退市等，并拉取候选股票实时行情"""
-    try:
-        result: Dict[str, Any] = {
-            "指标来源": "akshare实时数据",
-            "计算时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-
-        # 1. 次新股
-        result["次新股"] = stock_new_list(api_cache)
-
-        # 2. 候选股票实时行情
-        if candidate_stock_codes:
-            spot_val = stock_candidate_spot(api_cache, candidate_stock_codes)
-            if spot_val is not None:
-                result["候选标的实时行情"] = spot_val
-
-        # 3. 候选股票基本面数据
-        if candidate_stock_codes:
-            fundamentals_val = stock_candidate_fundamentals(api_cache, candidate_stock_codes)
-            if fundamentals_val is not None:
-                result["候选标的基本面"] = fundamentals_val
-
-        return result
-
-    except Exception as e:
-        logger.error(f"计算风险指标失败: {e}")
-        return {"错误": str(e)}
-
+    Why: 前端按本地时间直接渲染 created_at/updated_at/completed_at，
+    若写入 UTC 会导致显示比真实时间早 8 小时。
+    """
+    return datetime.now(_CN_TZ).replace(tzinfo=None)
 
 
 # ============================================================
@@ -579,7 +408,7 @@ class AiSelectorService:
         try:
             db = get_mongo_db()
 
-            # Fix: 防止并发执行——同一用户有进行中的任务时拒绝新建
+            # 防止并发执行——同一用户有进行中的任务时拒绝新建
             running_task = await db.ai_selector_tasks.find_one(
                 {"user_id": user_id, "status": {"$in": ["pending", "running"]}}
             )
@@ -595,8 +424,8 @@ class AiSelectorService:
                 "status": "pending",
                 "progress": 0,
                 "current_step": "",
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
+                "created_at": _now_cn(),
+                "updated_at": _now_cn(),
             })
         except ValueError:
             raise  # 业务异常直接向上抛出，不吞掉
@@ -781,6 +610,7 @@ class AiSelectorService:
 
             await _report(86, "风险分析师正在评估...")
             risk_report = await asyncio.to_thread(
+                self._run_analyst, quick_llm, "风险分析师", RISK_ANALYST_PROMPT,
                 risk_indicators,
                 extra_params={"recommended_stocks": recommended_stocks_str}
             )
@@ -891,7 +721,7 @@ class AiSelectorService:
                 "analyst_results": analysis_result["analyst_results"],
                 "decision": analysis_result["decision"],
                 "decision_report": analysis_result["decision_report"],
-                "completed_at": datetime.utcnow().isoformat(),
+                "completed_at": _now_cn().isoformat(),
             }
 
             try:
@@ -905,7 +735,7 @@ class AiSelectorService:
                         "current_step": "分析完成",
                         "result": serializable_result,
                         "elapsed_time": round(elapsed, 2),
-                        "updated_at": datetime.utcnow(),
+                        "updated_at": _now_cn(),
                     }}
                 )
             except Exception as e:
@@ -921,11 +751,26 @@ class AiSelectorService:
             api_cache.clear()
 
     def _invoke_llm(self, llm, messages, analyst_name: str = "") -> Any:
-        """LLM 调用，带指数退避重试（最多3次）"""
+        """LLM 调用，对网络/超时类错误指数退避重试（最多3次）。
+
+        Why: 早期版本 retry_if_exception_type(Exception) 会把鉴权/参数错误也重试，
+        浪费 token 配额，因此只对临时性异常重试。
+        """
+        retryable_substrs = (
+            "timeout", "timed out", "connection", "rate limit", "429",
+            "502", "503", "504", "remote disconnected", "read error",
+        )
+
+        def _is_retryable(exc: BaseException) -> bool:
+            msg = str(exc).lower()
+            return any(s in msg for s in retryable_substrs)
+
+        from tenacity import retry_if_exception  # 已在顶部导入，此处保留以便测试时可注入
+
         @retry(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=1, min=2, max=10),
-            retry=retry_if_exception_type(Exception),
+            retry=retry_if_exception(_is_retryable),
             reraise=True,
         )
         def _do_invoke():
@@ -950,7 +795,7 @@ class AiSelectorService:
 
         prompt = prompt_template.format(**format_params)
 
-        logger.info(
+        logger.debug(
             f"[LLM提示词] [{analyst_name}] 提示词长度={len(prompt)}\n"
             f"{'='*60}\n{prompt}\n{'='*60}"
         )
@@ -959,7 +804,7 @@ class AiSelectorService:
             response = self._invoke_llm(llm, [SystemMessage(content=prompt)], analyst_name)
             report = response.content
             logger.info(f"AI选股 [{analyst_name}] 分析完成，报告长度: {len(report)}")
-            logger.info(
+            logger.debug(
                 f"[LLM输出] [{analyst_name}] 输出长度={len(report)}\n"
                 f"{'='*60}\n{report}\n{'='*60}"
             )
@@ -975,7 +820,7 @@ class AiSelectorService:
         logger.info("AI选股 [决策分析师] 开始综合研判...")
 
         prompt = DECISION_ANALYST_PROMPT.format(
-            current_time=datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
+            current_time=datetime.now(_CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
             market_report=market_report,
             sector_report=sector_report,
             force_report=force_report,
@@ -984,7 +829,7 @@ class AiSelectorService:
             safe_stocks_info=safe_stocks_info,
         )
 
-        logger.info(
+        logger.debug(
             f"[LLM提示词] [决策分析师] 提示词长度={len(prompt)}\n"
             f"{'='*60}\n{prompt}\n{'='*60}"
         )
@@ -1037,7 +882,7 @@ class AiSelectorService:
         except Exception:
             pass
 
-        # Fix: 限制匹配长度（≤20字符），防止把整句话误识别为板块名
+        # 限制匹配长度≤20字符，防止把整句话误识别为板块名
         match = re.search(r'主线板块[：:]\s*(.{2,20}?)[\n。，,；;]', report)
         if match:
             sectors = re.split(r'[、/]', match.group(1))
@@ -1108,8 +953,7 @@ class AiSelectorService:
                     return stocks
         except Exception:
             pass
-        # Fix: 全文 regex 会把 excluded_stocks 里的代码也捞进来，危险！
-        # 回退时直接返回空列表，宁可漏选也不错选高风险标的
+        # 全文 regex 会把 excluded_stocks 里的代码也捞进来，宁可漏选也不错选高风险标的
         logger.warning("_extract_safe_stocks: 无法从风险报告中解析出结构化安全标的，回退返回空列表")
         return []
 
@@ -1123,7 +967,7 @@ class AiSelectorService:
             name = s.get("name", "")
             reason = s.get("reason", "")
             sector = s.get("sector", "")
-            # Fix: 改用 | 分隔字段，避免中文顿号被 LLM 误解为并列事物
+            # 用 | 分隔字段，避免中文顿号被 LLM 误解为并列事物
             line = f"{code} {name}"
             if sector:
                 line += f" | 板块:{sector}"
@@ -1135,8 +979,7 @@ class AiSelectorService:
     def _parse_decision(self, decision_report: str) -> Dict[str, Any]:
         """解析决策分析师的结论"""
         try:
-            # Fix: 使用 findall 取最后一个 JSON 块，与 _extract_json_block 保持一致
-            # 避免报告中示例 JSON 在前、真实 JSON 在后时解析错误
+            # 取最后一个 JSON 块：避免报告中示例 JSON 在前、真实 JSON 在后时解析错误
             matches = re.findall(r'```json\s*(.*?)\s*```', decision_report, re.DOTALL)
             if matches:
                 decision = json.loads(matches[-1])
@@ -1228,7 +1071,7 @@ class AiSelectorService:
                 "status": status,
                 "progress": progress,
                 "current_step": current_step,
-                "updated_at": datetime.utcnow(),
+                "updated_at": _now_cn(),
             }
             if error_message:
                 update_data["error_message"] = error_message
@@ -1296,6 +1139,212 @@ class AiSelectorService:
         except Exception as e:
             logger.error(f"获取AI选股任务结果失败: {e}")
             return None
+
+    async def create_schedule(self, user_id: str, cron_expression: str) -> Dict[str, Any]:
+        """创建AI选股定时任务"""
+        # 验证cron表达式
+        try:
+            cron = croniter(cron_expression, datetime.now(_CN_TZ))
+            # 尝试获取下一次时间，验证表达式有效
+            cron.get_next(datetime)
+        except Exception as e:
+            raise ValueError(f"无效的Cron表达式: {e}")
+
+        try:
+            from app.services.scheduler_service import get_scheduler_service
+            from apscheduler.triggers.cron import CronTrigger
+
+            scheduler_service = get_scheduler_service()
+            scheduler = scheduler_service.scheduler
+
+            job_id = f"ai_selector_schedule_{user_id}"
+
+            # 如果已存在该用户的定时任务，先移除
+            existing_job = scheduler.get_job(job_id)
+            if existing_job:
+                scheduler.remove_job(job_id)
+
+            # 使用 APScheduler 添加 cron 定时任务
+            parts = cron_expression.strip().split()
+            trigger = CronTrigger(
+                minute=parts[0] if len(parts) > 0 else "*",
+                hour=parts[1] if len(parts) > 1 else "*",
+                day=parts[2] if len(parts) > 2 else "*",
+                month=parts[3] if len(parts) > 3 else "*",
+                day_of_week=parts[4] if len(parts) > 4 else "*",
+                timezone=_CN_TZ,
+            )
+
+            scheduler.add_job(
+                self._run_scheduled_task,
+                trigger=trigger,
+                id=job_id,
+                name=f"AI选股定时运行",
+                kwargs={"user_id": user_id},
+                replace_existing=True,
+            )
+
+            # 保存定时配置到 MongoDB
+            db = get_mongo_db()
+            await db.ai_selector_schedules.update_one(
+                {"user_id": user_id},
+                {
+                    "$set": {
+                        "user_id": user_id,
+                        "cron_expression": cron_expression,
+                        "job_id": job_id,
+                        "enabled": True,
+                        "updated_at": _now_cn(),
+                    }
+                },
+                upsert=True,
+            )
+
+            # 计算下次执行时间
+            next_runs = self._get_next_run_times(cron_expression, 1)
+
+            logger.info(f"✅ AI选股定时任务已创建: user={user_id}, cron={cron_expression}")
+
+            return {
+                "job_id": job_id,
+                "cron_expression": cron_expression,
+                "enabled": True,
+                "next_run_time": next_runs[0] if next_runs else None,
+            }
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"❌ 创建AI选股定时任务失败: {e}")
+            raise
+
+    async def get_schedule(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """获取用户的AI选股定时任务配置"""
+        try:
+            db = get_mongo_db()
+            schedule = await db.ai_selector_schedules.find_one(
+                {"user_id": user_id},
+                {"_id": 0}
+            )
+            if not schedule:
+                return None
+
+            # 从 APScheduler 获取下次执行时间
+            from app.services.scheduler_service import get_scheduler_service
+            scheduler_service = get_scheduler_service()
+            job = scheduler_service.scheduler.get_job(schedule.get("job_id", ""))
+
+            result = {
+                "cron_expression": schedule.get("cron_expression", ""),
+                "enabled": schedule.get("enabled", False),
+                "job_id": schedule.get("job_id", ""),
+                "next_run_time": job.next_run_time.isoformat() if job and job.next_run_time else None,
+            }
+            return result
+        except Exception as e:
+            logger.error(f"❌ 获取AI选股定时任务失败: {e}")
+            return None
+
+    async def delete_schedule(self, user_id: str) -> bool:
+        """删除用户的AI选股定时任务"""
+        try:
+            from app.services.scheduler_service import get_scheduler_service
+
+            db = get_mongo_db()
+            schedule = await db.ai_selector_schedules.find_one({"user_id": user_id})
+            if not schedule:
+                return False
+
+            job_id = schedule.get("job_id", "")
+
+            # 从 APScheduler 移除任务
+            scheduler_service = get_scheduler_service()
+            job = scheduler_service.scheduler.get_job(job_id)
+            if job:
+                scheduler_service.scheduler.remove_job(job_id)
+
+            # 从 MongoDB 删除记录
+            await db.ai_selector_schedules.delete_one({"user_id": user_id})
+
+            logger.info(f"✅ AI选股定时任务已删除: user={user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ 删除AI选股定时任务失败: {e}")
+            return False
+
+    async def preview_cron(self, cron_expression: str, count: int = 5) -> Dict[str, Any]:
+        """预览Cron表达式的下次执行时间"""
+        try:
+            next_runs = self._get_next_run_times(cron_expression, count)
+            # 生成中文描述
+            description = self._describe_cron(cron_expression)
+            return {
+                "cron_expression": cron_expression,
+                "description": description,
+                "next_run_times": next_runs,
+            }
+        except Exception as e:
+            raise ValueError(f"无效的Cron表达式: {e}")
+
+    def _get_next_run_times(self, cron_expression: str, count: int = 5) -> List[str]:
+        """获取Cron表达式的下次执行时间列表"""
+        cron = croniter(cron_expression, datetime.now(_CN_TZ))
+        runs = []
+        for _ in range(count):
+            next_time = cron.get_next(datetime)
+            runs.append(next_time.strftime("%Y-%m-%d %H:%M:%S"))
+        return runs
+
+    def _describe_cron(self, cron_expression: str) -> str:
+        """生成Cron表达式的中文描述"""
+        parts = cron_expression.strip().split()
+        if len(parts) != 5:
+            return cron_expression
+
+        minute, hour, day, month, dow = parts
+        desc_parts = []
+
+        # 月份
+        if month != "*":
+            desc_parts.append(f"{month}月")
+
+        # 日期/星期
+        if dow != "*" and day == "*":
+            dow_map = {"0": "周日", "1": "周一", "2": "周二", "3": "周三",
+                       "4": "周四", "5": "周五", "6": "周六", "7": "周日"}
+            # 处理范围如 1-5
+            if "-" in dow:
+                start, end = dow.split("-")
+                desc_parts.append(f"每{dow_map.get(start, start)}至{dow_map.get(end, end)}")
+            elif "," in dow:
+                days = [dow_map.get(d.strip(), d.strip()) for d in dow.split(",")]
+                desc_parts.append(f"每{','.join(days)}")
+            else:
+                desc_parts.append(f"每{dow_map.get(dow, dow)}")
+        elif day != "*" and dow == "*":
+            desc_parts.append(f"每月{day}日")
+        elif day == "*" and dow == "*":
+            desc_parts.append("每天")
+
+        # 时间
+        if hour != "*" and minute != "*":
+            desc_parts.append(f"{hour.zfill(2)}:{minute.zfill(2)}")
+        elif hour != "*":
+            desc_parts.append(f"{hour}点每分钟")
+        elif minute != "*":
+            desc_parts.append(f"每小时{minute}分")
+
+        return "".join(desc_parts) if desc_parts else cron_expression
+
+    async def _run_scheduled_task(self, user_id: str):
+        """定时任务执行回调"""
+        try:
+            logger.info(f"🕐 AI选股定时任务触发: user={user_id}")
+            result = await self.create_task(user_id)
+            task_id = result["task_id"]
+            await self.execute_task(task_id, user_id)
+            logger.info(f"✅ AI选股定时任务完成: user={user_id}, task={task_id}")
+        except Exception as e:
+            logger.error(f"❌ AI选股定时任务执行失败: user={user_id}, error={e}", exc_info=True)
 
 
 # 单例

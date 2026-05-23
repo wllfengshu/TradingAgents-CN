@@ -4,7 +4,7 @@ AI选股API路由
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from pydantic import BaseModel, Field
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 import logging
 
 from app.routers.auth_db import get_current_user
@@ -18,6 +18,17 @@ class AiSelectorRequest(BaseModel):
     """AI选股请求"""
     quick_model: str = Field(default="qwen-turbo", description="快速分析模型")
     deep_model: str = Field(default="qwen-max", description="深度决策模型")
+
+
+class AiSelectorScheduleRequest(BaseModel):
+    """AI选股定时运行请求"""
+    cron_expression: str = Field(..., description="Cron表达式，如：0 30 9 * * 1-5")
+
+
+class CronPreviewRequest(BaseModel):
+    """Cron表达式预览请求"""
+    cron_expression: str = Field(..., description="Cron表达式")
+    count: int = Field(default=5, ge=1, le=20, description="预览次数")
 
 
 @router.post("/run", response_model=Dict[str, Any])
@@ -182,4 +193,74 @@ async def delete_task_history(
         raise
     except Exception as e:
         logger.error(f"❌ 删除AI选股记录失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/schedule", response_model=Dict[str, Any])
+async def create_schedule(
+    request: AiSelectorScheduleRequest,
+    user: dict = Depends(get_current_user),
+):
+    """创建AI选股定时任务"""
+    try:
+        service = get_ai_selector_service()
+        result = await service.create_schedule(
+            user_id=user["id"],
+            cron_expression=request.cron_expression,
+        )
+        return {"success": True, "data": result, "message": "定时任务已创建"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ 创建AI选股定时任务失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/schedule", response_model=Dict[str, Any])
+async def get_schedule(
+    user: dict = Depends(get_current_user),
+):
+    """获取当前用户的AI选股定时任务"""
+    try:
+        service = get_ai_selector_service()
+        result = await service.get_schedule(user_id=user["id"])
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error(f"❌ 获取AI选股定时任务失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/schedule", response_model=Dict[str, Any])
+async def delete_schedule(
+    user: dict = Depends(get_current_user),
+):
+    """删除当前用户的AI选股定时任务"""
+    try:
+        service = get_ai_selector_service()
+        result = await service.delete_schedule(user_id=user["id"])
+        if not result:
+            return {"success": True, "message": "无定时任务需要删除"}
+        return {"success": True, "message": "定时任务已删除"}
+    except Exception as e:
+        logger.error(f"❌ 删除AI选股定时任务失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/schedule/preview", response_model=Dict[str, Any])
+async def preview_cron(
+    request: CronPreviewRequest,
+    user: dict = Depends(get_current_user),
+):
+    """预览Cron表达式的下次执行时间"""
+    try:
+        service = get_ai_selector_service()
+        result = await service.preview_cron(
+            cron_expression=request.cron_expression,
+            count=request.count,
+        )
+        return {"success": True, "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ 预览Cron表达式失败: {e}")
         raise HTTPException(status_code=400, detail=str(e))

@@ -69,6 +69,19 @@ export interface AiSelectorHistoryList {
   page_size: number
 }
 
+export interface AiSelectorSchedule {
+  cron_expression: string
+  enabled: boolean
+  job_id: string
+  next_run_time: string | null
+}
+
+export interface CronPreview {
+  cron_expression: string
+  description: string
+  next_run_times: string[]
+}
+
 export const aiSelectorApi = {
   /** 启动AI选股任务 */
   run(data: AiSelectorRunRequest = {}) {
@@ -111,6 +124,36 @@ export const aiSelectorApi = {
   deleteHistory(taskId: string) {
     return request.delete<any, ApiResponse<{ message: string }>>(
       `/api/ai-selector/history/${taskId}`
+    )
+  },
+
+  /** 创建AI选股定时任务 */
+  createSchedule(cronExpression: string) {
+    return request.post<any, ApiResponse<AiSelectorSchedule>>(
+      '/api/ai-selector/schedule',
+      { cron_expression: cronExpression }
+    )
+  },
+
+  /** 获取AI选股定时任务 */
+  getSchedule() {
+    return request.get<any, ApiResponse<AiSelectorSchedule | null>>(
+      '/api/ai-selector/schedule'
+    )
+  },
+
+  /** 删除AI选股定时任务 */
+  deleteSchedule() {
+    return request.delete<any, ApiResponse<{ message: string }>>(
+      '/api/ai-selector/schedule'
+    )
+  },
+
+  /** 预览Cron表达式 */
+  previewCron(cronExpression: string, count: number = 5) {
+    return request.post<any, ApiResponse<CronPreview>>(
+      '/api/ai-selector/schedule/preview',
+      { cron_expression: cronExpression, count }
     )
   },
 }
