@@ -105,3 +105,16 @@
 你先把“AI交易”页面设计出来；然后再开始写后端逻辑
 
 
+这是基于网上的TradingAgents-CN开源项目做的二次开发的项目，我删掉了很多无用的代码。我需要你按照如下要求来协助我进行二次开发。
+注意事项：
+1、我当前电脑是Windows环境，使用powershell执行命令行，多行命令需要使用分号分隔。
+2、第一次执行命令前需要启动虚拟环境： .venv\Scripts\activate
+3、当前项目分前后端，后端启动命令是： python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+前端启动命令是： cd frontend; npm run dev
+4、该项目使用了mongodb和redis，我已经把环境都启动好了。
+5、如下文件目录，你直接忽略：./github ./idea ./venv /data /eval_results /logs /results .env.back .env.example .gitignore .python-version .error.log
+6、你写的代码务必要仿照现有的交互、页面风格来做，保证风格统一
+你的任务：
+“AI选股”功能已经实现了，前端页面在“frontend/src/views/AiSelector”目录中，后端代码在“app/services/ai_selector_service.py”。
+但是页面里面有一个“定时运行”按钮的逻辑没有实现，你需要把这个定时运行改为填入cron表达式的方式来运行，前后端都要实现（前端填入cron后能预览是什么时间运行）。
+

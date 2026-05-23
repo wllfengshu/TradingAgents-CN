@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from app.utils.json_compressor import compress_json_for_llm
 from app.utils.stock_utils import make_serializable, is_main_board_stock, extract_json_block
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from app.services.simple_analysis_service import create_analysis_config, get_provider_and_url_by_model_sync
 from app.core.database import get_mongo_db
@@ -94,9 +94,6 @@ def compute_market_indicators(api_cache) -> Dict[str, Any]:
 
         return result
 
-    except ImportError:
-        logger.error("akshare未安装，返回空指标")
-        return {"提示": "akshare未安装，无法获取实时数据"}
     except Exception as e:
         logger.error(f"计算大盘指标失败: {e}")
         return {"错误": str(e)}
@@ -127,8 +124,6 @@ def compute_sector_indicators(api_cache) -> Dict[str, Any]:
 
         return result
 
-    except ImportError:
-        return {"提示": "akshare未安装，无法获取实时数据"}
     except Exception as e:
         logger.error(f"计算板块指标失败: {e}")
         return {"错误": str(e)}
@@ -159,8 +154,6 @@ def compute_force_indicators(api_cache) -> Dict[str, Any]:
 
         return result
 
-    except ImportError:
-        return {"提示": "akshare未安装，无法获取实时数据"}
     except Exception as e:
         logger.error(f"计算合力指标失败: {e}")
         return {"错误": str(e)}
@@ -191,8 +184,6 @@ def compute_leader_indicators(api_cache) -> Dict[str, Any]:
 
         return result
 
-    except ImportError:
-        return {"提示": "akshare未安装，无法获取实时数据"}
     except Exception as e:
         logger.error(f"计算龙头指标失败: {e}")
         return {"错误": str(e)}
@@ -223,8 +214,6 @@ def compute_risk_indicators(api_cache, candidate_stock_codes: List[str] = None) 
 
         return result
 
-    except ImportError:
-        return {"提示": "akshare未安装，无法获取实时数据"}
     except Exception as e:
         logger.error(f"计算风险指标失败: {e}")
         return {"错误": str(e)}
@@ -528,9 +517,7 @@ class AiSelectorService:
         pass
 
     def _build_llm_config(self) -> Dict[str, Any]:
-        """复用已有的模型配置逻辑，构建与'股票分析'一致的配置
-        
-        始终使用系统自动推荐的已启用模型，确保 API Key、provider 等均来自数据库配置。
+        """复用已有的模型配置逻辑
         """
 
         capability_service = get_model_capability_service()
@@ -573,8 +560,6 @@ class AiSelectorService:
 
     def _create_llm_instances(self, config: Dict[str, Any]):
         """通过TradingAgentsGraph创建正确配置的LLM实例
-
-        复用已有逻辑，确保API Key、provider、backend_url等全部正确
         """
         graph = TradingAgentsGraph(
             selected_analysts=config.get("selected_analysts", ["market"]),
@@ -971,7 +956,7 @@ class AiSelectorService:
         )
 
         try:
-            response = self._invoke_llm(llm, [HumanMessage(content=prompt)], analyst_name)
+            response = self._invoke_llm(llm, [SystemMessage(content=prompt)], analyst_name)
             report = response.content
             logger.info(f"AI选股 [{analyst_name}] 分析完成，报告长度: {len(report)}")
             logger.info(
@@ -1005,7 +990,7 @@ class AiSelectorService:
         )
 
         try:
-            response = self._invoke_llm(llm, [HumanMessage(content=prompt)], "决策分析师")
+            response = self._invoke_llm(llm, [SystemMessage(content=prompt)], "决策分析师")
             report = response.content
             logger.info(f"AI选股 [决策分析师] 综合研判完成，报告长度: {len(report)}")
             logger.debug(
@@ -1070,7 +1055,6 @@ class AiSelectorService:
         except Exception:
             pass
 
-        import re
         codes = re.findall(r'\b(\d{6})\b', report)
         if codes:
             unique_codes = list(dict.fromkeys(codes))[:3]
@@ -1088,7 +1072,6 @@ class AiSelectorService:
         except Exception:
             pass
 
-        import re
         codes = re.findall(r'\b(\d{6})\b', report)
         if codes:
             unique_codes = list(dict.fromkeys(codes))[:2]
@@ -1151,7 +1134,6 @@ class AiSelectorService:
 
     def _parse_decision(self, decision_report: str) -> Dict[str, Any]:
         """解析决策分析师的结论"""
-        import re
         try:
             # Fix: 使用 findall 取最后一个 JSON 块，与 _extract_json_block 保持一致
             # 避免报告中示例 JSON 在前、真实 JSON 在后时解析错误
@@ -1171,7 +1153,7 @@ class AiSelectorService:
         elif "观望" in decision_report:
             action = "观望"
 
-        codes = re.findall(r'\b(\d{6})\b', decision_report)  # Fix: 移除重复的 import re
+        codes = re.findall(r'\b(\d{6})\b', decision_report)
         stocks = [{"code": c, "name": f"股票{c}"} for c in list(dict.fromkeys(codes))[:5]]
 
         return {
@@ -1231,7 +1213,6 @@ class AiSelectorService:
 
     def _get_risk_conclusion_tag_type(self, report: str) -> str:
         """风险分析师的结论标签"""
-        # Fix: "高" 太宽泛（最高、更高等），改用具体的风险词组
         if "高风险" in report or "风险较高" in report or "风险高" in report:
             return "danger"
         elif "低风险" in report or "风险较低" in report or "风险低" in report or "风险可控" in report:
