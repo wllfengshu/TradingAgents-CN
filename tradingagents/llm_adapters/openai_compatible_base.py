@@ -10,6 +10,7 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
 from langchain_core.callbacks import CallbackManagerForLLMRun
+import threading
 
 # 导入统一日志系统
 from tradingagents.utils.logging_init import setup_llm_logging
@@ -27,6 +28,12 @@ try:
 except ImportError:
     TOKEN_TRACKING_ENABLED = False
     logger.warning("⚠️ Token跟踪功能未启用")
+
+
+# 全局LLM并发信号量，限制同时发起的LLM请求数（避免超出API并发限流阈值）
+# 可通过环境变量 LLM_CONCURRENT_LIMIT 调整，默认2（Azure等API通常限制2并发）
+_LLM_CONCURRENT_LIMIT = int(os.environ.get("LLM_CONCURRENT_LIMIT", "2"))
+_LLM_CONCURRENT_SEMAPHORE = threading.Semaphore(_LLM_CONCURRENT_LIMIT)
 
 
 class OpenAICompatibleBase(ChatOpenAI):
@@ -154,6 +161,27 @@ class OpenAICompatibleBase(ChatOpenAI):
     def provider_name(self) -> Optional[str]:
         return getattr(self, "_provider_name", None)
 
+    @staticmethod
+    def _parse_rate_limit_wait(error: Exception) -> Optional[int]:
+        """从429错误中解析需要等待的秒数"""
+        import re as _re
+        # 1. 尝试从 Retry-After 响应头读取
+        resp = getattr(error, 'response', None)
+        if resp:
+            retry_after = getattr(resp, 'headers', {}).get("Retry-After")
+            if retry_after:
+                try:
+                    return int(retry_after)
+                except (ValueError, TypeError):
+                    pass
+        # 2. 尝试从错误消息中解析等待秒数
+        err_msg = str(error)
+        # 匹配 "wait XXX seconds" / "wait XXXs" / "Please wait XXX seconds"
+        m = _re.search(r'wait\s+(\d+)\s*s', err_msg, _re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+        return None
+
     # 移除model_name property定义，使用Pydantic字段
     # model_name字段由ChatOpenAI基类的Pydantic字段提供
     
@@ -199,11 +227,14 @@ class OpenAICompatibleBase(ChatOpenAI):
         **kwargs: Any,
     ) -> ChatResult:
         """
-        生成聊天响应，并记录token使用量，增加 prompt 过滤和自动重试机制
+        生成聊天响应，并记录token使用量，增加 prompt 过滤、429限流重试和自动重试机制
+        使用全局信号量控制并发请求数，避免超出API限流阈值
         """
         import copy
         MAX_RETRIES = 2
+        MAX_RATE_LIMIT_RETRIES = 5
         attempt = 0
+        rate_limit_attempt = 0
         last_exception = None
         # 处理所有消息内容
         filtered_messages = []
@@ -213,13 +244,42 @@ class OpenAICompatibleBase(ChatOpenAI):
                 msg_copy.content = self.filter_prompt(msg_copy.content)
             filtered_messages.append(msg_copy)
         start_time = time.time()
-        while attempt < MAX_RETRIES:
+        while True:
             try:
-                result = super()._generate(filtered_messages, stop, run_manager, **kwargs)
+                with _LLM_CONCURRENT_SEMAPHORE:
+                    result = super()._generate(filtered_messages, stop, run_manager, **kwargs)
                 self._track_token_usage(result, kwargs, start_time)
                 return result
             except Exception as e:
                 last_exception = e
+                # 检查是否为 429 限流错误
+                status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+                if status_code == 429:
+                    # 解析API返回的等待时间，若等待过久则快速失败
+                    wait_seconds = self._parse_rate_limit_wait(e)
+                    if wait_seconds and wait_seconds > 300:
+                        logger.error(
+                            f"❌ [OpenAICompatibleBase] 429限流，需等待{wait_seconds}s（>{300}s），快速失败避免无意义重试"
+                        )
+                        raise
+                    rate_limit_attempt += 1
+                    if rate_limit_attempt <= MAX_RATE_LIMIT_RETRIES:
+                        # 优先使用API返回的等待时间，否则指数退避
+                        if wait_seconds and wait_seconds > 0:
+                            wait_time = min(wait_seconds, 60)
+                        else:
+                            wait_time = min(4 * (2 ** (rate_limit_attempt - 1)), 60)
+                        logger.warning(
+                            f"⚠️ [OpenAICompatibleBase] 429限流，第{rate_limit_attempt}次重试，"
+                            f"等待{wait_time}s..."
+                        )
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(
+                            f"❌ [OpenAICompatibleBase] 429限流重试{MAX_RATE_LIMIT_RETRIES}次后仍失败: {e}"
+                        )
+                        raise
                 # 检查是否为 content_filter 错误
                 if hasattr(e, 'response') and hasattr(e.response, 'status_code') and e.response.status_code == 400:
                     err_json = getattr(e.response, 'json', lambda: {})()
@@ -233,6 +293,8 @@ class OpenAICompatibleBase(ChatOpenAI):
                             if hasattr(filtered_messages[0], 'content'):
                                 filtered_messages[0].content = self.filter_prompt(filtered_messages[0].content)
                         attempt += 1
+                        if attempt >= MAX_RETRIES:
+                            break
                         continue
                 # 其他异常直接抛出
                 logger.error(f"❌ [OpenAICompatibleBase] 请求失败: {e}")

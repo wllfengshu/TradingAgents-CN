@@ -66,7 +66,7 @@ def extract_json_block(text: str) -> Optional[Dict]:
         logger.error(f"解析JSON代码块失败: {e}")
     return None
 
-def is_trading_hours(self) -> bool:
+def is_trading_hours() -> bool:
     """判断当前是否为A股交易时段（工作日 9:30-11:30 / 13:00-15:00）"""
     from datetime import time as dtime
     now = datetime.now(ZoneInfo("Asia/Shanghai"))

@@ -59,32 +59,32 @@
           <div class="flow-steps">
             <div class="flow-step">
               <div class="step-number">1</div>
-              <div class="step-text">查询持仓</div>
-              <div class="step-condition">获取账户信息</div>
+              <div class="step-text">查询账户</div>
+              <div class="step-condition">资金+持仓（模拟数据）</div>
             </div>
             <div class="flow-arrow">
               <el-icon><ArrowRight /></el-icon>
             </div>
             <div class="flow-step">
               <div class="step-number">2</div>
-              <div class="step-text">并发分析</div>
-              <div class="step-condition">持仓分析+AI选股</div>
+              <div class="step-text">分析阶段</div>
+              <div class="step-condition">有持仓：股票分析+AI选股 并行<br/>无持仓：仅 AI选股</div>
             </div>
             <div class="flow-arrow">
               <el-icon><ArrowRight /></el-icon>
             </div>
             <div class="flow-step">
               <div class="step-number">3</div>
-              <div class="step-text">仓位管理</div>
-              <div class="step-condition">生成买卖信号</div>
+              <div class="step-text">仓位管理分析师</div>
+              <div class="step-condition">综合持仓/分析/选股，给出买卖信号</div>
             </div>
             <div class="flow-arrow">
               <el-icon><ArrowRight /></el-icon>
             </div>
             <div class="flow-step">
               <div class="step-number">4</div>
-              <div class="step-text">交易决策</div>
-              <div class="step-condition">执行下单</div>
+              <div class="step-text">交易决策分析师</div>
+              <div class="step-condition">审核信号，执行下单</div>
             </div>
           </div>
         </div>
@@ -410,31 +410,38 @@ marked.setOptions({
 // Agent团队定义
 const analystTeam = [
   {
-    name: '持仓分析',
-    emoji: '📊',
-    description: '查询账户持仓，分析持仓股票基本面与技术面',
-    tags: ['账户查询', '持仓分析', '个股评估'],
+    name: '账户与持仓查询',
+    emoji: '💼',
+    description: '获取账户信息（资金、持仓），根据是否有持仓决定后续流程分支（当前使用模拟数据）',
+    tags: ['账户信息', '持仓查询', '流程分支'],
     bgColor: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+  },
+  {
+    name: '股票分析',
+    emoji: '📊',
+    description: '当持仓不为空时，对每只持仓股票进行多维度分析（基本面/技术面/消息面），为后续仓位管理提供依据',
+    tags: ['持仓评估', '基本面', '技术面', '消息面'],
+    bgColor: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)'
   },
   {
     name: 'AI选股',
     emoji: '🎯',
-    description: '多Agent协同筛选优质标的，发现投资机会',
-    tags: ['大盘分析', '板块识别', '龙头筛选'],
+    description: '多Agent协同筛选优质新机会；有持仓时与"股票分析"并行执行，无持仓时单独执行',
+    tags: ['大盘分析', '主线板块', '龙头筛选', '风险评估'],
     bgColor: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)'
   },
   {
     name: '仓位管理分析师',
     emoji: '⚖️',
-    description: '综合持仓与机会，生成买卖信号与仓位调整方案',
+    description: '综合持仓信息、股票分析结果、AI选股结果（或无持仓时仅资金+选股结果），给出具体买卖信号',
     tags: ['买卖信号', '仓位调整', '风险控制'],
     bgColor: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)'
   },
   {
     name: '交易决策分析师',
     emoji: '🚀',
-    description: '审核交易信号，执行下单操作',
-    tags: ['下单执行', '订单确认', '交易风控'],
+    description: '审核仓位管理分析师给出的买卖信号，确认后执行下单',
+    tags: ['信号审核', '风控检查', '下单执行'],
     bgColor: 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)'
   }
 ]

@@ -2,7 +2,7 @@
 AI交易服务
 多Agent协同完成智能交易流程：
 1. 获取账户信息，包含资金情况、持仓情况（这一部分先使用模拟数据）
-2. 如果有持仓：把持仓股票传给"股票分析"服务；同时并行运行“AI选股”服务；再把“持仓信息”、“股票分析结果”、“AI选股结果”传给"仓位管理分析师"；
+2. 如果有持仓：先串行执行”持仓股票分析”和”AI选股”服务；再把”持仓信息”、”股票分析结果”、”AI选股结果”传给”仓位管理分析师”；
 如果没有持仓：先运行“AI选股”服务，再把“账户信息（资金情况）”和“AI选股结果”传给"仓位管理分析师"；
 3. 仓位管理分析师：综合持仓、分析结果、选股结果，给出买卖信号
 4. 交易决策分析师：审核信号，执行下单
@@ -266,7 +266,7 @@ class AiTradingService:
         from app.services.model_capability_service import get_model_capability_service
 
         capability_service = get_model_capability_service()
-        research_depth = "深度"
+        research_depth = "标准"
 
         quick_model, deep_model = capability_service.recommend_models_for_depth(research_depth)
         logger.info(f"AI交易 - 自动推荐模型: quick={quick_model}, deep={deep_model}")
@@ -306,11 +306,19 @@ class AiTradingService:
         return graph.quick_thinking_llm, graph.deep_thinking_llm
 
     def _invoke_llm(self, llm, messages, analyst_name: str = "") -> Any:
-        """LLM调用，带指数退避重试（仅对可恢复异常重试）"""
+        """LLM调用，带指数退避重试（对可恢复异常和429限流重试）"""
+        try:
+            from openai import RateLimitError as OpenAIRateLimitError
+            _rate_limit_exc = (OpenAIRateLimitError,)
+        except ImportError:
+            _rate_limit_exc = ()
+
         @retry(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=2, max=10),
-            retry=retry_if_exception_type((TimeoutError, ConnectionError, OSError)),
+            stop=stop_after_attempt(5),
+            wait=wait_exponential(multiplier=2, min=4, max=60),
+            retry=retry_if_exception_type(
+                (TimeoutError, ConnectionError, OSError, *_rate_limit_exc)
+            ),
             reraise=True,
         )
         def _do_invoke():
@@ -557,7 +565,7 @@ class AiTradingService:
 
         流程：
         1. 获取账户信息（资金+持仓）
-        2. 有持仓 → 并行(持仓分析 + AI选股)；无持仓 → 先AI选股
+        2. 有持仓 → 串行执行(持仓分析 → AI选股)；无持仓 → 先AI选股
         3. 仓位管理分析师：有持仓时综合(持仓+分析+选股)给买卖信号；无持仓时综合(资金+选股)给买入建议
         4. 交易决策分析师：审核信号，执行下单
         """
@@ -597,10 +605,39 @@ class AiTradingService:
             # ====== Step 1: 获取账户持仓 ======
             await self._update_status(task_id, "running", 10, "正在查询账户持仓...")
 
-            qmt = self._get_qmt_util()
-            with qmt:
-                account_info = qmt.get_account_info()
-                positions = qmt.get_positions()
+            if mode == "paper":
+                # 模拟模式：从MongoDB持仓快照获取
+                from app.services.ai_trading.portfolio_service import get_portfolio_service
+                portfolio_svc = get_portfolio_service()
+                portfolio = await portfolio_svc.get_portfolio(user_id, mode="paper")
+
+                if portfolio.get("has_data"):
+                    account_info = AccountInfo(
+                        cash=portfolio["cash"],
+                        total_value=portfolio["total_value"],
+                        frozen_cash=0.0,
+                    )
+                    positions = [
+                        Position(
+                            code=h["code"],
+                            name=h["name"],
+                            volume=h["volume"],
+                            cost_price=h["cost_price"],
+                            current_price=h["current_price"],
+                        )
+                        for h in portfolio.get("holdings", [])
+                    ]
+                else:
+                    # 未初始化，自动创建模拟账户
+                    await portfolio_svc.init_paper_portfolio(user_id)
+                    account_info = AccountInfo(cash=1000000.0, total_value=1000000.0, frozen_cash=0.0)
+                    positions = []
+            else:
+                # 实盘模式：从QMT获取真实持仓
+                qmt = self._get_qmt_util()
+                with qmt:
+                    account_info = qmt.get_account_info()
+                    positions = qmt.get_positions()
 
             has_position = len(positions) > 0
             logger.info(f"AI交易 账户: cash={account_info.cash}, total_value={account_info.total_value}, "
@@ -626,15 +663,30 @@ class AiTradingService:
             await self._raise_if_cancelled(task_id)
 
             if has_position:
-                # 有持仓：并行执行"持仓股票分析"和"AI选股"
-                await self._update_status(task_id, "running", 15, "正在并发执行持仓分析+AI选股...")
+                # 有持仓：先执行持仓分析，再执行AI选股（串行执行避免LLM并发限流）
+                await self._update_status(task_id, "running", 15, "正在执行持仓分析...")
+                try:
+                    position_analysis_results = await self._run_position_analysis(positions, api_cache)
+                except Exception as e:
+                    logger.error(f"AI交易 持仓分析失败，跳过: {e}")
+                    analyst_results.append({
+                        "name": "持仓分析",
+                        "conclusion": f"分析失败（已跳过）: {str(e)[:100]}",
+                        "tag_type": "danger",
+                        "content": f"持仓分析因错误跳过: {str(e)}",
+                    })
 
-                analysis_task = self._run_position_analysis(positions, api_cache)
-                selector_task = self._run_ai_selector(quick_llm, deep_llm, api_cache)
-
-                position_analysis_results, selector_result = await asyncio.gather(
-                    analysis_task, selector_task
-                )
+                await self._update_status(task_id, "running", 30, "正在执行AI选股...")
+                try:
+                    selector_result = await self._run_ai_selector(quick_llm, deep_llm, api_cache)
+                except Exception as e:
+                    logger.error(f"AI交易 AI选股失败，跳过: {e}")
+                    analyst_results.append({
+                        "name": "AI选股",
+                        "conclusion": f"选股失败（已跳过）: {str(e)[:100]}",
+                        "tag_type": "danger",
+                        "content": f"AI选股因错误跳过: {str(e)}",
+                    })
 
                 # 记录持仓分析结果到analyst_results
                 for code, result in position_analysis_results.items():
@@ -661,7 +713,16 @@ class AiTradingService:
             else:
                 # 无持仓：先运行AI选股
                 await self._update_status(task_id, "running", 15, "空仓，正在执行AI选股...")
-                selector_result = await self._run_ai_selector(quick_llm, deep_llm, api_cache)
+                try:
+                    selector_result = await self._run_ai_selector(quick_llm, deep_llm, api_cache)
+                except Exception as e:
+                    logger.error(f"AI交易 AI选股失败，跳过: {e}")
+                    analyst_results.append({
+                        "name": "AI选股",
+                        "conclusion": f"选股失败（已跳过）: {str(e)[:100]}",
+                        "tag_type": "danger",
+                        "content": f"AI选股因错误跳过: {str(e)}",
+                    })
 
                 if selector_result:
                     selector_analyst_results = selector_result.get("analyst_results", [])
@@ -692,52 +753,73 @@ class AiTradingService:
                     for code, result in position_analysis_results.items()
                 ) if position_analysis_results else "无持仓个股分析结果"
 
-                position_manager_report = await asyncio.to_thread(
-                    self._run_analyst, deep_llm, "仓位管理分析师",
-                    POSITION_MANAGER_PROMPT,
-                    extra_params={
-                        "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
-                        "cash": f"{account_info.cash:.2f}",
-                        "total_value": f"{account_info.total_value:.2f}",
-                        "frozen_cash": f"{account_info.frozen_cash:.2f}",
-                        "positions_info": positions_info,
-                        "position_analysis_results": position_analysis_str,
-                        "selector_results": selector_str,
-                    }
-                )
+                try:
+                    position_manager_report = await asyncio.to_thread(
+                        self._run_analyst, deep_llm, "仓位管理分析师",
+                        POSITION_MANAGER_PROMPT,
+                        extra_params={
+                            "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
+                            "cash": f"{account_info.cash:.2f}",
+                            "total_value": f"{account_info.total_value:.2f}",
+                            "frozen_cash": f"{account_info.frozen_cash:.2f}",
+                            "positions_info": positions_info,
+                            "position_analysis_results": position_analysis_str,
+                            "selector_results": selector_str,
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"AI交易 仓位管理分析师失败: {e}")
+                    position_manager_report = ""
+                    analyst_results.append({
+                        "name": "仓位管理分析师",
+                        "conclusion": f"分析失败: {str(e)[:100]}",
+                        "tag_type": "danger",
+                        "content": f"仓位管理分析师因错误失败: {str(e)}",
+                    })
             else:
                 # 无持仓：只传入账户资金信息 + AI选股结果
                 await self._update_status(task_id, "running", 60, "仓位管理分析师生成买入建议...")
 
-                position_manager_report = await asyncio.to_thread(
-                    self._run_analyst, deep_llm, "仓位管理分析师",
-                    POSITION_MANAGER_PROMPT_NO_POSITION,
-                    extra_params={
-                        "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
-                        "cash": f"{account_info.cash:.2f}",
-                        "total_value": f"{account_info.total_value:.2f}",
-                        "frozen_cash": f"{account_info.frozen_cash:.2f}",
-                        "selector_results": selector_str,
-                    }
-                )
+                try:
+                    position_manager_report = await asyncio.to_thread(
+                        self._run_analyst, deep_llm, "仓位管理分析师",
+                        POSITION_MANAGER_PROMPT_NO_POSITION,
+                        extra_params={
+                            "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
+                            "cash": f"{account_info.cash:.2f}",
+                            "total_value": f"{account_info.total_value:.2f}",
+                            "frozen_cash": f"{account_info.frozen_cash:.2f}",
+                            "selector_results": selector_str,
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"AI交易 仓位管理分析师失败: {e}")
+                    position_manager_report = ""
+                    analyst_results.append({
+                        "name": "仓位管理分析师",
+                        "conclusion": f"分析失败: {str(e)[:100]}",
+                        "tag_type": "danger",
+                        "content": f"仓位管理分析师因错误失败: {str(e)}",
+                    })
 
             trading_signals = self._extract_trading_signals(position_manager_report)
             logger.info(f"AI交易 仓位管理分析师信号: {trading_signals}")
 
-            # 提取结论标签
-            if trading_signals:
-                buy_count = sum(1 for s in trading_signals if s.get("action") == "买入")
-                sell_count = sum(1 for s in trading_signals if s.get("action") == "卖出")
-                conclusion = f"买入{buy_count}只, 卖出{sell_count}只"
-            else:
-                conclusion = "无交易信号（建议持有/观望）"
+            # 提取结论标签（仅在未因异常添加过结果时添加）
+            if position_manager_report:
+                if trading_signals:
+                    buy_count = sum(1 for s in trading_signals if s.get("action") == "买入")
+                    sell_count = sum(1 for s in trading_signals if s.get("action") == "卖出")
+                    conclusion = f"买入{buy_count}只, 卖出{sell_count}只"
+                else:
+                    conclusion = "无交易信号（建议持有/观望）"
 
-            analyst_results.append({
-                "name": "仓位管理分析师",
-                "conclusion": conclusion,
-                "tag_type": "warning" if trading_signals else "info",
-                "content": position_manager_report,
-            })
+                analyst_results.append({
+                    "name": "仓位管理分析师",
+                    "conclusion": conclusion,
+                    "tag_type": "warning" if trading_signals else "info",
+                    "content": position_manager_report,
+                })
 
             # ====== Step 4: 交易决策分析师 ======
             await self._raise_if_cancelled(task_id)
@@ -755,17 +837,27 @@ class AiTradingService:
                     for s in trading_signals
                 )
 
-                trading_decision_report = await asyncio.to_thread(
-                    self._run_analyst, deep_llm, "交易决策分析师",
-                    TRADING_DECISION_PROMPT,
-                    extra_params={
-                        "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
-                        "cash": f"{account_info.cash:.2f}",
-                        "total_value": f"{account_info.total_value:.2f}",
-                        "positions_info": positions_info,
-                        "trading_signals": signals_str,
-                    }
-                )
+                try:
+                    trading_decision_report = await asyncio.to_thread(
+                        self._run_analyst, deep_llm, "交易决策分析师",
+                        TRADING_DECISION_PROMPT,
+                        extra_params={
+                            "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
+                            "cash": f"{account_info.cash:.2f}",
+                            "total_value": f"{account_info.total_value:.2f}",
+                            "positions_info": positions_info,
+                            "trading_signals": signals_str,
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"AI交易 交易决策分析师失败: {e}")
+                    trading_decision_report = ""
+                    analyst_results.append({
+                        "name": "交易决策分析师",
+                        "conclusion": f"审核失败: {str(e)[:100]}",
+                        "tag_type": "danger",
+                        "content": f"交易决策分析师因错误失败: {str(e)}",
+                    })
 
                 approved_signals = self._extract_approved_signals(trading_decision_report)
                 logger.info(f"AI交易 审核通过信号: {approved_signals}")
@@ -774,12 +866,13 @@ class AiTradingService:
                 rejected_count = len(trading_signals) - approved_count
                 decision_conclusion = f"通过{approved_count}笔, 拒绝{rejected_count}笔"
 
-                analyst_results.append({
-                    "name": "交易决策分析师",
-                    "conclusion": decision_conclusion,
-                    "tag_type": "success" if approved_count > 0 else "info",
-                    "content": trading_decision_report,
-                })
+                if trading_decision_report:
+                    analyst_results.append({
+                        "name": "交易决策分析师",
+                        "conclusion": decision_conclusion,
+                        "tag_type": "success" if approved_count > 0 else "info",
+                        "content": trading_decision_report,
+                    })
 
                 # ====== Step 5: 执行下单 ======
                 await self._raise_if_cancelled(task_id)
@@ -905,12 +998,12 @@ class AiTradingService:
 
     async def _run_position_analysis(self, positions: List[Position],
                                      api_cache: ApiCache) -> Dict[str, Dict]:
-        """并发分析所有持仓股票，使用SimpleAnalysisService的完整多Agent分析"""
-        analysis_service = get_simple_analysis_service()
+        """逐个分析持仓股票（串行执行，避免LLM并发限流）"""
 
         async def _analyze_one(code: str, name: str) -> Dict:
             logger.info(f"AI交易 持仓分析: {code} {name}")
             try:
+                analysis_service = get_simple_analysis_service()
                 request = SingleAnalysisRequest(
                     symbol=code.replace(".SH", "").replace(".SZ", ""),
                     parameters=AnalysisParameters(
@@ -942,23 +1035,21 @@ class AiTradingService:
                 logger.error(f"持仓分析 {code} 失败: {e}", exc_info=True)
                 return {"report": f"分析失败: {str(e)}", "decision": {"action": "持有", "reasoning": f"分析失败: {str(e)}"}}
 
-        tasks = {pos.code: _analyze_one(pos.code, pos.name) for pos in positions}
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
         output = {}
-        for code, result in zip(tasks.keys(), results):
-            if isinstance(result, Exception):
-                logger.error(f"持仓分析 {code} 失败: {result}")
-                output[code] = {"report": f"分析失败: {str(result)}", "error": str(result)}
-            else:
-                output[code] = result
+        for pos in positions:
+            try:
+                result = await _analyze_one(pos.code, pos.name)
+                output[pos.code] = result
+            except Exception as e:
+                logger.error(f"持仓分析 {pos.code} 失败: {e}")
+                output[pos.code] = {"report": f"分析失败: {str(e)}", "error": str(e)}
 
         return output
 
     async def _run_ai_selector(self, quick_llm, deep_llm,
                                api_cache: ApiCache) -> Dict:
         """运行AI选股完整流程（直接调用AiSelectorService.run_analysis）"""
-        logger.info("AI交易 并发运行AI选股...")
+        logger.info("AI交易 运行AI选股...")
 
         try:
             service = AiSelectorService()

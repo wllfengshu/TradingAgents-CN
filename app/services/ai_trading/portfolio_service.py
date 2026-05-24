@@ -289,7 +289,7 @@ class PortfolioService:
         sharpe_ratio = self._calc_sharpe_ratio(daily_returns)
 
         # 计算最大回撤
-        max_drawdown, max_drawdown_pct = self._calc_max_drawdown(user_id, mode, initial_capital)
+        max_drawdown, max_drawdown_pct = await self._calc_max_drawdown(user_id, mode, initial_capital)
 
         # 计算胜率
         win_rate = await self._calc_win_rate(user_id, mode)
@@ -608,6 +608,12 @@ class PortfolioService:
         db = get_mongo_db()
         now = _now_cn()
 
+        # 清空该用户所有模拟订单记录
+        await db.ai_trading_orders.delete_many(
+            {"user_id": user_id, "mode": "paper"}
+        )
+
+        # 重置模拟持仓快照
         await db.ai_trading_portfolio_snapshots.update_one(
             {"user_id": user_id, "mode": "paper"},
             {
@@ -616,27 +622,20 @@ class PortfolioService:
                     "mode": "paper",
                     "cash": initial_capital,
                     "total_value": initial_capital,
+                    "initial_capital": initial_capital,
                     "holdings": {},
-                    "updated_at": now,
-                },
-                "$setOnInsert": {
                     "created_at": now,
+                    "updated_at": now,
                 },
             },
             upsert=True,
-        )
-
-        # 确保 initial_capital 在首次创建时被设置
-        await db.ai_trading_portfolio_snapshots.update_one(
-            {"user_id": user_id, "mode": "paper", "initial_capital": {"$exists": False}},
-            {"$set": {"initial_capital": initial_capital}},
         )
 
         return {
             "user_id": user_id,
             "mode": "paper",
             "initial_capital": initial_capital,
-            "message": "模拟账户已初始化",
+            "message": "模拟账户已重置",
         }
 
 
