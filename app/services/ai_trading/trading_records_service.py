@@ -69,16 +69,15 @@ class AiTradingRecordsService:
 
             if start_date or end_date:
                 shanghai_tz = ZoneInfo("Asia/Shanghai")
-                utc_tz = ZoneInfo("UTC")
                 created_at_query = {}
 
                 if start_date:
                     start_dt = datetime.fromisoformat(start_date).replace(tzinfo=shanghai_tz)
-                    created_at_query["$gte"] = start_dt.astimezone(utc_tz)
+                    created_at_query["$gte"] = start_dt.astimezone(shanghai_tz)
 
                 if end_date:
                     end_dt = datetime.fromisoformat(end_date).replace(tzinfo=shanghai_tz) + timedelta(days=1)
-                    created_at_query["$lt"] = end_dt.astimezone(utc_tz)
+                    created_at_query["$lt"] = end_dt.astimezone(shanghai_tz)
 
                 if created_at_query:
                     query["created_at"] = created_at_query

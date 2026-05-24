@@ -39,7 +39,7 @@ logger = logging.getLogger("app.services.ai_trading_service")
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 
 def _now_cn() -> datetime:
-    """返回上海时区当前时间（无tzinfo）"""
+    """返回上海时区当前时间（无tzinfo），所有入库时间统一使用此函数"""
     return datetime.now(_CN_TZ).replace(tzinfo=None)
 
 
@@ -253,12 +253,6 @@ TRADING_DECISION_PROMPT = """你是一位资深的交易决策分析师，负责
 # AI交易服务主类
 # ============================================================
 
-def _is_daily_rate_limit(exc: BaseException) -> bool:
-    """判断是否为每日限流（不可恢复，无需重试）"""
-    msg = str(exc)
-    return "86400s" in msg or "UserByModelByDay" in msg
-
-
 class AiTradingService:
     """AI交易服务"""
 
@@ -331,13 +325,7 @@ class AiTradingService:
             reraise=True,
         )
         def _do_invoke():
-            try:
-                return llm.invoke(messages)
-            except Exception as e:
-                # 每日限流不可恢复，转换为RuntimeError跳过重试
-                if _is_daily_rate_limit(e):
-                    raise RuntimeError(f"每日限流不可恢复，跳过重试: {e}") from e
-                raise
+            return llm.invoke(messages)
         return _do_invoke()
 
     def _run_analyst(self, llm, analyst_name: str, prompt_template: str,
@@ -349,15 +337,15 @@ class AiTradingService:
         prompt = prompt_template.format(**format_params)
 
         logger.info(f"[LLM提示词] [{analyst_name}] 提示词长度={len(prompt)}")
-        logger.debug(
+        logger.info(
             f"[LLM提示词] [{analyst_name}] 完整内容:\n{'='*60}\n{prompt}\n{'='*60}"
         )
 
         response = self._invoke_llm(llm, [HumanMessage(content=prompt)], analyst_name)
         report = response.content
         logger.info(f"AI交易 [{analyst_name}] 分析完成，报告长度: {len(report)}")
-        logger.debug(
-            f"[LLM输出] [{analyst_name}] 输出长度={len(report)}\n"
+        logger.info(
+            f"[LLM输出] [{analyst_name}] 输出长度={report}\n"
             f"{'='*60}\n{report}\n{'='*60}"
         )
         return report
@@ -559,8 +547,8 @@ class AiTradingService:
                 "status": "pending",
                 "progress": 0,
                 "current_step": "",
-                "created_at": datetime.now(ZoneInfo("UTC")),
-                "updated_at": datetime.now(ZoneInfo("UTC")),
+                "created_at": _now_cn(),
+                "updated_at": _now_cn(),
             })
         except ValueError:
             raise
@@ -653,7 +641,7 @@ class AiTradingService:
                 "order_results": order_results,
                 "decision": decision,
                 "decision_report": decision_report,
-                "completed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+                "completed_at": _now_cn().isoformat(),
             }
 
             await self._save_result(task_id, result, elapsed)
@@ -680,7 +668,7 @@ class AiTradingService:
             return
         now_str = _now_cn_str()
         if mode == "live":
-            logger.warning(f"AI交易 非交易时段拒绝实盘下单: {now_str}")
+            logger.error(f"AI交易 非交易时段拒绝实盘下单: {now_str}")
             raise ValueError(
                 f"当前非A股交易时段({now_str})，实盘模式不允许下单。"
                 f"交易时间: 工作日 9:30-11:30 / 13:00-15:00"
@@ -973,7 +961,7 @@ class AiTradingService:
         return []
 
     # ============================================================
-    # 并发分析子任务
+    # 分析子任务
     # ============================================================
 
     async def _run_position_analysis(self, positions: List[Position],
@@ -1365,7 +1353,7 @@ class AiTradingService:
                 "status": status,
                 "progress": progress,
                 "current_step": current_step,
-                "updated_at": datetime.now(ZoneInfo("UTC")),
+                "updated_at": _now_cn(),
             }
             if error_message:
                 update_data["error_message"] = error_message
@@ -1389,7 +1377,7 @@ class AiTradingService:
                     "current_step": "交易完成",
                     "result": serializable_result,
                     "elapsed_time": round(elapsed, 2),
-                    "updated_at": datetime.now(ZoneInfo("UTC")),
+                    "updated_at": _now_cn(),
                 }}
             )
         except Exception as e:

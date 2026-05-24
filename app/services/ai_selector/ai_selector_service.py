@@ -595,6 +595,8 @@ class AiSelectorService:
 
             leading_stocks = self._extract_leading_stocks(leader_report)
             logger.info(f"AI选股 龙头股: {leading_stocks}")
+            # 测试，写死一个603985股票 todo
+            # leading_stocks = [{"code": "603985", "name": "恒润股份"}]
             if not leading_stocks:
                 early_stop_reason = "股票龙头分析师未筛选出明确的龙头股，终止后续分析"
                 logger.info(f"AI选股 提前终止: {early_stop_reason}")
@@ -957,7 +959,6 @@ class AiSelectorService:
             return [{"code": c, "name": f"股票{c}"} for c in unique_codes]
         return []
 
-
     def _extract_leading_stocks(self, report: str) -> List[Dict]:
         """从龙头分析师报告中提取龙头股（2-3支）
 
@@ -1136,6 +1137,10 @@ class AiSelectorService:
             )
         except Exception as e:
             logger.error(f"更新AI选股任务状态失败: {e}")
+
+    # ============================================================
+    # 定时任务管理方法（创建/查询/删除）以及Cron表达式预览
+    # ============================================================
 
     async def create_schedule(self, user_id: str, cron_expression: str) -> Dict[str, Any]:
         """创建AI选股定时任务"""
