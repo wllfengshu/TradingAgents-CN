@@ -20,6 +20,15 @@ class AiTradingRunRequest(BaseModel):
     """AI交易运行请求"""
     mode: str = Field(default="paper", description="交易模式: paper=模拟, live=实盘")
 
+class AiTradingScheduleRequest(BaseModel):
+    """AI交易定时运行请求"""
+    cron_expression: str = Field(..., description="Cron表达式，如：0 30 9 * * 1-5")
+
+
+class CronPreviewRequest(BaseModel):
+    """Cron表达式预览请求"""
+    cron_expression: str = Field(..., description="Cron表达式")
+    count: int = Field(default=5, ge=1, le=20, description="预览次数")
 
 @router.post("/run", response_model=Dict[str, Any])
 async def run_ai_trading(
@@ -295,3 +304,76 @@ async def init_paper_portfolio(
     except Exception as e:
         logger.error(f"❌ 初始化模拟账户失败: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+# ── 定时任务 ──────────────────────────────────────────────
+
+
+@router.post("/schedule", response_model=Dict[str, Any])
+async def create_schedule(
+        request: AiTradingScheduleRequest,
+        user: dict = Depends(get_current_user),
+):
+    """创建AI交易定时任务"""
+    try:
+        service = get_ai_trading_service()
+        result = await service.create_schedule(
+            user_id=user["id"],
+            cron_expression=request.cron_expression,
+        )
+        return {"success": True, "data": result, "message": "定时任务已创建"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ 创建AI交易定时任务失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/schedule", response_model=Dict[str, Any])
+async def get_schedule(
+        user: dict = Depends(get_current_user),
+):
+    """获取当前用户的AI交易定时任务"""
+    try:
+        service = get_ai_trading_service()
+        result = await service.get_schedule(user_id=user["id"])
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error(f"❌ 获取AI交易定时任务失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/schedule", response_model=Dict[str, Any])
+async def delete_schedule(
+        user: dict = Depends(get_current_user),
+):
+    """删除当前用户的AI交易定时任务"""
+    try:
+        service = get_ai_trading_service()
+        result = await service.delete_schedule(user_id=user["id"])
+        if not result:
+            return {"success": True, "message": "无定时任务需要删除"}
+        return {"success": True, "message": "定时任务已删除"}
+    except Exception as e:
+        logger.error(f"❌ 删除AI交易定时任务失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/schedule/preview", response_model=Dict[str, Any])
+async def preview_cron(
+        request: CronPreviewRequest,
+        user: dict = Depends(get_current_user),
+):
+    """预览Cron表达式的下次执行时间"""
+    try:
+        service = get_ai_trading_service()
+        result = await service.preview_cron(
+            cron_expression=request.cron_expression,
+            count=request.count,
+        )
+        return {"success": True, "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ 预览Cron表达式失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+

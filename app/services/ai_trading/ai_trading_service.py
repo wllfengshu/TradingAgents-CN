@@ -30,6 +30,7 @@ from app.services.simple_analysis_service import (
     get_simple_analysis_service,
 )
 from app.utils.stock_utils import is_main_board_stock, extract_json_block, make_serializable, is_trading_hours
+from app.utils.schedule_utils import ScheduleManager, preview_cron
 from app.models.analysis import SingleAnalysisRequest, AnalysisParameters
 from app.core.database import get_mongo_db
 from app.services.ai_selector.ai_selector_service import AiSelectorService, ApiCache
@@ -520,8 +521,14 @@ class AiTradingService:
     # 任务管理
     # ============================================================
 
-    async def create_task(self, user_id: str, mode: str = "paper") -> Dict[str, Any]:
-        """创建AI交易任务（防止并发创建）"""
+    async def create_task(self, user_id: str, mode: str = "paper", trigger_type: str = "manual") -> Dict[str, Any]:
+        """创建AI交易任务（防止并发创建）
+
+        Args:
+            trigger_type: "manual"=手动执行 / "scheduled"=定时执行
+        """
+        if trigger_type not in ("manual", "scheduled"):
+            raise ValueError(f"非法触发类型: {trigger_type}")
         if mode not in ("paper", "live"):
             raise ValueError(f"非法交易模式: {mode}，仅支持 paper/live")
 
@@ -544,6 +551,7 @@ class AiTradingService:
                 "task_id": task_id,
                 "user_id": user_id,
                 "mode": mode,
+                "trigger_type": trigger_type,
                 "status": "pending",
                 "progress": 0,
                 "current_step": "",
@@ -1068,7 +1076,7 @@ class AiTradingService:
         if action not in ("买入", "卖出"):
             return f"非法操作类型: {action}"
 
-        if not re.match(r"^\d{6}\.(SZ|SH)$", code):
+        if not is_main_board_stock(code):
             return f"股票代码格式不合法: {code}"
 
         if price is not None and (not isinstance(price, (int, float)) or price <= 0):
@@ -1275,6 +1283,45 @@ class AiTradingService:
             "risk_warning": f"{'模拟模式' if mode == 'paper' else '实盘模式'}运行，"
                             f"成功{len(success_orders)}笔，失败{len(failed_orders)}笔",
         }
+
+    # ============================================================
+    # 定时任务管理方法
+    # ============================================================
+
+    _schedule_mgr = ScheduleManager(
+        collection_name="ai_trading_schedules",
+        job_id_prefix="ai_trading_schedule_",
+        job_name="AI交易定时运行",
+    )
+
+    async def create_schedule(self, user_id: str, cron_expression: str) -> Dict[str, Any]:
+        """创建AI交易定时任务"""
+        return await self._schedule_mgr.create_schedule(
+            user_id, cron_expression, self._run_scheduled_task
+        )
+
+    async def get_schedule(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """获取用户的AI交易定时任务配置"""
+        return await self._schedule_mgr.get_schedule(user_id)
+
+    async def delete_schedule(self, user_id: str) -> bool:
+        """删除用户的AI交易定时任务"""
+        return await self._schedule_mgr.delete_schedule(user_id)
+
+    async def preview_cron(self, cron_expression: str, count: int = 5) -> Dict[str, Any]:
+        """预览Cron表达式的下次执行时间"""
+        return preview_cron(cron_expression, count)
+
+    async def _run_scheduled_task(self, user_id: str):
+        """定时任务执行回调"""
+        try:
+            logger.info(f"🕐 AI交易定时任务触发: user={user_id}")
+            result = await self.create_task(user_id, mode="paper", trigger_type="scheduled")
+            task_id = result["task_id"]
+            await self.execute_task(task_id, user_id, mode="paper")
+            logger.info(f"✅ AI交易定时任务完成: user={user_id}, task={task_id}")
+        except Exception as e:
+            logger.error(f"❌ AI交易定时任务执行失败: user={user_id}, error={e}", exc_info=True)
 
     # ============================================================
     # 辅助方法

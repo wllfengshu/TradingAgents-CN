@@ -3,7 +3,7 @@
     <div class="page-header">
       <h1 class="page-title">
         <el-icon><Document /></el-icon>
-        AI交易记录
+        AI交易-交易记录
       </h1>
       <p class="page-description">
         查看 AI 交易任务的历史执行结果、交易信号和下单状态。
@@ -76,6 +76,18 @@
           </template>
         </el-table-column>
 
+        <el-table-column label="执行方式" width="110">
+          <template #default="{ row }">
+            <el-tag
+              :type="row.trigger_type === 'scheduled' ? 'warning' : 'info'"
+              size="small"
+              effect="plain"
+            >
+              {{ row.trigger_type === 'scheduled' ? '定时执行' : '手动执行' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+
         <el-table-column label="模式" width="100">
           <template #default="{ row }">
             <el-tag :type="getModeTagType(row.mode)" effect="dark">
@@ -144,7 +156,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="current_step" label="当前阶段" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="current_step" label="当前阶段" min-width="160" show-overflow-tooltip />
 
         <el-table-column label="耗时" width="120">
           <template #default="{ row }">

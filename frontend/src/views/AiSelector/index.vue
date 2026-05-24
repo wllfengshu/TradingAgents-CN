@@ -6,7 +6,7 @@
         <div class="title-section">
           <h1 class="page-title">
             <el-icon class="title-icon"><Cpu /></el-icon>
-            AI选股
+            AI选股-立即选股
           </h1>
           <p class="page-description">
             AI分析师团队协同工作，多维度智能筛选优质标的

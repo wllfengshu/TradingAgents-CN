@@ -32,7 +32,7 @@ from app.services.ai_selector.compute_indicators import (
     compute_risk_indicators,
 )
 from app.services.model_capability_service import get_model_capability_service
-from croniter import croniter
+from app.utils.schedule_utils import ScheduleManager, preview_cron
 
 logger = logging.getLogger(__name__)
 
@@ -1139,203 +1139,32 @@ class AiSelectorService:
             logger.error(f"更新AI选股任务状态失败: {e}")
 
     # ============================================================
-    # 定时任务管理方法（创建/查询/删除）以及Cron表达式预览
+    # 定时任务管理方法
     # ============================================================
+
+    _schedule_mgr = ScheduleManager(
+        collection_name="ai_selector_schedules",
+        job_id_prefix="ai_selector_schedule_",
+        job_name="AI选股定时运行",
+    )
 
     async def create_schedule(self, user_id: str, cron_expression: str) -> Dict[str, Any]:
         """创建AI选股定时任务"""
-        # 验证cron表达式
-        try:
-            cron = croniter(cron_expression, datetime.now(_CN_TZ))
-            # 尝试获取下一次时间，验证表达式有效
-            cron.get_next(datetime)
-        except Exception as e:
-            raise ValueError(f"无效的Cron表达式: {e}")
-
-        try:
-            from app.services.scheduler_service import get_scheduler_service
-            from apscheduler.triggers.cron import CronTrigger
-
-            scheduler_service = get_scheduler_service()
-            scheduler = scheduler_service.scheduler
-
-            job_id = f"ai_selector_schedule_{user_id}"
-
-            # 如果已存在该用户的定时任务，先移除
-            existing_job = scheduler.get_job(job_id)
-            if existing_job:
-                scheduler.remove_job(job_id)
-
-            # 使用 APScheduler 添加 cron 定时任务
-            parts = cron_expression.strip().split()
-            trigger = CronTrigger(
-                minute=parts[0] if len(parts) > 0 else "*",
-                hour=parts[1] if len(parts) > 1 else "*",
-                day=parts[2] if len(parts) > 2 else "*",
-                month=parts[3] if len(parts) > 3 else "*",
-                day_of_week=parts[4] if len(parts) > 4 else "*",
-                timezone=_CN_TZ,
-            )
-
-            scheduler.add_job(
-                self._run_scheduled_task,
-                trigger=trigger,
-                id=job_id,
-                name=f"AI选股定时运行",
-                kwargs={"user_id": user_id},
-                replace_existing=True,
-            )
-
-            # 保存定时配置到 MongoDB
-            db = get_mongo_db()
-            await db.ai_selector_schedules.update_one(
-                {"user_id": user_id},
-                {
-                    "$set": {
-                        "user_id": user_id,
-                        "cron_expression": cron_expression,
-                        "job_id": job_id,
-                        "enabled": True,
-                        "updated_at": _now_cn(),
-                    }
-                },
-                upsert=True,
-            )
-
-            # 计算下次执行时间
-            next_runs = self._get_next_run_times(cron_expression, 1)
-
-            logger.info(f"✅ AI选股定时任务已创建: user={user_id}, cron={cron_expression}")
-
-            return {
-                "job_id": job_id,
-                "cron_expression": cron_expression,
-                "enabled": True,
-                "next_run_time": next_runs[0] if next_runs else None,
-            }
-        except ValueError:
-            raise
-        except Exception as e:
-            logger.error(f"❌ 创建AI选股定时任务失败: {e}")
-            raise
+        return await self._schedule_mgr.create_schedule(
+            user_id, cron_expression, self._run_scheduled_task
+        )
 
     async def get_schedule(self, user_id: str) -> Optional[Dict[str, Any]]:
         """获取用户的AI选股定时任务配置"""
-        try:
-            db = get_mongo_db()
-            schedule = await db.ai_selector_schedules.find_one(
-                {"user_id": user_id},
-                {"_id": 0}
-            )
-            if not schedule:
-                return None
-
-            # 从 APScheduler 获取下次执行时间
-            from app.services.scheduler_service import get_scheduler_service
-            scheduler_service = get_scheduler_service()
-            job = scheduler_service.scheduler.get_job(schedule.get("job_id", ""))
-
-            result = {
-                "cron_expression": schedule.get("cron_expression", ""),
-                "enabled": schedule.get("enabled", False),
-                "job_id": schedule.get("job_id", ""),
-                "next_run_time": job.next_run_time.isoformat() if job and job.next_run_time else None,
-            }
-            return result
-        except Exception as e:
-            logger.error(f"❌ 获取AI选股定时任务失败: {e}")
-            return None
+        return await self._schedule_mgr.get_schedule(user_id)
 
     async def delete_schedule(self, user_id: str) -> bool:
         """删除用户的AI选股定时任务"""
-        try:
-            from app.services.scheduler_service import get_scheduler_service
-
-            db = get_mongo_db()
-            schedule = await db.ai_selector_schedules.find_one({"user_id": user_id})
-            if not schedule:
-                return False
-
-            job_id = schedule.get("job_id", "")
-
-            # 从 APScheduler 移除任务
-            scheduler_service = get_scheduler_service()
-            job = scheduler_service.scheduler.get_job(job_id)
-            if job:
-                scheduler_service.scheduler.remove_job(job_id)
-
-            # 从 MongoDB 删除记录
-            await db.ai_selector_schedules.delete_one({"user_id": user_id})
-
-            logger.info(f"✅ AI选股定时任务已删除: user={user_id}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ 删除AI选股定时任务失败: {e}")
-            return False
+        return await self._schedule_mgr.delete_schedule(user_id)
 
     async def preview_cron(self, cron_expression: str, count: int = 5) -> Dict[str, Any]:
         """预览Cron表达式的下次执行时间"""
-        try:
-            next_runs = self._get_next_run_times(cron_expression, count)
-            # 生成中文描述
-            description = self._describe_cron(cron_expression)
-            return {
-                "cron_expression": cron_expression,
-                "description": description,
-                "next_run_times": next_runs,
-            }
-        except Exception as e:
-            raise ValueError(f"无效的Cron表达式: {e}")
-
-    def _get_next_run_times(self, cron_expression: str, count: int = 5) -> List[str]:
-        """获取Cron表达式的下次执行时间列表"""
-        cron = croniter(cron_expression, datetime.now(_CN_TZ))
-        runs = []
-        for _ in range(count):
-            next_time = cron.get_next(datetime)
-            runs.append(next_time.strftime("%Y-%m-%d %H:%M:%S"))
-        return runs
-
-    def _describe_cron(self, cron_expression: str) -> str:
-        """生成Cron表达式的中文描述"""
-        parts = cron_expression.strip().split()
-        if len(parts) != 5:
-            return cron_expression
-
-        minute, hour, day, month, dow = parts
-        desc_parts = []
-
-        # 月份
-        if month != "*":
-            desc_parts.append(f"{month}月")
-
-        # 日期/星期
-        if dow != "*" and day == "*":
-            dow_map = {"0": "周日", "1": "周一", "2": "周二", "3": "周三",
-                       "4": "周四", "5": "周五", "6": "周六", "7": "周日"}
-            # 处理范围如 1-5
-            if "-" in dow:
-                start, end = dow.split("-")
-                desc_parts.append(f"每{dow_map.get(start, start)}至{dow_map.get(end, end)}")
-            elif "," in dow:
-                days = [dow_map.get(d.strip(), d.strip()) for d in dow.split(",")]
-                desc_parts.append(f"每{','.join(days)}")
-            else:
-                desc_parts.append(f"每{dow_map.get(dow, dow)}")
-        elif day != "*" and dow == "*":
-            desc_parts.append(f"每月{day}日")
-        elif day == "*" and dow == "*":
-            desc_parts.append("每天")
-
-        # 时间
-        if hour != "*" and minute != "*":
-            desc_parts.append(f"{hour.zfill(2)}:{minute.zfill(2)}")
-        elif hour != "*":
-            desc_parts.append(f"{hour}点每分钟")
-        elif minute != "*":
-            desc_parts.append(f"每小时{minute}分")
-
-        return "".join(desc_parts) if desc_parts else cron_expression
+        return preview_cron(cron_expression, count)
 
     async def _run_scheduled_task(self, user_id: str):
         """定时任务执行回调"""

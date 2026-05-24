@@ -98,6 +98,7 @@ export interface AiTradingHistoryItem {
   task_id: string
   user_id: string
   mode: AiTradingMode
+  trigger_type?: 'manual' | 'scheduled'
   status: AiTradingStatus
   progress: number
   current_step: string
@@ -190,6 +191,19 @@ export interface AiTradingPortfolioHistory {
   has_data: boolean
 }
 
+export interface AiTradingSchedule {
+  cron_expression: string
+  enabled: boolean
+  job_id: string
+  next_run_time: string | null
+}
+
+export interface CronPreview {
+  cron_expression: string
+  description: string
+  next_run_times: string[]
+}
+
 export const aiTradingApi = {
   run(data: AiTradingRunRequest) {
     return request.post<any, ApiResponse<{ task_id: string; status: string; message: string }>>(
@@ -254,6 +268,36 @@ export const aiTradingApi = {
     return request.post<any, ApiResponse<{ user_id: string; mode: string; initial_capital: number; message: string }>>(
       '/api/ai-trading/portfolio/init',
       { initial_capital: initialCapital }
+    )
+  },
+
+  /** 创建AI交易定时任务 */
+  createSchedule(cronExpression: string) {
+    return request.post<any, ApiResponse<AiTradingSchedule>>(
+      '/api/ai-trading/schedule',
+      { cron_expression: cronExpression }
+    )
+  },
+
+  /** 获取AI交易定时任务 */
+  getSchedule() {
+    return request.get<any, ApiResponse<AiTradingSchedule | null>>(
+      '/api/ai-trading/schedule'
+    )
+  },
+
+  /** 删除AI交易定时任务 */
+  deleteSchedule() {
+    return request.delete<any, ApiResponse<{ message: string }>>(
+      '/api/ai-trading/schedule'
+    )
+  },
+
+  /** 预览Cron表达式 */
+  previewCron(cronExpression: string, count: number = 5) {
+    return request.post<any, ApiResponse<CronPreview>>(
+      '/api/ai-trading/schedule/preview',
+      { cron_expression: cronExpression, count }
     )
   },
 }

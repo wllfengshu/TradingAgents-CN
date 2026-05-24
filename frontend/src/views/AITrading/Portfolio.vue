@@ -6,7 +6,7 @@
         <div class="title-section">
           <h1 class="page-title">
             <el-icon class="title-icon"><DataAnalysis /></el-icon>
-            持仓收益
+            AI交易-持仓收益
           </h1>
           <p class="page-description">跟踪模拟/实盘账户的持仓变化、收益率与风险指标</p>
         </div>

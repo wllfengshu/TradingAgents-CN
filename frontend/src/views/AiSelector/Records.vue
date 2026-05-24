@@ -4,7 +4,7 @@
     <div class="page-header">
       <h1 class="page-title">
         <el-icon><Document /></el-icon>
-        选股记录
+        AI选股-选股记录
       </h1>
       <p class="page-description">
         查看AI选股历史分析结果，追踪决策变化趋势
