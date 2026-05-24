@@ -59,6 +59,18 @@
           </template>
         </el-table-column>
 
+        <el-table-column label="执行方式" width="110">
+          <template #default="{ row }">
+            <el-tag
+              :type="row.trigger_type === 'scheduled' ? 'warning' : 'info'"
+              size="small"
+              effect="plain"
+            >
+              {{ row.trigger_type === 'scheduled' ? '定时执行' : '手动执行' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+
         <el-table-column label="决策" min-width="160">
           <template #default="{ row }">
             <template v-if="row.result?.decision">

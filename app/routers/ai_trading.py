@@ -9,6 +9,8 @@ import logging
 
 from app.routers.auth_db import get_current_user
 from app.services.ai_trading.ai_trading_service import get_ai_trading_service
+from app.services.ai_trading.trading_records_service import get_ai_trading_records_service
+from app.services.ai_trading.portfolio_service import get_portfolio_service
 
 router = APIRouter()
 logger = logging.getLogger("webapi")
@@ -67,7 +69,7 @@ async def get_task_status(
 ):
     """获取AI交易任务状态"""
     try:
-        service = get_ai_trading_service()
+        service = get_ai_trading_records_service()
         task = await service.get_task_status(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
@@ -93,7 +95,7 @@ async def get_task_result(
 ):
     """获取AI交易任务结果"""
     try:
-        service = get_ai_trading_service()
+        service = get_ai_trading_records_service()
         result = await service.get_task_result(task_id)
         if not result:
             raise HTTPException(status_code=404, detail="任务不存在")
@@ -119,7 +121,7 @@ async def stop_task(
 ):
     """停止AI交易任务"""
     try:
-        service = get_ai_trading_service()
+        service = get_ai_trading_records_service()
         task = await service.get_task_status(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
@@ -164,7 +166,7 @@ async def get_records(
 ):
     """获取AI交易操作记录"""
     try:
-        service = get_ai_trading_service()
+        service = get_ai_trading_records_service()
         result = await service.get_records(
             user["id"],
             mode=mode,
@@ -187,7 +189,7 @@ async def get_record_detail(
 ):
     """获取AI交易记录详情"""
     try:
-        service = get_ai_trading_service()
+        service = get_ai_trading_records_service()
         result = await service.get_task_result(task_id)
         if not result:
             raise HTTPException(status_code=404, detail="记录不存在")
@@ -229,4 +231,67 @@ async def delete_record(
         raise
     except Exception as e:
         logger.error(f"❌ 删除AI交易记录失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── 持仓收益 ──────────────────────────────────────────────
+
+
+class InitPortfolioRequest(BaseModel):
+    initial_capital: float = Field(default=1000000.0, description="初始资金（默认100万）")
+
+
+@router.get("/portfolio", response_model=Dict[str, Any])
+async def get_portfolio(
+    mode: str = Query(default="paper", description="交易模式: paper=模拟, live=实盘"),
+    user: dict = Depends(get_current_user),
+):
+    """获取持仓收益概览"""
+    try:
+        if mode not in ("paper", "live"):
+            raise HTTPException(status_code=400, detail="mode 仅支持 paper/live")
+        service = get_portfolio_service()
+        result = await service.get_portfolio(user["id"], mode=mode)
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 获取持仓收益失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/portfolio/history", response_model=Dict[str, Any])
+async def get_portfolio_history(
+    mode: str = Query(default="paper", description="交易模式: paper=模拟, live=实盘"),
+    days: int = Query(default=30, ge=1, le=365, description="回看天数"),
+    user: dict = Depends(get_current_user),
+):
+    """获取持仓历史净值曲线"""
+    try:
+        if mode not in ("paper", "live"):
+            raise HTTPException(status_code=400, detail="mode 仅支持 paper/live")
+        service = get_portfolio_service()
+        result = await service.get_portfolio_history(user["id"], mode=mode, days=days)
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 获取持仓历史失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/portfolio/init", response_model=Dict[str, Any])
+async def init_paper_portfolio(
+    request: InitPortfolioRequest,
+    user: dict = Depends(get_current_user),
+):
+    """初始化/重置模拟账户"""
+    try:
+        service = get_portfolio_service()
+        result = await service.init_paper_portfolio(
+            user["id"], initial_capital=request.initial_capital
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error(f"❌ 初始化模拟账户失败: {e}")
         raise HTTPException(status_code=400, detail=str(e))

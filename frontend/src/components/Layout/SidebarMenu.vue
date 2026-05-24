@@ -54,6 +54,7 @@
       </template>
       <el-menu-item index="/ai-trading/home">立即交易</el-menu-item>
       <el-menu-item index="/ai-trading/records">交易记录</el-menu-item>
+      <el-menu-item index="/ai-trading/portfolio">持仓收益</el-menu-item>
     </el-sub-menu>
 
 

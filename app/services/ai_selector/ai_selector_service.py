@@ -395,8 +395,14 @@ class AiSelectorService:
 
         return graph.quick_thinking_llm, graph.deep_thinking_llm
 
-    async def create_task(self, user_id: str) -> Dict[str, Any]:
-        """创建AI选股任务"""
+    async def create_task(self, user_id: str, trigger_type: str = "manual") -> Dict[str, Any]:
+        """创建AI选股任务
+
+        Args:
+            trigger_type: "manual"=手动执行 / "scheduled"=定时执行
+        """
+        if trigger_type not in ("manual", "scheduled"):
+            raise ValueError(f"非法触发类型: {trigger_type}")
         task_id = str(uuid.uuid4())
 
         try:
@@ -415,6 +421,7 @@ class AiSelectorService:
             await db.ai_selector_tasks.insert_one({
                 "task_id": task_id,
                 "user_id": user_id,
+                "trigger_type": trigger_type,
                 "status": "pending",
                 "progress": 0,
                 "current_step": "",
@@ -746,9 +753,6 @@ class AiSelectorService:
 
     def _invoke_llm(self, llm, messages, analyst_name: str = "") -> Any:
         """LLM 调用，对网络/超时类错误指数退避重试（最多3次）。
-
-        Why: 早期版本 retry_if_exception_type(Exception) 会把鉴权/参数错误也重试，
-        浪费 token 配额，因此只对临时性异常重试。
         """
         retryable_substrs = (
             "timeout", "timed out", "connection", "rate limit", "429",
@@ -1076,64 +1080,6 @@ class AiSelectorService:
         except Exception as e:
             logger.error(f"更新AI选股任务状态失败: {e}")
 
-    async def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """获取任务状态"""
-        try:
-            db = get_mongo_db()
-            task = await db.ai_selector_tasks.find_one(
-                {"task_id": task_id},
-                {"_id": 0}
-            )
-            return task
-        except Exception as e:
-            logger.error(f"获取AI选股任务状态失败: {e}")
-            return None
-
-    async def get_task_list(self, user_id: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
-        """获取AI选股任务列表（分页）"""
-        try:
-            db = get_mongo_db()
-            query = {"user_id": user_id}
-            total = await db.ai_selector_tasks.count_documents(query)
-            skip = (page - 1) * page_size
-            cursor = db.ai_selector_tasks.find(
-                query,
-                {"_id": 0, "result.analyst_results": 0, "result.decision_report": 0}
-            ).sort("created_at", -1).skip(skip).limit(page_size)
-            tasks = await cursor.to_list(length=page_size)
-            return {"tasks": tasks, "total": total, "page": page, "page_size": page_size}
-        except Exception as e:
-            logger.error(f"获取AI选股任务列表失败: {e}")
-            return {"tasks": [], "total": 0, "page": page, "page_size": page_size}
-
-    async def get_task_result(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """获取任务结果"""
-        try:
-            db = get_mongo_db()
-            task = await db.ai_selector_tasks.find_one(
-                {"task_id": task_id},
-                {"_id": 0}
-            )
-            if not task:
-                logger.warning(f"get_task_result: task_id={task_id} 未找到记录")
-                return None
-            if task.get("status") == "completed":
-                result = task.get("result", task)
-                # result 子文档不含 user_id，需要从 task 顶层补上，否则路由层权限校验会 403
-                if result and "user_id" not in result:
-                    result["user_id"] = task.get("user_id")
-                logger.info(
-                    f"get_task_result: task_id={task_id}, status=completed, "
-                    f"result.user_id={result.get('user_id') if result else 'N/A'}, "
-                    f"result_keys={list(result.keys())[:10] if result else 'N/A'}"
-                )
-                return result
-            logger.info(f"get_task_result: task_id={task_id}, status={task.get('status')}")
-            return task
-        except Exception as e:
-            logger.error(f"获取AI选股任务结果失败: {e}")
-            return None
-
     async def create_schedule(self, user_id: str, cron_expression: str) -> Dict[str, Any]:
         """创建AI选股定时任务"""
         # 验证cron表达式
@@ -1333,7 +1279,7 @@ class AiSelectorService:
         """定时任务执行回调"""
         try:
             logger.info(f"🕐 AI选股定时任务触发: user={user_id}")
-            result = await self.create_task(user_id)
+            result = await self.create_task(user_id, trigger_type="scheduled")
             task_id = result["task_id"]
             await self.execute_task(task_id, user_id)
             logger.info(f"✅ AI选股定时任务完成: user={user_id}, task={task_id}")

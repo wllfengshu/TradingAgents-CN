@@ -9,6 +9,7 @@ import logging
 
 from app.routers.auth_db import get_current_user
 from app.services.ai_selector.ai_selector_service import get_ai_selector_service
+from app.services.ai_selector.selector_records_service import get_ai_selector_records_service
 
 router = APIRouter()
 logger = logging.getLogger("webapi")
@@ -77,7 +78,7 @@ async def get_task_status(
 ):
     """获取AI选股任务状态"""
     try:
-        service = get_ai_selector_service()
+        service = get_ai_selector_records_service()
         task = await service.get_task_status(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
@@ -104,7 +105,7 @@ async def get_task_result(
 ):
     """获取AI选股任务结果"""
     try:
-        service = get_ai_selector_service()
+        service = get_ai_selector_records_service()
         result = await service.get_task_result(task_id)
         if not result:
             raise HTTPException(status_code=404, detail="任务不存在")
@@ -133,7 +134,7 @@ async def get_task_history(
 ):
     """获取AI选股历史记录列表"""
     try:
-        service = get_ai_selector_service()
+        service = get_ai_selector_records_service()
         result = await service.get_task_list(user["id"], page, page_size)
         return {"success": True, "data": result}
     except Exception as e:
@@ -148,7 +149,7 @@ async def get_task_history_detail(
 ):
     """获取AI选股历史记录详情"""
     try:
-        service = get_ai_selector_service()
+        service = get_ai_selector_records_service()
         result = await service.get_task_result(task_id)
         if not result:
             logger.warning(f"AI选股记录详情查询: task_id={task_id} 未找到记录")

@@ -124,6 +124,72 @@ export interface AiTradingRecordQuery {
   page_size?: number
 }
 
+export interface AiTradingHolding {
+  code: string
+  name: string
+  volume: number
+  cost_price: number
+  current_price: number
+  market_value: number
+  pnl: number
+  pnl_pct: number
+}
+
+export interface AiTradingDailyReturn {
+  date: string
+  net_amount: number
+  trade_count: number
+}
+
+export interface AiTradingRecentOrder {
+  code: string
+  name: string
+  action: string
+  price: number
+  volume: number
+  amount: number
+  simulated_cost: number
+  created_at: string
+}
+
+export interface AiTradingPortfolio {
+  mode: AiTradingMode
+  cash: number
+  total_value: number
+  initial_capital: number
+  total_return: number
+  total_return_pct: number
+  holdings: AiTradingHolding[]
+  daily_returns: AiTradingDailyReturn[]
+  sharpe_ratio: number
+  max_drawdown: number
+  max_drawdown_pct: number
+  win_rate: number
+  recent_orders: AiTradingRecentOrder[]
+  has_data: boolean
+}
+
+export interface AiTradingNavPoint {
+  date: string
+  nav: number
+  return_pct: number
+}
+
+export interface AiTradingTradeCalendar {
+  date: string
+  action: string
+  code: string
+  name: string
+  amount: number
+}
+
+export interface AiTradingPortfolioHistory {
+  mode: AiTradingMode
+  nav_curve: AiTradingNavPoint[]
+  trade_calendar: AiTradingTradeCalendar[]
+  has_data: boolean
+}
+
 export const aiTradingApi = {
   run(data: AiTradingRunRequest) {
     return request.post<any, ApiResponse<{ task_id: string; status: string; message: string }>>(
@@ -167,6 +233,27 @@ export const aiTradingApi = {
   deleteRecord(taskId: string) {
     return request.delete<any, ApiResponse<{ message: string }>>(
       `/api/ai-trading/records/${taskId}`
+    )
+  },
+
+  getPortfolio(mode: AiTradingMode = 'paper') {
+    return request.get<any, ApiResponse<AiTradingPortfolio>>(
+      '/api/ai-trading/portfolio',
+      { params: { mode } }
+    )
+  },
+
+  getPortfolioHistory(mode: AiTradingMode = 'paper', days: number = 30) {
+    return request.get<any, ApiResponse<AiTradingPortfolioHistory>>(
+      '/api/ai-trading/portfolio/history',
+      { params: { mode, days } }
+    )
+  },
+
+  initPaperPortfolio(initialCapital: number = 1000000) {
+    return request.post<any, ApiResponse<{ user_id: string; mode: string; initial_capital: number; message: string }>>(
+      '/api/ai-trading/portfolio/init',
+      { initial_capital: initialCapital }
     )
   },
 }

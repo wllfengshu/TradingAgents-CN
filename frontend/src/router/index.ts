@@ -460,6 +460,15 @@ const routes: RouteRecordRaw[] = [
           title: '记录详情',
           requiresAuth: true
         }
+      },
+      {
+        path: 'portfolio',
+        name: 'AiTradingPortfolio',
+        component: () => import('@/views/AITrading/Portfolio.vue'),
+        meta: {
+          title: '持仓收益',
+          requiresAuth: true
+        }
       }
     ]
   },

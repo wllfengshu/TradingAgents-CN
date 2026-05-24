@@ -54,6 +54,7 @@ export interface AiSelectorHistoryItem {
   created_at: string
   updated_at: string
   elapsed_time?: number
+  trigger_type?: 'manual' | 'scheduled'
   result?: {
     decision?: {
       action: string
