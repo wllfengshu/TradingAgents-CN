@@ -189,7 +189,6 @@ LEADER_ANALYST_PROMPT = """你是一位资深的股票龙头分析师，专注�
 - **谨慎推荐高位连板（≥3板且股价接近近期高位）**：即便今日涨停，若连板高度已远超同期市场平均水平，追高风险极大，须在 reason 中明确说明。
 
 **分析指引**：
-- 优先在"涨停龙头股前20"中查找候选股票的代码，若出现则说明今日已涨停，重点关注其"连板数"字段——连板数越高龙头地位越稳。
 - 优先在"涨停龙头股前20"中查找候选股票的代码，若出现则说明今日已涨停，重点关注其"连板数"字段——连板数越高龙头地位越稳，但同时追高风险越大。
 - 若候选股在两个列表中均未出现，说明今日表现一般，需降低评级。
 - "换手率"是流动性和市场关注度的重要指标，>5%为活跃标志。
@@ -336,15 +335,12 @@ DECISION_ANALYST_PROMPT = """你是一位资深的决策分析师，负责综合
 class AiSelectorService:
     """AI选股服务"""
 
-    def __init__(self):
-        pass
-
     def _build_llm_config(self) -> Dict[str, Any]:
         """复用已有的模型配置逻辑
         """
 
         capability_service = get_model_capability_service()
-        research_depth = "标准"
+        research_depth = "快速"
 
         # 从系统已启用的配置中自动推荐模型（与 simple_analysis_service 逻辑一致）
         quick_model, deep_model = capability_service.recommend_models_for_depth(research_depth)
@@ -432,6 +428,7 @@ class AiSelectorService:
             raise  # 业务异常直接向上抛出，不吞掉
         except Exception as e:
             logger.error(f"保存AI选股任务到MongoDB失败: {e}")
+            raise RuntimeError(f"创建AI选股任务失败: {e}")
 
         return {"task_id": task_id, "status": "pending", "message": "AI选股任务已创建"}
 
@@ -483,8 +480,19 @@ class AiSelectorService:
         })
 
         market_sentiment = self._extract_market_sentiment(market_report)
-        logger.info(f"AI选股 大盘情绪判断: {market_sentiment}")
-        if market_sentiment == "偏空":
+        logger.info(f"AI选股 大盘情绪判断: {market_sentiment!r}")
+        if not market_sentiment:
+            early_stop_reason = "大盘分析师未返回 market_sentiment 结论（数据缺失或解析失败），终止后续分析"
+            logger.info(f"AI选股 提前终止: {early_stop_reason}")
+            decision = {
+                "action": "观望",
+                "stocks": [],
+                "reasoning": early_stop_reason,
+                "position_suggestion": "空仓观望",
+                "risk_warning": "大盘数据分析失败！",
+            }
+            decision_report = f"## 决策结论\n\n{early_stop_reason}\n\n大盘分析师未输出有效的市场情绪结论，建议空仓观望。"
+        elif market_sentiment == "偏空":
             early_stop_reason = "大盘环境偏空，建议观望，终止后续分析"
             logger.info(f"AI选股 提前终止: {early_stop_reason}")
             decision = {
@@ -553,7 +561,7 @@ class AiSelectorService:
             candidate_stocks = self._extract_candidate_stocks(force_report)
             logger.info(f"AI选股 合力分析师候选股票: {candidate_stocks}")
             if not candidate_stocks:
-                early_stop_reason = "市场合力分析师未筛选出资金合力正向的股票，终止后续分析"
+                early_stop_reason = "市场合力分析师未筛选出符合主线板块的资金合力标的，终止后续分析"
                 logger.info(f"AI选股 提前终止: {early_stop_reason}")
                 decision = {
                     "action": "观望",
@@ -637,9 +645,25 @@ class AiSelectorService:
                 decision_report = f"## 决策结论\n\n{early_stop_reason}\n\n风险分析师评估推荐标的整体风险较高，建议规避，等待风险释放后再考虑入场。"
             else:
                 safe_stocks = self._extract_safe_stocks(risk_report)
-                safe_stocks_info = self._format_stocks_for_prompt(safe_stocks)
+                logger.info(f"AI选股 风险分析师安全标的: {safe_stocks}")
+                if not safe_stocks:
+                    early_stop_reason = "风险分析师未确认任何安全标的（safe_stocks 为空），终止后续分析"
+                    logger.info(f"AI选股 提前终止: {early_stop_reason}")
+                    decision = {
+                        "action": "规避",
+                        "stocks": [],
+                        "reasoning": early_stop_reason,
+                        "position_suggestion": "空仓规避",
+                        "risk_warning": "全部推荐标的均存在风险，无安全标的可入场",
+                    }
+                    decision_report = (
+                        f"## 决策结论\n\n{early_stop_reason}\n\n"
+                        f"风险分析师对全部上游推荐标的进行核查后，未确认任何安全标的，建议规避。"
+                    )
+                else:
+                    safe_stocks_info = self._format_stocks_for_prompt(safe_stocks)
 
-        # ====== Step 6: 决策分析师（使用深度模型） ======
+        # ====== Step 6: 决策分析师 ======
         if not early_stop_reason:
             await _report(93, "决策分析师正在综合研判...")
             decision_report = await asyncio.to_thread(
@@ -763,8 +787,6 @@ class AiSelectorService:
             msg = str(exc).lower()
             return any(s in msg for s in retryable_substrs)
 
-        from tenacity import retry_if_exception  # 已在顶部导入，此处保留以便测试时可注入
-
         @retry(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -793,7 +815,7 @@ class AiSelectorService:
 
         prompt = prompt_template.format(**format_params)
 
-        logger.debug(
+        logger.info(
             f"[LLM提示词] [{analyst_name}] 提示词长度={len(prompt)}\n"
             f"{'='*60}\n{prompt}\n{'='*60}"
         )
@@ -802,7 +824,7 @@ class AiSelectorService:
             response = self._invoke_llm(llm, [SystemMessage(content=prompt)], analyst_name)
             report = response.content
             logger.info(f"AI选股 [{analyst_name}] 分析完成，报告长度: {len(report)}")
-            logger.debug(
+            logger.info(
                 f"[LLM输出] [{analyst_name}] 输出长度={len(report)}\n"
                 f"{'='*60}\n{report}\n{'='*60}"
             )
@@ -827,7 +849,7 @@ class AiSelectorService:
             safe_stocks_info=safe_stocks_info,
         )
 
-        logger.debug(
+        logger.info(
             f"[LLM提示词] [决策分析师] 提示词长度={len(prompt)}\n"
             f"{'='*60}\n{prompt}\n{'='*60}"
         )
@@ -836,7 +858,7 @@ class AiSelectorService:
             response = self._invoke_llm(llm, [SystemMessage(content=prompt)], "决策分析师")
             report = response.content
             logger.info(f"AI选股 [决策分析师] 综合研判完成，报告长度: {len(report)}")
-            logger.debug(
+            logger.info(
                 f"[LLM输出] [决策分析师] 输出长度={len(report)}\n"
                 f"{'='*60}\n{report}\n{'='*60}"
             )
@@ -850,36 +872,59 @@ class AiSelectorService:
     # ============================================================
 
     def _extract_market_sentiment(self, report: str) -> str:
-        """从大盘分析师报告中提取市场情绪判断"""
+        """从大盘分析师报告中提取市场情绪判断
+
+        返回值：'偏多' / '偏空' / '中性' / ''（空字符串表示 LLM 未返回该字段）
+        严格化：JSON 解析成功时尊重 LLM 结论，不再回退到全文关键词匹配；
+        全文回退仅在 JSON 完全无法解析时启用。
+        """
         try:
             data = extract_json_block(report)
-            if data and "market_sentiment" in data:
-                sentiment = str(data["market_sentiment"])
+            if data is not None:
+                if "market_sentiment" not in data:
+                    return ""
+                sentiment = str(data.get("market_sentiment", "")).strip()
+                if not sentiment:
+                    return ""
                 if "偏空" in sentiment or "看空" in sentiment:
                     return "偏空"
-                elif "偏多" in sentiment or "看多" in sentiment:
+                if "偏多" in sentiment or "看多" in sentiment:
                     return "偏多"
-                return "中性"
+                if "中性" in sentiment:
+                    return "中性"
+                # JSON 中给了非标准取值，按原样返回（视为有效结论，避免误判为空）
+                return sentiment
         except Exception:
             pass
+        # JSON 缺失时的兜底——保留旧行为，但不返回默认"中性"以便流程可以识别为空
         if "偏空" in report or "看空" in report or "弱势" in report:
             return "偏空"
-        elif "偏多" in report or "看多" in report or "强势" in report:
+        if "偏多" in report or "看多" in report or "强势" in report:
             return "偏多"
-        return "中性"
+        return ""
 
     def _extract_sector_themes(self, report: str) -> List[str]:
-        """从板块分析师报告中提取主线板块列表"""
+        """从板块分析师报告中提取主线板块列表
+
+        严格化：JSON 解析成功时尊重 LLM 结论（has_main_sector=False 或
+        main_sectors=[] 都视为"无主线"），不再回退到 regex 误识别。
+        """
         try:
             data = extract_json_block(report)
-            if data:
+            if data is not None:
                 if data.get("has_main_sector") is False:
                     return []
-                if "main_sectors" in data and isinstance(data["main_sectors"], list):
-                    return [str(s) for s in data["main_sectors"] if s]
+                if "main_sectors" in data:
+                    raw = data["main_sectors"]
+                    if isinstance(raw, list):
+                        return [str(s) for s in raw if s]
+                    return []
+                # JSON 存在但完全缺关键字段，视为空
+                return []
         except Exception:
             pass
 
+        # 仅在 JSON 完全解析失败时兜底
         # 限制匹配长度≤20字符，防止把整句话误识别为板块名
         match = re.search(r'主线板块[：:]\s*(.{2,20}?)[\n。，,；;]', report)
         if match:
@@ -888,29 +933,41 @@ class AiSelectorService:
         return []
 
     def _extract_candidate_stocks(self, report: str) -> List[Dict]:
-        """从合力分析师报告中提取候选股票（2-3支）"""
+        """从合力分析师报告中提取候选股票（2-3支）
+
+        重要：若 LLM 已返回结构化 JSON 且 recommended_stocks 显式为空列表，
+        必须尊重该结论（说明合力分析师明确表示"无符合条件的标的"），
+        不得再 fallback 到全文 regex——否则会把报告正文里引用的任意 6 位
+        数字误当作候选股，导致下游分析师被错误触发。
+        """
         try:
             data = extract_json_block(report)
             if data and "recommended_stocks" in data:
                 stocks = data["recommended_stocks"]
-                if isinstance(stocks, list) and len(stocks) > 0:
+                if isinstance(stocks, list):
+                    # 显式为空时直接返回空列表，不再做 regex 兜底
                     return stocks[:3]
         except Exception:
             pass
 
+        # 仅当 JSON 完全解析失败（无 recommended_stocks 字段）时，才回退到 regex
         codes = re.findall(r'\b(\d{6})\b', report)
         if codes:
             unique_codes = list(dict.fromkeys(codes))[:3]
             return [{"code": c, "name": f"股票{c}"} for c in unique_codes]
         return []
 
+
     def _extract_leading_stocks(self, report: str) -> List[Dict]:
-        """从龙头分析师报告中提取龙头股（1-2支）"""
+        """从龙头分析师报告中提取龙头股（2-3支）
+
+        同 _extract_candidate_stocks：JSON 已返回空列表时必须尊重结论。
+        """
         try:
             data = extract_json_block(report)
             if data and "leading_stocks" in data:
                 stocks = data["leading_stocks"]
-                if isinstance(stocks, list) and len(stocks) > 0:
+                if isinstance(stocks, list):
                     return stocks[:2]
         except Exception:
             pass
@@ -986,13 +1043,13 @@ class AiSelectorService:
             logger.error(f"解析决策JSON失败: {e}")
 
         # 回退：从文本中提取信息
-        action = "谨慎推荐"
+        action = "观望"
         if "强烈推荐" in decision_report:
             action = "强烈推荐"
+        elif "谨慎推荐" in decision_report:
+            action = "谨慎推荐"
         elif "规避" in decision_report:
             action = "规避"
-        elif "观望" in decision_report:
-            action = "观望"
 
         codes = re.findall(r'\b(\d{6})\b', decision_report)
         stocks = [{"code": c, "name": f"股票{c}"} for c in list(dict.fromkeys(codes))[:5]]
