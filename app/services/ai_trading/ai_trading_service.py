@@ -35,7 +35,7 @@ from app.models.analysis import SingleAnalysisRequest, AnalysisParameters
 from app.core.database import get_mongo_db
 from app.services.ai_selector.ai_selector_service import AiSelectorService, ApiCache
 
-logger = logging.getLogger("app.services.ai_trading_service")
+logger = logging.getLogger(__name__)
 
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -66,15 +66,7 @@ POSITION_MANAGER_PROMPT = """你是一位资深的仓位管理分析师，负责
 ## 当前持仓
 {positions_info}
 
-## 持仓个股分析结果
-{position_analysis_results}
-
-## AI选股结果（新机会）
-{selector_results}
-
----
-
-请基于以上信息，从以下维度进行分析：
+# 请基于以上信息，从以下维度进行分析：
 
 1. **持仓评估与止损**：
    - 当前持仓的股票基本面和技术面是否依然健康？
@@ -95,7 +87,7 @@ POSITION_MANAGER_PROMPT = """你是一位资深的仓位管理分析师，负责
    - 买入：建议价格和金额（或股数），建议价格不得超过该股涨停价
    - 卖出：建议价格和股数（全部卖出或部分减仓），建议价格不得低于该股跌停价
 
-在分析报告的最后，请用如下JSON格式输出结构化的买卖信号（放在```json代码块中）：
+# 在分析报告的最后，请用如下JSON格式输出结构化的买卖信号（放在```json代码块中）：
 ```json
 {{
   "signals": [
@@ -120,6 +112,16 @@ POSITION_MANAGER_PROMPT = """你是一位资深的仓位管理分析师，负责
 - 如果没有操作信号，signals返回空数组
 - action为"持有"的信号仅表示建议维持当前仓位，不需要执行交易
 
+## 持仓个股分析结果
+<RAW_DATA>
+{position_analysis_results}
+</RAW_DATA>
+
+## AI选股结果（新机会）
+<RAW_DATA>
+{selector_results}
+</RAW_DATA>
+
 使用中文输出，专业严谨。"""
 
 POSITION_MANAGER_PROMPT_NO_POSITION = """你是一位资深的仓位管理分析师，当前账户为空仓，请根据账户资金情况和AI选股结果，给出具体的买入建议。
@@ -132,12 +134,7 @@ POSITION_MANAGER_PROMPT_NO_POSITION = """你是一位资深的仓位管理分析
 - 总资产：{total_value} 元
 - 冻结资金：{frozen_cash} 元
 
-## AI选股结果（新机会）
-{selector_results}
-
----
-
-请基于以上信息，从以下维度进行分析：
+# 请基于以上信息，从以下维度进行分析：
 
 1. **新机会评估**：
    - AI选股推荐的标的是否值得建仓？
@@ -154,7 +151,7 @@ POSITION_MANAGER_PROMPT_NO_POSITION = """你是一位资深的仓位管理分析
    - 对每只需要买入的股票，给出明确的买入信号
    - 买入：建议价格和金额（或股数），建议价格不得超过该股涨停价
 
-在分析报告的最后，请用如下JSON格式输出结构化的买卖信号（放在```json代码块中）：
+# 在分析报告的最后，用如下JSON格式输出结构化的买卖信号（放在```json代码块中）：
 ```json
 {{
   "signals": [
@@ -178,6 +175,11 @@ POSITION_MANAGER_PROMPT_NO_POSITION = """你是一位资深的仓位管理分析
 - 如果没有操作信号，signals返回空数组
 - 空仓首次建仓应谨慎，建议总仓位不超过可用资金的50%
 
+## AI选股结果（新机会）
+<RAW_DATA>
+{selector_results}
+</RAW_DATA>
+
 使用中文输出，专业严谨。"""
 
 TRADING_DECISION_PROMPT = """你是一位资深的交易决策分析师，负责审核仓位管理分析师给出的买卖信号，确认后执行下单。
@@ -190,14 +192,16 @@ TRADING_DECISION_PROMPT = """你是一位资深的交易决策分析师，负责
 - 总资产：{total_value} 元
 
 ## 当前持仓
+<RAW_DATA>
 {positions_info}
+</RAW_DATA>
 
 ## 仓位管理分析师的买卖信号
+<RAW_DATA>
 {trading_signals}
+</RAW_DATA>
 
----
-
-请逐一审核每条买卖信号：
+# 逐一审核每条买卖信号：
 
 1. **信号审核**：
    - 该信号是否有充分的分析依据？
