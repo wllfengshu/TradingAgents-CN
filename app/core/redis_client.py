@@ -3,6 +3,7 @@ Redis客户端配置和连接管理
 """
 
 import redis.asyncio as redis
+import redis as sync_redis
 import logging
 from typing import Optional
 from .config import settings
@@ -65,6 +66,28 @@ def get_redis() -> redis.Redis:
     if redis_client is None:
         raise RuntimeError("Redis客户端未初始化")
     return redis_client
+
+
+# 全局同步Redis客户端（供同步代码使用，如 ApiCache）
+_sync_redis_client: Optional[sync_redis.Redis] = None
+
+
+def get_sync_redis() -> sync_redis.Redis:
+    """获取同步Redis客户端实例（线程安全的懒初始化）"""
+    global _sync_redis_client
+    if _sync_redis_client is None:
+        kwargs = {
+            "host": settings.REDIS_HOST,
+            "port": settings.REDIS_PORT,
+            "db": settings.REDIS_DB,
+            "socket_timeout": 5,
+            "socket_connect_timeout": 3,
+            "decode_responses": True,
+        }
+        if settings.REDIS_PASSWORD:
+            kwargs["password"] = settings.REDIS_PASSWORD
+        _sync_redis_client = sync_redis.Redis(**kwargs)
+    return _sync_redis_client
 
 
 class RedisKeys:

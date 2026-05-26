@@ -739,8 +739,6 @@ class AiSelectorService:
             logger.error(f"AI选股任务执行失败: {e}", exc_info=True)
             await self._update_status(task_id, "failed", 0, f"分析失败: {str(e)}", error_message=str(e))
             raise
-        finally:
-            api_cache.clear()
 
     def _invoke_llm(self, llm, messages, analyst_name: str = "") -> Any:
         """LLM 调用，对网络/超时类错误指数退避重试（最多3次）。

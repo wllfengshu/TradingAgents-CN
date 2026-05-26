@@ -667,8 +667,6 @@ class AiTradingService:
             logger.error(f"AI交易任务执行失败: {e}", exc_info=True)
             await self._update_status(task_id, "failed", 0, f"交易失败: {str(e)}", error_message=str(e))
             raise
-        finally:
-            api_cache.clear()
 
     # ============================================================
     # 流程步骤
