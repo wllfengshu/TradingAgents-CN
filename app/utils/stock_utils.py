@@ -57,13 +57,40 @@ def make_serializable(obj):
         return str(obj)
 
 def extract_json_block(text: str) -> Optional[Dict]:
-    """从文本中提取最后一个```json代码块并解析"""
-    try:
-        matches = re.findall(r'```json\s*(.*?)\s*```', text, re.DOTALL)
-        if matches:
-            return json.loads(matches[-1])
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error(f"解析JSON代码块失败: {e}")
+    """从文本中提取最后一个JSON块并解析。
+
+    兼容以下格式（以及混合嵌套）：
+      1. ```json ... ```
+      2. <RAW_DATA> ... </RAW_DATA>
+      3. <RAW_DATA> ```json ... ``` </RAW_DATA>  （AI同时输出两种标记时）
+    取所有候选块中**最后一个**能成功解析的 JSON 对象。
+    """
+    def _try_parse(block: str) -> Optional[Dict]:
+        block = block.strip()
+        # 若块内还套了 ```json ... ```，先剥掉
+        inner = re.findall(r'```json\s*(.*?)\s*```', block, re.DOTALL)
+        if inner:
+            block = inner[-1].strip()
+        try:
+            return json.loads(block)
+        except (json.JSONDecodeError, Exception):
+            return None
+
+    candidates: list = []
+    # 格式1：```json ... ```
+    candidates.extend(re.findall(r'```json\s*(.*?)\s*```', text, re.DOTALL))
+    # 格式2：<RAW_DATA> ... </RAW_DATA>
+    candidates.extend(re.findall(r'<RAW_DATA>\s*(.*?)\s*</RAW_DATA>', text, re.DOTALL))
+
+    last_valid = None
+    for block in candidates:
+        result = _try_parse(block)
+        if result is not None:
+            last_valid = result
+    if last_valid is not None:
+        return last_valid
+
+    logger.debug("extract_json_block: 未找到可解析的JSON块")
     return None
 
 def is_trading_hours() -> bool:

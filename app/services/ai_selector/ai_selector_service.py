@@ -124,7 +124,7 @@ FORCE_ANALYST_PROMPT = """
 你是一位拥有CFA资质的资深A股策略分析师，专注于分析主力与散户的资金动向。你的任务是根据给定的量化指标，输出一份简明扼要的市场报告。
 
 # 核心职责
-1. **行业资金流向**：主力资金净流入哪些行业？净流出哪些行业？重点关注主线板块（{sector_themes}）的资金净额情况。
+1. **行业资金流向**：主力资金净流入哪些行业？净流出哪些行业？重点关注上游主线板块分析师的结论的板块的资金净额情况。
 2. **个股资金交叉验证**：在"个股主力净流入前20"中，哪些股票属于主线板块？它们的净额、换手率、涨跌幅配合情况如何？
 3. **合力判断**：行业资金与个股资金方向是否一致？是"正向共振"（行业+个股同向净流入）、"主力主导"（行业流入但个股分散）还是"反向分歧"？
 4. **量价配合**：净流入的股票，其换手率是否同步放大？换手率>3%且净流入为正是强信号。
@@ -447,6 +447,8 @@ class AiSelectorService:
 
         market_sentiment = self._extract_market_sentiment(market_report)
         logger.info(f"AI选股 大盘情绪判断: {market_sentiment!r}")
+        # todo 先改为固定值用于测试 test
+        market_sentiment = "偏多"
         if not market_sentiment:
             early_stop_reason = "大盘分析师未返回 market_sentiment 结论（数据缺失或解析失败），终止后续分析"
             logger.info(f"AI选股 提前终止: {early_stop_reason}")
@@ -996,13 +998,35 @@ class AiSelectorService:
         return "\n".join(f"- {line}" for line in lines)
 
     def _parse_decision(self, decision_report: str) -> Dict[str, Any]:
-        """解析决策分析师的结论"""
+        """解析决策分析师的结论。
+
+        兼容三种格式：
+          1. ```json ... ```
+          2. <RAW_DATA> ... </RAW_DATA>
+          3. <RAW_DATA> ```json ... ``` </RAW_DATA>  （两种标记嵌套）
+        取最后一个能成功解析的 JSON 块，避免示例 JSON 干扰。
+        """
+        def _try_parse(block: str):
+            block = block.strip()
+            inner = re.findall(r'```json\s*(.*?)\s*```', block, re.DOTALL)
+            if inner:
+                block = inner[-1].strip()
+            try:
+                return json.loads(block)
+            except Exception:
+                return None
+
         try:
-            # 取最后一个 JSON 块：避免报告中示例 JSON 在前、真实 JSON 在后时解析错误
-            matches = re.findall(r'```json\s*(.*?)\s*```', decision_report, re.DOTALL)
-            if matches:
-                decision = json.loads(matches[-1])
-                return decision
+            candidates = []
+            candidates.extend(re.findall(r'```json\s*(.*?)\s*```', decision_report, re.DOTALL))
+            candidates.extend(re.findall(r'<RAW_DATA>\s*(.*?)\s*</RAW_DATA>', decision_report, re.DOTALL))
+            last_valid = None
+            for block in candidates:
+                result = _try_parse(block)
+                if result is not None:
+                    last_valid = result
+            if last_valid is not None:
+                return last_valid
         except Exception as e:
             logger.error(f"解析决策JSON失败: {e}")
 
