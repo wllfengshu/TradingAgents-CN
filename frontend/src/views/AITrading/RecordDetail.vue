@@ -110,6 +110,54 @@
           </div>
         </el-card>
 
+        <!-- 执行轨迹 -->
+        <el-card v-if="hasExecutionTrace" class="trace-card" shadow="never">
+          <template #header>
+            <span class="card-title">执行轨迹</span>
+          </template>
+
+          <div class="trace-section">
+            <h4>必经阶段状态</h4>
+            <div class="mandatory-status-grid">
+              <div
+                v-for="item in mandatoryStageItems"
+                :key="item.key"
+                class="mandatory-status-item"
+              >
+                <span class="stage-label">{{ item.label }}</span>
+                <el-tag :type="item.done ? 'success' : 'danger'" size="small" effect="dark">
+                  {{ item.done ? '已执行' : '未执行' }}
+                </el-tag>
+              </div>
+            </div>
+          </div>
+
+          <div class="trace-section" v-if="executedNodes.length">
+            <h4>节点执行顺序</h4>
+            <div class="node-tags">
+              <el-tag
+                v-for="(node, idx) in executedNodes"
+                :key="`${idx}-${node}`"
+                size="small"
+                effect="plain"
+                class="node-tag"
+              >
+                {{ idx + 1 }}. {{ node }}
+              </el-tag>
+            </div>
+          </div>
+
+          <div class="trace-section" v-if="nodeCountItems.length">
+            <h4>节点执行次数</h4>
+            <div class="node-count-grid">
+              <div v-for="item in nodeCountItems" :key="item.name" class="node-count-item">
+                <span class="node-name">{{ item.name }}</span>
+                <span class="node-count">x{{ item.count }}</span>
+              </div>
+            </div>
+          </div>
+        </el-card>
+
         <!-- 交易信号 -->
         <el-card v-if="record.trading_signals?.length" class="signals-card" shadow="never">
           <template #header>
@@ -213,7 +261,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
@@ -226,6 +274,31 @@ const router = useRouter()
 
 const loading = ref(false)
 const record = ref<AiTradingResult | null>(null)
+
+const executionTrace = computed(() => record.value?.execution_trace)
+const hasExecutionTrace = computed(() => {
+  const trace = executionTrace.value
+  return Boolean(trace && (trace.executed_nodes?.length || Object.keys(trace.node_counts || {}).length))
+})
+
+const executedNodes = computed(() => executionTrace.value?.executed_nodes || [])
+
+const nodeCountItems = computed(() => {
+  const nodeCounts = executionTrace.value?.node_counts || {}
+  return Object.entries(nodeCounts)
+    .map(([name, count]) => ({ name, count: Number(count || 0) }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+})
+
+const mandatoryStageItems = computed(() => {
+  const status = executionTrace.value?.mandatory_stage_status || {}
+  const order = [
+    { key: 'Leader Analyst', label: '龙头分析师' },
+    { key: 'Risk Analyst', label: '风险分析师' },
+    { key: 'Decision Analyst', label: '决策分析师' },
+  ]
+  return order.map(item => ({ ...item, done: Boolean(status[item.key]) }))
+})
 
 const fetchDetail = async () => {
   const taskId = route.params.id as string
@@ -381,6 +454,76 @@ onMounted(() => fetchDetail())
   .signals-card,
   .orders-card {
     margin-bottom: 24px;
+  }
+
+  .trace-card {
+    margin-bottom: 24px;
+
+    h4 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      color: var(--el-text-color-primary);
+    }
+
+    .trace-section + .trace-section {
+      margin-top: 18px;
+    }
+
+    .mandatory-status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+
+    .mandatory-status-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border: 1px solid var(--el-border-color-lighter);
+      border-radius: 6px;
+
+      .stage-label {
+        color: var(--el-text-color-regular);
+        font-size: 13px;
+      }
+    }
+
+    .node-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+
+      .node-tag {
+        max-width: 100%;
+      }
+    }
+
+    .node-count-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+    }
+
+    .node-count-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      background: var(--el-fill-color-lighter);
+      border-radius: 6px;
+
+      .node-name {
+        font-size: 13px;
+        color: var(--el-text-color-primary);
+      }
+
+      .node-count {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--el-color-primary);
+      }
+    }
   }
 
   .analysts-card {

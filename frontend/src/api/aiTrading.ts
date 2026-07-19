@@ -71,6 +71,12 @@ export interface AiTradingDecision {
   risk_warning?: string
 }
 
+export interface AiTradingExecutionTrace {
+  executed_nodes: string[]
+  node_counts: Record<string, number>
+  mandatory_stage_status: Record<string, boolean>
+}
+
 export interface AiTradingResult {
   task_id: string
   user_id?: string
@@ -89,6 +95,7 @@ export interface AiTradingResult {
   order_results?: AiTradingOrderResult[]
   decision?: AiTradingDecision
   decision_report?: string
+  execution_trace?: AiTradingExecutionTrace
   completed_at?: string
   created_at?: string
   updated_at?: string

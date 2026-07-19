@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional, Union
 import pandas as pd
+import tradingagents.utils.api_cache as api_cache
 
 from ..base_provider import BaseStockDataProvider
 
@@ -67,8 +68,8 @@ class AKShareProvider(BaseStockDataProvider):
                     if 'eastmoney.com' in url:
                         current_time = time.time()
                         time_since_last_request = current_time - last_request_time['time']
-                        if time_since_last_request < 0.5:  # 至少间隔0.5秒
-                            time.sleep(0.5 - time_since_last_request)
+                        # 至少间隔1秒
+                        time.sleep(2)
                         last_request_time['time'] = time.time()
 
                     # 如果是东方财富网的请求，且 curl_cffi 可用，使用它来绕过反爬虫
@@ -135,7 +136,7 @@ class AKShareProvider(BaseStockDataProvider):
 
                             if is_ssl_error and attempt < max_retries - 1:
                                 # SSL错误，等待后重试
-                                wait_time = 0.5 * (attempt + 1)  # 递增等待时间
+                                wait_time = 1 * (attempt + 1)  # 递增等待时间
                                 time.sleep(wait_time)
                                 continue
                             else:
@@ -295,7 +296,11 @@ class AKShareProvider(BaseStockDataProvider):
 
         try:
             logger.info("📋 获取AKShare股票列表（同步）...")
-            stock_df = self.ak.stock_info_a_code_name()
+            stock_df = api_cache.call(
+                'ak.stock_info_a_code_name()',
+                self.ak.stock_info_a_code_name,
+                expire=3600,
+            )
 
             if stock_df is None or stock_df.empty:
                 logger.warning("⚠️ AKShare股票列表为空")
@@ -323,7 +328,11 @@ class AKShareProvider(BaseStockDataProvider):
 
             # 使用线程池异步获取股票列表，添加超时保护
             def fetch_stock_list():
-                return self.ak.stock_info_a_code_name()
+                return api_cache.call(
+                    'ak.stock_info_a_code_name()',
+                    self.ak.stock_info_a_code_name,
+                    expire=3600,
+                )
 
             stock_df = await asyncio.to_thread(fetch_stock_list)
 
@@ -404,7 +413,11 @@ class AKShareProvider(BaseStockDataProvider):
 
         # 否则重新获取
         def fetch_stock_list():
-            return self.ak.stock_info_a_code_name()
+            return api_cache.call(
+                'ak.stock_info_a_code_name()',
+                self.ak.stock_info_a_code_name,
+                expire=3600,
+            )
 
         try:
             stock_list = await asyncio.to_thread(fetch_stock_list)
@@ -423,7 +436,12 @@ class AKShareProvider(BaseStockDataProvider):
         try:
             # 方法1: 尝试获取个股详细信息（包含行业、地区等详细信息）
             def fetch_individual_info():
-                return self.ak.stock_individual_info_em(symbol=code)
+                return api_cache.call(
+                    f'ak.stock_individual_info_em(symbol="{code}")',
+                    self.ak.stock_individual_info_em,
+                    expire=3600,
+                    symbol=code,
+                )
 
             try:
                 stock_info = await asyncio.to_thread(fetch_individual_info)
@@ -578,8 +596,12 @@ class AKShareProvider(BaseStockDataProvider):
                 # 优先使用新浪财经接口（更稳定，不容易被封）
                 def fetch_spot_data_sina():
                     import time
-                    time.sleep(0.3)  # 添加延迟避免频率限制
-                    return self.ak.stock_zh_a_spot()
+                    time.sleep(1)  # 添加延迟避免频率限制
+                    return api_cache.call(
+                        'ak.stock_zh_a_spot()',
+                        self.ak.stock_zh_a_spot,
+                        expire=600,
+                    )
 
                 try:
                     spot_df = await asyncio.to_thread(fetch_spot_data_sina)
@@ -590,8 +612,12 @@ class AKShareProvider(BaseStockDataProvider):
                     # 回退到东方财富接口
                     def fetch_spot_data_em():
                         import time
-                        time.sleep(0.5)
-                        return self.ak.stock_zh_a_spot_em()
+                        time.sleep(1)
+                        return api_cache.call(
+                            'ak.stock_zh_a_spot_em()',
+                            self.ak.stock_zh_a_spot_em,
+                            expire=600,
+                        )
                     spot_df = await asyncio.to_thread(fetch_spot_data_em)
                     data_source = "eastmoney"
                     logger.debug("✅ 使用东方财富接口获取数据")
@@ -721,7 +747,12 @@ class AKShareProvider(BaseStockDataProvider):
 
             # 🔥 使用 stock_bid_ask_em 接口获取单个股票实时行情
             def fetch_bid_ask():
-                return self.ak.stock_bid_ask_em(symbol=code)
+                return api_cache.call(
+                    f'ak.stock_bid_ask_em(symbol="{code}")',
+                    self.ak.stock_bid_ask_em,
+                    expire=30,
+                    symbol=code,
+                )
 
             bid_ask_df = await asyncio.to_thread(fetch_bid_ask)
 
@@ -801,7 +832,11 @@ class AKShareProvider(BaseStockDataProvider):
         try:
             # 方法1: 获取A股实时行情
             def fetch_spot_data():
-                return self.ak.stock_zh_a_spot_em()
+                return api_cache.call(
+                    'ak.stock_zh_a_spot_em()',
+                    self.ak.stock_zh_a_spot_em,
+                    expire=60,
+                )
 
             try:
                 spot_df = await asyncio.to_thread(fetch_spot_data)
@@ -838,7 +873,14 @@ class AKShareProvider(BaseStockDataProvider):
 
             # 方法2: 尝试获取单只股票实时数据
             def fetch_individual_spot():
-                return self.ak.stock_zh_a_hist(symbol=code, period="daily", adjust="")
+                return api_cache.call(
+                    f'ak.stock_zh_a_hist(symbol="{code}",period="daily",adjust="")',
+                    self.ak.stock_zh_a_hist,
+                    expire=3600,
+                    symbol=code,
+                    period="daily",
+                    adjust="",
+                )
 
             try:
                 hist_df = await asyncio.to_thread(fetch_individual_spot)
@@ -948,12 +990,15 @@ class AKShareProvider(BaseStockDataProvider):
             for attempt in range(max_retries):
                 try:
                     def fetch_historical_data():
-                        return self.ak.stock_zh_a_hist(
+                        return api_cache.call(
+                            f'ak.stock_zh_a_hist(symbol="{code}",period="{ak_period}",start_date="{start_date_formatted}",end_date="{end_date_formatted}",adjust="qfq")',
+                            self.ak.stock_zh_a_hist,
+                            expire=3600,
                             symbol=code,
                             period=ak_period,
                             start_date=start_date_formatted,
                             end_date=end_date_formatted,
-                            adjust="qfq"  # 前复权
+                            adjust="qfq",  # 前复权
                         )
 
                     hist_df = await asyncio.to_thread(fetch_historical_data)
@@ -1113,7 +1158,12 @@ class AKShareProvider(BaseStockDataProvider):
             # 1. 获取主要财务指标
             try:
                 def fetch_financial_abstract():
-                    return self.ak.stock_financial_abstract(symbol=code)
+                    return api_cache.call(
+                        f'ak.stock_financial_abstract(symbol="{code}")',
+                        self.ak.stock_financial_abstract,
+                        expire=86400,
+                        symbol=code,
+                    )
 
                 main_indicators = await asyncio.to_thread(fetch_financial_abstract)
                 if main_indicators is not None and not main_indicators.empty:
@@ -1125,7 +1175,12 @@ class AKShareProvider(BaseStockDataProvider):
             # 2. 获取资产负债表
             try:
                 def fetch_balance_sheet():
-                    return self.ak.stock_balance_sheet_by_report_em(symbol=code)
+                    return api_cache.call(
+                        f'ak.stock_balance_sheet_by_report_em(symbol="{code}")',
+                        self.ak.stock_balance_sheet_by_report_em,
+                        expire=86400,
+                        symbol=code,
+                    )
 
                 balance_sheet = await asyncio.to_thread(fetch_balance_sheet)
                 if balance_sheet is not None and not balance_sheet.empty:
@@ -1137,7 +1192,12 @@ class AKShareProvider(BaseStockDataProvider):
             # 3. 获取利润表
             try:
                 def fetch_income_statement():
-                    return self.ak.stock_profit_sheet_by_report_em(symbol=code)
+                    return api_cache.call(
+                        f'ak.stock_profit_sheet_by_report_em(symbol="{code}")',
+                        self.ak.stock_profit_sheet_by_report_em,
+                        expire=86400,
+                        symbol=code,
+                    )
 
                 income_statement = await asyncio.to_thread(fetch_income_statement)
                 if income_statement is not None and not income_statement.empty:
@@ -1149,7 +1209,12 @@ class AKShareProvider(BaseStockDataProvider):
             # 4. 获取现金流量表
             try:
                 def fetch_cash_flow():
-                    return self.ak.stock_cash_flow_sheet_by_report_em(symbol=code)
+                    return api_cache.call(
+                        f'ak.stock_cash_flow_sheet_by_report_em(symbol="{code}")',
+                        self.ak.stock_cash_flow_sheet_by_report_em,
+                        expire=86400,
+                        symbol=code,
+                    )
 
                 cash_flow = await asyncio.to_thread(fetch_cash_flow)
                 if cash_flow is not None and not cash_flow.empty:
@@ -1235,7 +1300,12 @@ class AKShareProvider(BaseStockDataProvider):
 
                 for attempt in range(max_retries):
                     try:
-                        news_df = ak.stock_news_em(symbol=symbol_6)
+                        news_df = api_cache.call(
+                            f'ak.stock_news_em(symbol="{symbol_6}")',
+                            ak.stock_news_em,
+                            expire=600,
+                            symbol=symbol_6,
+                        )
                         break  # 成功则跳出重试循环
                     except json.JSONDecodeError as e:
                         if attempt < max_retries - 1:
@@ -1262,7 +1332,11 @@ class AKShareProvider(BaseStockDataProvider):
             else:
                 # 获取市场新闻
                 self.logger.debug("📰 获取AKShare市场新闻")
-                news_df = ak.news_cctv()
+                news_df = api_cache.call(
+                    'ak.news_cctv()',
+                    ak.news_cctv,
+                    expire=600,
+                )
 
                 if news_df is not None and not news_df.empty:
                     self.logger.info(f"✅ AKShare市场新闻获取成功: {len(news_df)} 条")
@@ -1336,8 +1410,11 @@ class AKShareProvider(BaseStockDataProvider):
                     for attempt in range(max_retries):
                         try:
                             news_df = await asyncio.to_thread(
+                                api_cache.call,
+                                f'ak.stock_news_em(symbol="{symbol_6}")',
                                 ak.stock_news_em,
-                                symbol=symbol_6
+                                expire=600,
+                                symbol=symbol_6,
                             )
                             break  # 成功则跳出重试循环
                         except json.JSONDecodeError as e:
@@ -1413,8 +1490,11 @@ class AKShareProvider(BaseStockDataProvider):
                 try:
                     # 获取财经新闻
                     news_df = await asyncio.to_thread(
+                        api_cache.call,
+                        'ak.news_cctv()',
                         ak.news_cctv,
-                        limit=limit
+                        expire=600,
+                        limit=limit,
                     )
 
                     if news_df is not None and not news_df.empty:

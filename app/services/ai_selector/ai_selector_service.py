@@ -1,385 +1,100 @@
 """
 AI选股服务
-6个分析师Agent协同工作：大盘分析师、主线板块分析师、市场合力分析师、
-股票龙头分析师、风险分析师、决策分析师
-每个Agent先使用代码计算指标，然后将计算结果发送给LLM分析
+直接调用 AiSelectorGraph（LangGraph架构），负责任务生命周期管理和MongoDB存储。
 """
 
-import re
 import asyncio
+import contextlib
 import uuid
-import json
 import logging
 import time
 import threading
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from zoneinfo import ZoneInfo
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
-from app.utils.json_compressor import compress_json_for_llm
-from app.utils.stock_utils import make_serializable, is_main_board_stock, extract_json_block
-from langchain_core.messages import HumanMessage, SystemMessage
+
 from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.graph.selector.selector_graph import AiSelectorGraph
 from app.services.simple_analysis_service import create_analysis_config, get_provider_and_url_by_model_sync
-from app.core.database import get_mongo_db
-import pandas as pd
-from app.utils.api_cache import ApiCache
-from app.services.ai_selector.compute_indicators import (
-    compute_market_indicators,
-    compute_sector_indicators,
-    compute_force_indicators,
-    compute_leader_indicators,
-    compute_risk_indicators,
-)
 from app.services.model_capability_service import get_model_capability_service
+from app.utils.stock_utils import make_serializable
 from app.utils.schedule_utils import ScheduleManager, preview_cron
+from app.core.database import get_mongo_db
 
 logger = logging.getLogger(__name__)
 
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 
+
 def _now_cn() -> datetime:
-    """返回上海时区"""
     return datetime.now(_CN_TZ).replace(tzinfo=None)
 
 
-# ============================================================
-# Agent提示词模板
-# ============================================================
-
-MARKET_ANALYST_PROMPT = """
-你是一位拥有CFA资质的资深A股策略分析师，专注于分析A股大盘走势与市场环境。你的任务是根据给定的量化指标，输出一份简明扼要的市场报告。
-
-# 核心职责
-1. **指数走势判断**：结合近5日收盘价序列和5日区间涨跌幅，判断上证/深成当前处于上涨、下跌还是震荡趋势？幅度如何？
-2. **外资方向分析**：对比"北向ETF方向信号"与"北向资金净持仓聚合"两个指标是否同向？同向则外资信号可靠；若分歧，说明外资行为分化，应降低权重。重点关注南向资金和行业资金集中度。
-3. **涨跌比分析**：上涨/下跌家数比值如何？是普涨（上涨占比>60%）、普跌（<40%）还是分化？
-4. **综合判断**：综合指数趋势、资金方向、市场广度等指标，给出偏多/偏空/中性结论。
-
-# 约束条件
-1.绝对客观，不掺杂主观臆测，一切结论必须有数据支撑。
-2.拒绝模棱两可的废话，直击本质。
-
-# 输出格式（严格遵守JSON格式，market_sentiment字段属性必须输出）
-<RAW_DATA>
-{{
-  "market_sentiment": "偏多/偏空/中性",
-  "key_points": [
-    "依据1",
-    "依据2"
-  ],
-  "risk_notes": "风险提示（可选）",
-  "analysis_brief": "大盘分析简报（200字内）"
-}}
-</RAW_DATA>
-
-# 基于如下的市场指标数据进行严格分析
-<RAW_DATA>
-{indicators_data}
-</RAW_DATA>
-"""
-
-SECTOR_ANALYST_PROMPT = """
-你是一位拥有CFA资质的资深A股策略分析师，专注于识别当前市场的热点主线板块。你的任务是根据给定的量化指标，输出一份简明扼要的市场报告。
-
-# 核心职责
-1. **板块涨停集中度**：统计涨停股中各行业/板块的数量，哪个方向涨停股最多？是否有明确的板块效应？
-2. **板块持续强度**：若数据中包含5日/10日涨跌幅，对比今日与近期涨幅判断是启动还是持续；若无多日数据，说明仅做今日判断。
-3. **连板高度与市场情绪**：
-   - 当前市场连板最多的股票是几板？高度板存在说明情绪如何？
-   - 结合**封板比**判断涨停质量：封板比高=主力真实锁仓，封板比低=散户堆砌，容易炸板。
-   - 结合**炸板率**判断市场惜售意愿：炸板率高说明获利盘多，市场情绪脆弱，不宜激进追板。
-4. **主线认定**：结合上述维度，哪个板块具备"量升、涨停集中、少炸板、封板比高"的主线特征？
-5. **主线板块筛选**：筛选出1到2个最具代表性的板块。
-
-# 约束条件
-1.绝对客观，不掺杂主观臆测，一切结论必须有数据支撑。
-2.拒绝模棱两可的废话，直击本质。
-
-# 输出格式（严格遵守JSON格式）
-<RAW_DATA>
-{{
-  "has_main_sector": true,
-  "main_sectors": ["板块1", "板块2"],
-  "max_consecutive_limit": 3,
-  "avg_seal_ratio": 0.8,
-  "broken_limit_rate": 15.0,
-  "sustainability": "持续/一日游",
-  "reasoning": "简要逻辑（含具体数据依据，200字以内）"
-}}
-</RAW_DATA>
-
-## 上游大盘分析师的结论
-<RAW_DATA>
-{market_summary}
-</RAW_DATA>
-
-# 基于如下的市场指标数据进行严格分析
-<RAW_DATA>
-{indicators_data}
-</RAW_DATA>
-"""
-
-FORCE_ANALYST_PROMPT = """
-你是一位拥有CFA资质的资深A股策略分析师，专注于分析主力与散户的资金动向。你的任务是根据给定的量化指标，输出一份简明扼要的市场报告。
-
-# 核心职责
-1. **行业资金流向**：主力资金净流入哪些行业？净流出哪些行业？重点关注上游主线板块分析师的结论的板块的资金净额情况。
-2. **个股资金交叉验证**：在"个股主力净流入前20"中，哪些股票属于主线板块？它们的净额、换手率、涨跌幅配合情况如何？
-3. **合力判断**：行业资金与个股资金方向是否一致？是"正向共振"（行业+个股同向净流入）、"主力主导"（行业流入但个股分散）还是"反向分歧"？
-4. **量价配合**：净流入的股票，其换手率是否同步放大？换手率>3%且净流入为正是强信号。
-5. **主线标的筛选**：从个股资金流向中筛选出符合主线板块且资金净流入明显的标的，给出推荐理由，给出2到3个股票。
-
-# 约束条件
-1.绝对客观，不掺杂主观臆测，一切结论必须有数据支撑。
-2.拒绝模棱两可的废话，直击本质。
-
-# 输出格式（严格遵守JSON格式）
-<RAW_DATA>
-{{
-  "force_direction": "正向共振/反向分歧/主力主导",
-  "recommended_stocks": [
-    {{"code": "股票代码（必须来自数据列表）", "name": "股票名称", "net_inflow": "净流入金额", "reason": "属于主线板块且具体依据（100字以内）"}}
-  ]
-}}
-</RAW_DATA>
-
-# 上游主线板块分析师的结论（必须从主线板块中分析股票）
-<RAW_DATA>
-{sector_themes}
-</RAW_DATA>
-
-# 基于如下的市场指标数据进行严格分析
-<RAW_DATA>
-{indicators_data}
-</RAW_DATA>
-"""
-
-LEADER_ANALYST_PROMPT = """
-你是一位拥有CFA资质的资深A股策略分析师，专注于筛选板块龙头与强势股。你的任务是根据给定的量化指标，输出一份简明扼要的市场报告。
-
-# 核心职责
-1. **连板属性与位置风险**：候选股中是否有连板股？连板数是多少？在当前市场连板高度中处于什么位置（龙头/跟风/尾部）？股价是否处于低位启动（近30日跌幅明显）还是高位追涨（接近近期高点）？
-2. **龙头地位**：该股今日是否涨停或涨幅居前？在所属板块中是领头羊还是跟风股？
-3. **量价配合**：换手率与成交额是否同步放大？是否有"放量涨停"或"缩量跌停"等异常信号？
-4. **板块共振**：候选股所属板块今日表现如何？龙头股应与板块形成共振，而非逆势。
-5. **综合筛选**：从候选股票中筛选出最多1到2支龙头股（宁缺毋滥），给出推荐理由，明确T+1风险评估。
-
-# 约束条件
-1.绝对客观，不掺杂主观臆测，一切结论必须有数据支撑。
-2.拒绝模棱两可的废话，直击本质。
-
-# 输出格式（严格遵守JSON格式）
-<RAW_DATA>
-{{
-  "leading_stocks": [
-    {{"code": "股票代码", "name": "股票名称", "sector": "所属板块", "consecutive_limit": 连板数或0, "strength": "强/中/弱", "in_zt_pool": true或false, "position_risk": "低位/中位/高位", "t1_risk_note": "T+1隔夜风险说明"}}
-  ]
-}}
-</RAW_DATA>
-
-## 上游市场合力分析师传入的候选股票（必须从候选股票中进一步筛选股票）
-{candidate_stocks}
-
-# 基于如下的市场指标数据进行严格分析
-<RAW_DATA>
-{indicators_data}
-</RAW_DATA>
-"""
-
-RISK_ANALYST_PROMPT = """
-你是一位资深的风险分析师，专注于排除高风险标的，保障投资安全边际。
-
-# 约束条件
-1.绝对客观，不掺杂主观臆测，一切结论必须有数据支撑。
-2.拒绝模棱两可的废话，直击本质。
-
-# 请逐一对每只推荐股进行如下风险核查：
-1. **名称合规检查**：股票名称是否含 ST/*ST/退市/停牌？（对照候选标的实时行情中的"名称"字段，这类标记为高风险）
-2. **代码合规检查**：代码是否属于主板范围？（600/601/603/605/000/001/002/003开头为主板，非主板股票高风险）
-3. **次新股核查**：是否出现在次新股列表中？（次新股股票高风险）
-4. **涨幅异常核查**：基于实时行情中的"涨跌幅"，若今日涨跌幅>9.8%（即涨停），叠加是否已有多个连板，评估追高风险。
-5. **高位连板追板风险（T+1隔夜风险）**：
-   - 若龙头分析师在 t1_risk_note 中标注"高位"且连板数≥3，评估为**高追板风险**——须在 excluded_stocks 中标注追高风险，或在 safe_stocks 中附加警示。
-   - 原则：**低位（近30日内涨幅<30%的首次涨停）优先于高位连板**；高位3板及以上，非极端强势市场不建议追入。
-6. **基本面安全底线**（参考"候选标的基本面"数据）：
-   - 市盈率(动) PE < 0（亏损）：标记为中高风险，须说明亏损状态。
-   - 市盈率(动) PE > 200 或无法获取：说明估值极高或数据缺失，需特别注意。
-   - 总市值 < 20亿 ：流通盘极小，容易被操控，标记为中风险。
-   - 若无法获取基本面数据，在报告中注明"基本面数据未获取，该维度无法评估"，不得因此直接排除。
-
-# 输出格式（严格遵守JSON格式）
-<RAW_DATA>
-{{
-  "risk_level": "低/中/高",
-  "safe_stocks": [
-    {{"code": "股票代码", "name": "股票名称", "risk_notes": "风险提示（如高位连板T+1风险、PE偏高等；无则填无）"}}
-  ]
-}}
-</RAW_DATA>
-
-# 上游龙头分析师推荐了以下标的：
-<RAW_DATA>
-{recommended_stocks}
-</RAW_DATA>
-
-# 基于如下的市场指标数据进行严格分析
-<RAW_DATA>
-{indicators_data}
-</RAW_DATA>
-"""
-
-DECISION_ANALYST_PROMPT = """
-你是一位资深的决策分析师，负责综合所有分析师的结论，给出最终的AI选股决策。
-
-# 约束条件
-1.绝对客观，不掺杂主观臆测，一切结论必须有数据支撑。
-2.拒绝模棱两可的废话，直击本质。
-
-**决策要点**：
-1. **综合研判**：大盘5日趋势 + 今日情绪是否一致？如果趋势向上但今日偏空可能是短期波动，反之亦然。
-2. **主线有效性**：板块分析师确认的主线，是否得到了合力分析师的资金验证？若两者结论一致才是强信号。
-3. **标的质量**：安全标的中是否有连板龙头（优先级最高）、涨幅居前但未封板（次之）、普通强势股（最低）？
-4. **仓位原则**：
-   - 大盘偏多+主线明确+龙头确认 → 可用总仓位30~50%
-   - 大盘中性或主线不明确 → 轻仓试探，不超过20%
-   - 多只安全标的时，按连板数高低加权分配（龙头股占比高于跟风股）
-5. **失败保护**：如安全标的为空或不确定性极高，action应为"观望"，不强制推荐。
-
-# 输出格式（严格遵守JSON格式）
-<RAW_DATA>
-{{
-  "action": "强烈推荐/谨慎推荐/观望/规避",
-  "stocks": [
-    {{"code": "股票代码", "name": "股票名称", "reason": "推荐理由（含连板数/涨幅/板块等具体数据，100字以内）"}}
-  ],
-  "reasoning": "综合决策的详细依据（说明大盘+板块+资金三者是否共振），200字以内",
-  "position_suggestion": "具体仓位建议（如：总仓位40%，XXX股30%+YYY股10%，100字以内）",
-  "risk_warning": "风险提示（针对当前具体标的和市场环境，100字以内）"
-}}
-</RAW_DATA>
-
-## 当前时间是：{current_time}
-## 各分析师的分析结论
-
-### 大盘分析师结论
-<RAW_DATA>
-{market_report}
-</RAW_DATA>
-
-### 主线板块分析师结论
-<RAW_DATA>
-{sector_report}
-</RAW_DATA>
-
-### 市场合力分析师结论
-<RAW_DATA>
-{force_report}
-</RAW_DATA>
-
-### 股票龙头分析师结论
-<RAW_DATA>
-{leader_report}
-</RAW_DATA>
-
-### 风险分析师结论
-<RAW_DATA>
-{risk_report}
-</RAW_DATA>
-
-### 风险分析师确认的安全标的
-<RAW_DATA>
-{safe_stocks_info}
-</RAW_DATA>
-"""
-
-
-# ============================================================
-# AI选股服务主类
-# ============================================================
-
 class AiSelectorService:
-    """AI选股服务"""
+    """AI选股服务：任务管理 + LangGraph调用"""
+
+    # ============================================================
+    # LLM 初始化
+    # ============================================================
 
     def _build_llm_config(self) -> Dict[str, Any]:
-        """复用已有的模型配置逻辑
-        """
-
+        """复用现有模型配置逻辑，与股票分析保持一致"""
         capability_service = get_model_capability_service()
-        research_depth = "快速"
-
-        # 从系统已启用的配置中自动推荐模型（与 simple_analysis_service 逻辑一致）
-        quick_model, deep_model = capability_service.recommend_models_for_depth(research_depth)
+        quick_model, deep_model = capability_service.recommend_models_for_depth("快速")
         logger.info(f"AI选股 - 自动推荐模型: quick={quick_model}, deep={deep_model}")
 
-        # 获取供应商信息
-        quick_provider_info = get_provider_and_url_by_model_sync(quick_model)
-        deep_provider_info = get_provider_and_url_by_model_sync(deep_model)
+        quick_info = get_provider_and_url_by_model_sync(quick_model)
+        deep_info = get_provider_and_url_by_model_sync(deep_model)
 
-        quick_provider = quick_provider_info["provider"]
-        deep_provider = deep_provider_info["provider"]
-        quick_backend_url = quick_provider_info["backend_url"]
-        deep_backend_url = deep_provider_info["backend_url"]
-
-        logger.info(f"AI选股 - 快速模型 {quick_model} -> 供应商: {quick_provider}, URL: {quick_backend_url}")
-        logger.info(f"AI选股 - 深度模型 {deep_model} -> 供应商: {deep_provider}, URL: {deep_backend_url}")
-
-        # 使用create_analysis_config构建完整配置（与股票分析完全一致）
         config = create_analysis_config(
-            research_depth=research_depth,
-            selected_analysts=["market"],  # 仅用于初始化，不影响我们的自定义分析流程
+            research_depth="快速",
+            selected_analysts=["market"],
             quick_model=quick_model,
             deep_model=deep_model,
-            llm_provider=quick_provider,
+            llm_provider=quick_info["provider"],
             market_type="A股",
         )
-
-        # 添加混合模式配置
-        config["quick_provider"] = quick_provider
-        config["deep_provider"] = deep_provider
-        config["quick_backend_url"] = quick_backend_url
-        config["deep_backend_url"] = deep_backend_url
-        config["backend_url"] = quick_backend_url
-
+        config["quick_provider"] = quick_info["provider"]
+        config["deep_provider"] = deep_info["provider"]
+        config["quick_backend_url"] = quick_info["backend_url"]
+        config["deep_backend_url"] = deep_info["backend_url"]
+        config["backend_url"] = quick_info["backend_url"]
         return config
 
     def _create_llm_instances(self, config: Dict[str, Any]):
-        """通过TradingAgentsGraph创建正确配置的LLM实例
-        """
+        """通过 TradingAgentsGraph 创建正确配置的 LLM 实例（复用现有机制）"""
         graph = TradingAgentsGraph(
             selected_analysts=config.get("selected_analysts", ["market"]),
             debug=False,
             config=config,
         )
-        logger.info(f"AI选股 - TradingAgentsGraph创建成功，LLM已就绪")
-        logger.info(f"  quick_llm: {graph.quick_thinking_llm.__class__.__name__}, model={getattr(graph.quick_thinking_llm, 'model_name', 'unknown')}")
-        logger.info(f"  deep_llm: {graph.deep_thinking_llm.__class__.__name__}, model={getattr(graph.deep_thinking_llm, 'model_name', 'unknown')}")
-
+        logger.info(
+            f"AI选股 - LLM就绪: quick={graph.quick_thinking_llm.__class__.__name__}"
+            f"/{getattr(graph.quick_thinking_llm, 'model_name', '?')}, "
+            f"deep={graph.deep_thinking_llm.__class__.__name__}"
+            f"/{getattr(graph.deep_thinking_llm, 'model_name', '?')}"
+        )
         return graph.quick_thinking_llm, graph.deep_thinking_llm
 
-    async def create_task(self, user_id: str, trigger_type: str = "manual") -> Dict[str, Any]:
-        """创建AI选股任务
+    # ============================================================
+    # 任务管理
+    # ============================================================
 
-        Args:
-            trigger_type: "manual"=手动执行 / "scheduled"=定时执行
-        """
+    async def create_task(self, user_id: str, trigger_type: str = "manual") -> Dict[str, Any]:
+        """创建 AI 选股任务记录"""
         if trigger_type not in ("manual", "scheduled"):
             raise ValueError(f"非法触发类型: {trigger_type}")
-        task_id = str(uuid.uuid4())
 
+        task_id = str(uuid.uuid4())
         try:
             db = get_mongo_db()
-
-            # 防止并发执行——同一用户有进行中的任务时拒绝新建
-            running_task = await db.ai_selector_tasks.find_one(
+            running = await db.ai_selector_tasks.find_one(
                 {"user_id": user_id, "status": {"$in": ["pending", "running"]}}
             )
-            if running_task:
+            if running:
                 raise ValueError(
-                    f"已有AI选股任务正在执行（ID: {running_task['task_id'][:8]}...），"
-                    f"请等待当前任务完成后再试"
+                    f"已有AI选股任务正在执行（ID: {running['task_id'][:8]}...），请等待完成后再试"
                 )
-
             await db.ai_selector_tasks.insert_one({
                 "task_id": task_id,
                 "user_id": user_id,
@@ -391,319 +106,56 @@ class AiSelectorService:
                 "updated_at": _now_cn(),
             })
         except ValueError:
-            raise  # 业务异常直接向上抛出，不吞掉
+            raise
         except Exception as e:
-            logger.error(f"保存AI选股任务到MongoDB失败: {e}")
+            logger.error(f"创建AI选股任务失败: {e}")
             raise RuntimeError(f"创建AI选股任务失败: {e}")
 
         return {"task_id": task_id, "status": "pending", "message": "AI选股任务已创建"}
 
-    async def run_analysis(self, quick_llm, deep_llm, api_cache: ApiCache,
-                           on_progress=None) -> Dict[str, Any]:
-        """执行AI选股核心分析流程（不涉及任务管理/MongoDB，可供外部直接调用）
-
-        Args:
-            quick_llm: 快速模型LLM实例
-            deep_llm: 深度模型LLM实例
-            api_cache: API缓存实例
-            on_progress: 可选的异步进度回调 async (progress: int, step: str) -> None
-
-        Returns:
-            包含 analyst_results, decision, decision_report, early_stop 等字段的字典
-        """
-        async def _report(progress: int, step: str):
-            if on_progress:
-                await on_progress(progress, step)
-        analyst_results = []
-        decision = None
-        decision_report = ""
-        early_stop_reason = ""
-
-        market_report = ""
-        sector_report = ""
-        force_report = ""
-        leader_report = ""
-        risk_report = ""
-        sector_themes_str = ""
-        candidate_stocks_str = ""
-        recommended_stocks_str = ""
-        safe_stocks_info = ""
-        leading_stocks: List[Dict] = []
-
-        # ====== Step 1: 大盘分析师 ======
-        await _report(15, "正在获取大盘数据...")
-        market_indicators = await asyncio.to_thread(compute_market_indicators, api_cache)
-
-        await _report(20, "大盘分析师正在分析...")
-        market_report = await asyncio.to_thread(
-            self._run_analyst, quick_llm, "大盘分析师", MARKET_ANALYST_PROMPT, market_indicators
-        )
-        analyst_results.append({
-            "name": "大盘分析师",
-            "conclusion": self._extract_conclusion(market_report, "大盘分析师"),
-            "tag_type": self._get_conclusion_tag_type(market_report),
-            "content": market_report,
-        })
-
-        market_sentiment = self._extract_market_sentiment(market_report)
-        logger.info(f"AI选股 大盘情绪判断: {market_sentiment!r}")
-        # todo 先改为固定值用于测试 test
-        market_sentiment = "偏多"
-        if not market_sentiment:
-            early_stop_reason = "大盘分析师未返回 market_sentiment 结论（数据缺失或解析失败），终止后续分析"
-            logger.info(f"AI选股 提前终止: {early_stop_reason}")
-            decision = {
-                "action": "观望",
-                "stocks": [],
-                "reasoning": early_stop_reason,
-                "position_suggestion": "空仓观望",
-                "risk_warning": "大盘数据分析失败！",
-            }
-            decision_report = f"## 决策结论\n\n{early_stop_reason}\n\n大盘分析师未输出有效的市场情绪结论，建议空仓观望。"
-        elif market_sentiment == "偏空":
-            early_stop_reason = "大盘环境偏空，建议观望，终止后续分析"
-            logger.info(f"AI选股 提前终止: {early_stop_reason}")
-            decision = {
-                "action": "观望",
-                "stocks": [],
-                "reasoning": early_stop_reason,
-                "position_suggestion": "空仓观望",
-                "risk_warning": "大盘环境偏空，不宜入场",
-            }
-            decision_report = f"## 决策结论\n\n{early_stop_reason}\n\n大盘分析师判断当前大盘环境偏空，建议空仓观望，等待市场企稳后再考虑入场。"
-
-        # ====== Step 2: 主线板块分析师 ======
-        if not early_stop_reason:
-            await _report(32, "正在获取板块数据...")
-            sector_indicators = await asyncio.to_thread(compute_sector_indicators, api_cache)
-
-            await _report(38, "主线板块分析师正在分析...")
-
-            sector_report = await asyncio.to_thread(
-                self._run_analyst, quick_llm, "主线板块分析师", SECTOR_ANALYST_PROMPT, sector_indicators,
-                extra_params={"market_summary": market_report}
-            )
-            analyst_results.append({
-                "name": "主线板块分析师",
-                "conclusion": self._extract_conclusion(sector_report, "主线板块分析师"),
-                "tag_type": self._get_conclusion_tag_type(sector_report),
-                "content": sector_report,
-            })
-
-            sector_themes = self._extract_sector_themes(sector_report)
-            logger.info(f"AI选股 主线板块: {sector_themes}")
-            if not sector_themes:
-                early_stop_reason = "当前市场无明显主线板块，资金分散，终止后续分析"
-                logger.info(f"AI选股 提前终止: {early_stop_reason}")
-                decision = {
-                    "action": "观望",
-                    "stocks": [],
-                    "reasoning": early_stop_reason,
-                    "position_suggestion": "空仓观望",
-                    "risk_warning": "市场无明显主线，不宜追涨",
-                }
-                decision_report = f"## 决策结论\n\n{early_stop_reason}\n\n主线板块分析师未发现明显主线板块，市场资金分散无序，建议观望等待主线清晰后再入场。"
-            else:
-                sector_themes_str = "、".join(sector_themes)
-
-        # ====== Step 3: 市场合力分析师 ======
-        if not early_stop_reason:
-            await _report(52, "正在获取资金流向数据...")
-            force_indicators = await asyncio.to_thread(compute_force_indicators, api_cache)
-
-            await _report(57, "市场合力分析师正在分析...")
-
-            force_report = await asyncio.to_thread(
-                self._run_analyst, quick_llm, "市场合力分析师", FORCE_ANALYST_PROMPT,
-                force_indicators,
-                extra_params={"sector_themes": sector_report}
-            )
-            analyst_results.append({
-                "name": "市场合力分析师",
-                "conclusion": self._extract_conclusion(force_report, "市场合力分析师"),
-                "tag_type": self._get_conclusion_tag_type(force_report),
-                "content": force_report,
-            })
-
-            candidate_stocks = self._extract_candidate_stocks(force_report)
-            logger.info(f"AI选股 合力分析师候选股票: {candidate_stocks}")
-            if not candidate_stocks:
-                early_stop_reason = "市场合力分析师未筛选出符合主线板块的资金合力标的，终止后续分析"
-                logger.info(f"AI选股 提前终止: {early_stop_reason}")
-                decision = {
-                    "action": "观望",
-                    "stocks": [],
-                    "reasoning": early_stop_reason,
-                    "position_suggestion": "空仓观望",
-                    "risk_warning": "当前市场资金合力不足，不建议入场",
-                }
-                decision_report = f"## 决策结论\n\n{early_stop_reason}\n\n市场合力分析师围绕主线板块（{sector_themes_str}）分析后，未发现资金合力正向的标的，建议观望。"
-            else:
-                candidate_stocks_str = self._format_stocks_for_prompt(candidate_stocks)
-
-        # ====== Step 4: 股票龙头分析师 ======
-        if not early_stop_reason:
-            await _report(68, "正在获取龙头股数据...")
-            leader_indicators = await asyncio.to_thread(compute_leader_indicators, api_cache)
-
-            await _report(73, "股票龙头分析师正在分析...")
-
-            leader_report = await asyncio.to_thread(
-                self._run_analyst, quick_llm, "股票龙头分析师", LEADER_ANALYST_PROMPT,
-                leader_indicators,
-                extra_params={"candidate_stocks": force_report}
-            )
-            analyst_results.append({
-                "name": "股票龙头分析师",
-                "conclusion": self._extract_conclusion(leader_report, "股票龙头分析师"),
-                "tag_type": self._get_conclusion_tag_type(leader_report),
-                "content": leader_report,
-            })
-
-            leading_stocks = self._extract_leading_stocks(leader_report)
-            logger.info(f"AI选股 龙头股: {leading_stocks}")
-            # 测试，写死一个603985股票 todo
-            # leading_stocks = [{"code": "603985", "name": "恒润股份"}]
-            if not leading_stocks:
-                early_stop_reason = "股票龙头分析师未筛选出明确的龙头股，终止后续分析"
-                logger.info(f"AI选股 提前终止: {early_stop_reason}")
-                decision = {
-                    "action": "观望",
-                    "stocks": [],
-                    "reasoning": early_stop_reason,
-                    "position_suggestion": "空仓观望",
-                    "risk_warning": "候选股票中未发现明确龙头，不建议追涨",
-                }
-                decision_report = f"## 决策结论\n\n{early_stop_reason}\n\n股票龙头分析师分析候选股票后，未确认具备龙头属性的标的，建议观望。"
-            else:
-                recommended_stocks_str = self._format_stocks_for_prompt(leading_stocks)
-
-        # ====== Step 5: 风险分析师 ======
-        if not early_stop_reason:
-            leading_stock_codes = [s.get("code", "") for s in leading_stocks if s.get("code")]
-            await _report(82, "正在获取风险数据...")
-            risk_indicators = await asyncio.to_thread(
-                compute_risk_indicators, api_cache, leading_stock_codes
-            )
-
-            await _report(86, "风险分析师正在评估...")
-            risk_report = await asyncio.to_thread(
-                self._run_analyst, quick_llm, "风险分析师", RISK_ANALYST_PROMPT,
-                risk_indicators,
-                extra_params={"recommended_stocks": leader_report}
-            )
-            analyst_results.append({
-                "name": "风险分析师",
-                "conclusion": self._extract_conclusion(risk_report, "风险分析师"),
-                "tag_type": self._get_risk_conclusion_tag_type(risk_report),
-                "content": risk_report,
-            })
-
-            risk_level = self._extract_risk_level(risk_report)
-            logger.info(f"AI选股 风险等级: {risk_level}")
-            if risk_level == "高":
-                early_stop_reason = "风险分析师评估整体风险较高，终止后续分析"
-                logger.info(f"AI选股 提前终止: {early_stop_reason}")
-                decision = {
-                    "action": "规避",
-                    "stocks": [],
-                    "reasoning": early_stop_reason,
-                    "position_suggestion": "空仓规避",
-                    "risk_warning": "推荐标的整体风险较高，建议规避",
-                }
-                decision_report = f"## 决策结论\n\n{early_stop_reason}\n\n风险分析师评估推荐标的整体风险较高，建议规避，等待风险释放后再考虑入场。"
-            else:
-                safe_stocks = self._extract_safe_stocks(risk_report)
-                logger.info(f"AI选股 风险分析师安全标的: {safe_stocks}")
-                if not safe_stocks:
-                    early_stop_reason = "风险分析师未确认任何安全标的（safe_stocks 为空），终止后续分析"
-                    logger.info(f"AI选股 提前终止: {early_stop_reason}")
-                    decision = {
-                        "action": "规避",
-                        "stocks": [],
-                        "reasoning": early_stop_reason,
-                        "position_suggestion": "空仓规避",
-                        "risk_warning": "全部推荐标的均存在风险，无安全标的可入场",
-                    }
-                    decision_report = (
-                        f"## 决策结论\n\n{early_stop_reason}\n\n"
-                        f"风险分析师对全部上游推荐标的进行核查后，未确认任何安全标的，建议规避。"
-                    )
-                else:
-                    safe_stocks_info = self._format_stocks_for_prompt(safe_stocks)
-
-        # ====== Step 6: 决策分析师 ======
-        if not early_stop_reason:
-            await _report(93, "决策分析师正在综合研判...")
-            decision_report = await asyncio.to_thread(
-                self._run_decision_analyst, deep_llm,
-                market_report, sector_report, force_report, leader_report, risk_report,
-                safe_stocks_info=safe_stocks_info
-            )
-            decision = self._parse_decision(decision_report)
-
-        # 补充提前终止的步骤为"跳过"状态
-        all_analyst_names = ["大盘分析师", "主线板块分析师", "市场合力分析师", "股票龙头分析师", "风险分析师"]
-        completed_names = {r["name"] for r in analyst_results}
-        for name in all_analyst_names:
-            if name not in completed_names:
-                if early_stop_reason:
-                    analyst_results.append({
-                        "name": name,
-                        "conclusion": "已跳过",
-                        "tag_type": "info",
-                        "content": f"由于{early_stop_reason}，本步骤已跳过。",
-                    })
-                else:
-                    analyst_results.append({
-                        "name": name,
-                        "conclusion": "未执行",
-                        "tag_type": "info",
-                        "content": "本步骤未执行。",
-                    })
-
-        return {
-            "analyst_results": analyst_results,
-            "decision": decision,
-            "decision_report": decision_report,
-            "early_stop": bool(early_stop_reason),
-            "early_stop_reason": early_stop_reason,
-        }
-
-    async def execute_task(self, task_id: str, user_id: str = None):
-        """执行AI选股任务（后台运行）
-
-        Agent间存在依赖关系和条件终止：
-        1. 大盘分析师 -> 偏空则终止
-        2. 主线板块分析师 -> 无主线板块则终止，有则传板块给合力分析师
-        3. 市场合力分析师 -> 根据主线板块分析，筛选2-3支股票，无结果则终止
-        4. 股票龙头分析师 -> 从候选股中选出1-2支龙头股，传给风险分析师
-        5. 风险分析师 -> 风险高则终止，无风险则传安全标的给决策分析师
-        6. 决策分析师 -> 给出最终选股决策
-        """
-        api_cache = ApiCache()
+    async def execute_task(self, task_id: str, user_id: str = None, debate_rounds: int = 1):
+        """执行 AI 选股任务（后台运行）"""
         try:
-            await self._update_status(task_id, "running", 5, "正在初始化AI选股分析...")
-
+            await self._update_status(task_id, "running", 5, "正在初始化AI模型...")
             start_time = time.time()
 
-            await self._update_status(task_id, "running", 8, "正在初始化AI模型...")
             config = await asyncio.to_thread(self._build_llm_config)
             quick_llm, deep_llm = await asyncio.to_thread(self._create_llm_instances, config)
 
-            await self._update_status(task_id, "running", 10, "正在执行AI选股分析...")
+            await self._update_status(task_id, "running", 15, "正在启动LangGraph选股引擎...")
 
-            async def _on_progress(progress: int, step: str):
-                await self._update_status(task_id, "running", progress, step)
+            loop = asyncio.get_running_loop()
+            progress_state = {"progress": 15, "message": "正在启动LangGraph选股引擎..."}
 
-            # 调用核心分析逻辑
-            analysis_result = await self.run_analysis(
-                quick_llm, deep_llm, api_cache, on_progress=_on_progress
+            def on_graph_progress(progress: int, message: str) -> None:
+                bounded_progress = max(progress_state["progress"], min(int(progress), 99))
+                if bounded_progress == progress_state["progress"] and message == progress_state["message"]:
+                    return
+                progress_state["progress"] = bounded_progress
+                progress_state["message"] = message
+
+                future = asyncio.run_coroutine_threadsafe(
+                    self._update_status(task_id, "running", bounded_progress, message),
+                    loop,
+                )
+
+                def _log_future_error(done_future):
+                    with contextlib.suppress(Exception):
+                        exc = done_future.exception()
+                        if exc:
+                            logger.warning(f"AI选股进度回调更新失败: {exc}")
+
+                future.add_done_callback(_log_future_error)
+
+            analysis_result = await asyncio.to_thread(
+                self._run_graph,
+                quick_llm,
+                deep_llm,
+                debate_rounds,
+                on_graph_progress,
             )
 
-            # ====== 保存完整结果 ======
             elapsed = time.time() - start_time
-
             result = {
                 "task_id": task_id,
                 "status": "completed",
@@ -715,19 +167,19 @@ class AiSelectorService:
                 "analyst_results": analysis_result["analyst_results"],
                 "decision": analysis_result["decision"],
                 "decision_report": analysis_result["decision_report"],
+                "execution_trace": analysis_result.get("execution_trace", {}),
                 "completed_at": _now_cn().isoformat(),
             }
 
             try:
                 db = get_mongo_db()
-                serializable_result = make_serializable(result)
                 await db.ai_selector_tasks.update_one(
                     {"task_id": task_id},
                     {"$set": {
                         "status": "completed",
                         "progress": 100,
                         "current_step": "分析完成",
-                        "result": serializable_result,
+                        "result": make_serializable(result),
                         "elapsed_time": round(elapsed, 2),
                         "updated_at": _now_cn(),
                     }}
@@ -742,372 +194,44 @@ class AiSelectorService:
             await self._update_status(task_id, "failed", 0, f"分析失败: {str(e)}", error_message=str(e))
             raise
 
-    def _invoke_llm(self, llm, messages, analyst_name: str = "") -> Any:
-        """LLM 调用，对网络/超时类错误指数退避重试（最多3次）。
-        """
-        retryable_substrs = (
-            "timeout", "timed out", "connection", "rate limit", "429",
-            "502", "503", "504", "remote disconnected", "read error",
-        )
-
-        def _is_retryable(exc: BaseException) -> bool:
-            msg = str(exc).lower()
-            return any(s in msg for s in retryable_substrs)
-
-        @retry(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=2, max=10),
-            retry=retry_if_exception(_is_retryable),
-            reraise=True,
-        )
-        def _do_invoke():
-            return llm.invoke(messages)
-
-        return _do_invoke()
-
-    def _run_analyst(self, llm, analyst_name: str, prompt_template: str,
-                     indicators_data: Dict, extra_params: Dict[str, str] = None) -> str:
-        """运行单个分析师Agent
-
-        Args:
-            extra_params: 额外的模板参数，如 sector_themes、candidate_stocks、recommended_stocks
-        """
-        logger.info(f"AI选股 [{analyst_name}] 开始分析...")
-
-        indicators_str = compress_json_for_llm(indicators_data)
-
-        format_params = {"indicators_data": indicators_str}
-        if extra_params:
-            format_params.update(extra_params)
-
-        prompt = prompt_template.format(**format_params)
-
-        logger.info(
-            f"[LLM提示词] [{analyst_name}] 提示词长度={len(prompt)}\n"
-            f"{'='*60}\n{prompt}\n{'='*60}"
-        )
-
-        try:
-            response = self._invoke_llm(llm, [SystemMessage(content=prompt)], analyst_name)
-            report = response.content
-            logger.info(f"AI选股 [{analyst_name}] 分析完成，报告长度: {len(report)}")
-            logger.info(
-                f"[LLM输出] [{analyst_name}] 输出长度={len(report)}\n"
-                f"{'='*60}\n{report}\n{'='*60}"
-            )
-            return report
-        except Exception as e:
-            logger.error(f"AI选股 [{analyst_name}] LLM调用失败: {e}")
-            return f"{analyst_name}分析失败: {str(e)}"
-
-    def _run_decision_analyst(self, llm, market_report, sector_report,
-                              force_report, leader_report, risk_report,
-                              safe_stocks_info: str = "") -> str:
-        """运行决策分析师"""
-        logger.info("AI选股 [决策分析师] 开始综合研判...")
-
-        prompt = DECISION_ANALYST_PROMPT.format(
-            current_time=datetime.now(_CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
-            market_report=market_report,
-            sector_report=sector_report,
-            force_report=force_report,
-            leader_report=leader_report,
-            risk_report=risk_report,
-            safe_stocks_info=safe_stocks_info,
-        )
-
-        logger.info(
-            f"[LLM提示词] [决策分析师] 提示词长度={len(prompt)}\n"
-            f"{'='*60}\n{prompt}\n{'='*60}"
-        )
-
-        try:
-            response = self._invoke_llm(llm, [SystemMessage(content=prompt)], "决策分析师")
-            report = response.content
-            logger.info(f"AI选股 [决策分析师] 综合研判完成，报告长度: {len(report)}")
-            logger.info(
-                f"[LLM输出] [决策分析师] 输出长度={len(report)}\n"
-                f"{'='*60}\n{report}\n{'='*60}"
-            )
-            return report
-        except Exception as e:
-            logger.error(f"AI选股 [决策分析师] LLM调用失败: {e}")
-            return f"决策分析师分析失败: {str(e)}"
-
     # ============================================================
-    # 结构化数据提取方法（用于Agent间数据传递）
+    # LangGraph 调用
     # ============================================================
 
-    def _extract_market_sentiment(self, report: str) -> str:
-        """从大盘分析师报告中提取市场情绪判断
+    def _run_graph(self, quick_llm, deep_llm, debate_rounds: int = 1, progress_callback=None) -> Dict[str, Any]:
+        """同步调用 AiSelectorGraph，供 asyncio.to_thread 使用"""
+        graph = AiSelectorGraph(
+            config={
+                "max_sector_debate_rounds": debate_rounds,
+                "max_stock_debate_rounds": debate_rounds,
+            },
+            quick_llm=quick_llm,
+            deep_llm=deep_llm,
+        )
+        analysis_date = datetime.now().strftime("%Y-%m-%d")
+        result = graph.run(analysis_date=analysis_date, progress_callback=progress_callback)
 
-        返回值：'偏多' / '偏空' / '中性' / ''（空字符串表示 LLM 未返回该字段）
-        严格化：JSON 解析成功时尊重 LLM 结论，不再回退到全文关键词匹配；
-        全文回退仅在 JSON 完全无法解析时启用。
-        """
-        try:
-            data = extract_json_block(report)
-            if data is not None:
-                if "market_sentiment" not in data:
-                    return ""
-                sentiment = str(data.get("market_sentiment", "")).strip()
-                if not sentiment:
-                    return ""
-                if "偏空" in sentiment or "看空" in sentiment:
-                    return "偏空"
-                if "偏多" in sentiment or "看多" in sentiment:
-                    return "偏多"
-                if "中性" in sentiment:
-                    return "中性"
-                # JSON 中给了非标准取值，按原样返回（视为有效结论，避免误判为空）
-                return sentiment
-        except Exception:
-            pass
-        # JSON 缺失时的兜底——保留旧行为，但不返回默认"中性"以便流程可以识别为空
-        if "偏空" in report or "看空" in report or "弱势" in report:
-            return "偏空"
-        if "偏多" in report or "看多" in report or "强势" in report:
-            return "偏多"
-        return ""
-
-    def _extract_sector_themes(self, report: str) -> List[str]:
-        """从板块分析师报告中提取主线板块列表
-
-        严格化：JSON 解析成功时尊重 LLM 结论（has_main_sector=False 或
-        main_sectors=[] 都视为"无主线"），不再回退到 regex 误识别。
-        """
-        try:
-            data = extract_json_block(report)
-            if data is not None:
-                if data.get("has_main_sector") is False:
-                    return []
-                if "main_sectors" in data:
-                    raw = data["main_sectors"]
-                    if isinstance(raw, list):
-                        return [str(s) for s in raw if s]
-                    return []
-                # JSON 存在但完全缺关键字段，视为空
-                return []
-        except Exception:
-            pass
-
-        # 仅在 JSON 完全解析失败时兜底
-        # 限制匹配长度≤20字符，防止把整句话误识别为板块名
-        match = re.search(r'主线板块[：:]\s*(.{2,20}?)[\n。，,；;]', report)
-        if match:
-            sectors = re.split(r'[、/]', match.group(1))
-            return [s.strip().strip('「」""''') for s in sectors if s.strip()]
-        return []
-
-    def _extract_candidate_stocks(self, report: str) -> List[Dict]:
-        """从合力分析师报告中提取候选股票（2-3支）
-
-        重要：若 LLM 已返回结构化 JSON 且 recommended_stocks 显式为空列表，
-        必须尊重该结论（说明合力分析师明确表示"无符合条件的标的"），
-        不得再 fallback 到全文 regex——否则会把报告正文里引用的任意 6 位
-        数字误当作候选股，导致下游分析师被错误触发。
-        """
-        try:
-            data = extract_json_block(report)
-            if data and "recommended_stocks" in data:
-                stocks = data["recommended_stocks"]
-                if isinstance(stocks, list):
-                    # 显式为空时直接返回空列表，不再做 regex 兜底
-                    return stocks[:3]
-        except Exception:
-            pass
-
-        # 仅当 JSON 完全解析失败（无 recommended_stocks 字段）时，才回退到 regex
-        codes = re.findall(r'\b(\d{6})\b', report)
-        if codes:
-            unique_codes = list(dict.fromkeys(codes))[:3]
-            return [{"code": c, "name": f"股票{c}"} for c in unique_codes]
-        return []
-
-    def _extract_leading_stocks(self, report: str) -> List[Dict]:
-        """从龙头分析师报告中提取龙头股（2-3支）
-
-        同 _extract_candidate_stocks：JSON 已返回空列表时必须尊重结论。
-        """
-        try:
-            data = extract_json_block(report)
-            if data and "leading_stocks" in data:
-                stocks = data["leading_stocks"]
-                if isinstance(stocks, list):
-                    return stocks[:2]
-        except Exception:
-            pass
-
-        codes = re.findall(r'\b(\d{6})\b', report)
-        if codes:
-            unique_codes = list(dict.fromkeys(codes))[:2]
-            return [{"code": c, "name": f"股票{c}"} for c in unique_codes]
-        return []
-
-    def _extract_risk_level(self, report: str) -> str:
-        """从风险分析师报告中提取风险等级"""
-        try:
-            data = extract_json_block(report)
-            if data and "risk_level" in data:
-                level = str(data["risk_level"])
-                if "高" in level:
-                    return "高"
-                elif "低" in level:
-                    return "低"
-                return "中"
-        except Exception:
-            pass
-        if ("高风险" in report or "风险较高" in report or "风险较大" in report
-                or ("整体风险评级" in report and "高风险" in report)):
-            return "高"
-        elif "低风险" in report or "风险较低" in report or "风险可控" in report:
-            return "低"
-        return "中"
-
-    def _extract_safe_stocks(self, report: str) -> List[Dict]:
-        """从风险分析师报告中提取安全标的"""
-        try:
-            data = extract_json_block(report)
-            if data and "safe_stocks" in data:
-                stocks = data["safe_stocks"]
-                if isinstance(stocks, list) and len(stocks) > 0:
-                    return stocks
-        except Exception:
-            pass
-        # 全文 regex 会把 excluded_stocks 里的代码也捞进来，宁可漏选也不错选高风险标的
-        logger.warning("_extract_safe_stocks: 无法从风险报告中解析出结构化安全标的，回退返回空列表")
-        return []
-
-    def _format_stocks_for_prompt(self, stocks: List[Dict]) -> str:
-        """将股票列表格式化为可读文本，用于传入下游Agent提示词"""
-        if not stocks:
-            return "暂无"
-        lines = []
-        for s in stocks:
-            code = s.get("code", "")
-            name = s.get("name", "")
-            reason = s.get("reason", "")
-            sector = s.get("sector", "")
-            # 用 | 分隔字段，避免中文顿号被 LLM 误解为并列事物
-            line = f"{code} {name}"
-            if sector:
-                line += f" | 板块:{sector}"
-            if reason:
-                line += f" | 理由:{reason}"
-            lines.append(line)
-        return "\n".join(f"- {line}" for line in lines)
-
-    def _parse_decision(self, decision_report: str) -> Dict[str, Any]:
-        """解析决策分析师的结论。
-
-        兼容三种格式：
-          1. ```json ... ```
-          2. <RAW_DATA> ... </RAW_DATA>
-          3. <RAW_DATA> ```json ... ``` </RAW_DATA>  （两种标记嵌套）
-        取最后一个能成功解析的 JSON 块，避免示例 JSON 干扰。
-        """
-        def _try_parse(block: str):
-            block = block.strip()
-            inner = re.findall(r'```json\s*(.*?)\s*```', block, re.DOTALL)
-            if inner:
-                block = inner[-1].strip()
-            try:
-                return json.loads(block)
-            except Exception:
-                return None
-
-        try:
-            candidates = []
-            candidates.extend(re.findall(r'```json\s*(.*?)\s*```', decision_report, re.DOTALL))
-            candidates.extend(re.findall(r'<RAW_DATA>\s*(.*?)\s*</RAW_DATA>', decision_report, re.DOTALL))
-            last_valid = None
-            for block in candidates:
-                result = _try_parse(block)
-                if result is not None:
-                    last_valid = result
-            if last_valid is not None:
-                return last_valid
-        except Exception as e:
-            logger.error(f"解析决策JSON失败: {e}")
-
-        # 回退：从文本中提取信息
-        action = "观望"
-        if "强烈推荐" in decision_report:
-            action = "强烈推荐"
-        elif "谨慎推荐" in decision_report:
-            action = "谨慎推荐"
-        elif "规避" in decision_report:
-            action = "规避"
-
-        codes = re.findall(r'\b(\d{6})\b', decision_report)
-        stocks = [{"code": c, "name": f"股票{c}"} for c in list(dict.fromkeys(codes))[:5]]
-
+        analyst_results = result.get("analyst_results", [])
+        decision_data = result.get("decision", {})
+        decision_report = next(
+            (r.get("content", "") for r in analyst_results if r.get("name") == "决策分析师"),
+            "",
+        )
         return {
-            "action": action,
-            "stocks": stocks,
-            "reasoning": decision_report[:500],
+            "analyst_results": analyst_results,
+            "decision": decision_data,
+            "decision_report": decision_report,
+            "execution_trace": result.get("execution_trace", {}),
+            "early_stop": result.get("early_stop", False),
+            "early_stop_reason": result.get("early_stop_reason", ""),
         }
 
-    def _extract_conclusion(self, report: str, analyst_name: str = "") -> str:
-        """从分析报告中提取简要结论，优先使用 JSON 结构化数据"""
-        try:
-            data = extract_json_block(report)
-            if data:
-                if analyst_name == "大盘分析师":
-                    sentiment = str(data.get("market_sentiment", ""))
-                    if sentiment:
-                        return sentiment
-                elif analyst_name == "主线板块分析师":
-                    if data.get("has_main_sector") is False:
-                        return "无主线板块"
-                    sectors = data.get("main_sectors", [])
-                    if sectors:
-                        return "、".join(str(s) for s in sectors)
-                elif analyst_name == "市场合力分析师":
-                    direction = data.get("force_direction", "")
-                    if direction:
-                        return str(direction)
-                elif analyst_name == "股票龙头分析师":
-                    stocks = data.get("leading_stocks", [])
-                    if stocks:
-                        names = [f"{s.get('code', '')} {s.get('name', '')}" for s in stocks[:2]]
-                        return "、".join(n.strip() for n in names)
-                elif analyst_name == "风险分析师":
-                    level = data.get("risk_level", "")
-                    if level:
-                        return f"风险{level}"
-        except Exception:
-            pass
-        # 回退：关键词匹配
-        if "偏多" in report or "看多" in report or "强势" in report:
-            return "偏多"
-        elif "偏空" in report or "看空" in report or "弱势" in report:
-            return "偏空"
-        elif "正向共振" in report:
-            return "正向共振"
-        elif "中性" in report or "震荡" in report:
-            return "中性"
-        return "中性"
-
-    def _get_conclusion_tag_type(self, report: str) -> str:
-        """根据结论获取标签类型"""
-        if "偏多" in report or "看多" in report or "强势" in report:
-            return "success"
-        elif "偏空" in report or "看空" in report or "弱势" in report:
-            return "danger"
-        return "info"
-
-    def _get_risk_conclusion_tag_type(self, report: str) -> str:
-        """风险分析师的结论标签"""
-        if "高风险" in report or "风险较高" in report or "风险高" in report:
-            return "danger"
-        elif "低风险" in report or "风险较低" in report or "风险低" in report or "风险可控" in report:
-            return "success"
-        return "warning"
+    # ============================================================
+    # 状态更新
+    # ============================================================
 
     async def _update_status(self, task_id: str, status: str, progress: int,
                              current_step: str, error_message: str = None):
-        """更新任务状态"""
         try:
             db = get_mongo_db()
             update_data = {
@@ -1126,7 +250,7 @@ class AiSelectorService:
             logger.error(f"更新AI选股任务状态失败: {e}")
 
     # ============================================================
-    # 定时任务管理方法
+    # 定时任务
     # ============================================================
 
     _schedule_mgr = ScheduleManager(
@@ -1136,43 +260,41 @@ class AiSelectorService:
     )
 
     async def create_schedule(self, user_id: str, cron_expression: str) -> Dict[str, Any]:
-        """创建AI选股定时任务"""
         return await self._schedule_mgr.create_schedule(
             user_id, cron_expression, self._run_scheduled_task
         )
 
     async def get_schedule(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """获取用户的AI选股定时任务配置"""
         return await self._schedule_mgr.get_schedule(user_id)
 
     async def delete_schedule(self, user_id: str) -> bool:
-        """删除用户的AI选股定时任务"""
         return await self._schedule_mgr.delete_schedule(user_id)
 
     async def preview_cron(self, cron_expression: str, count: int = 5) -> Dict[str, Any]:
-        """预览Cron表达式的下次执行时间"""
         return preview_cron(cron_expression, count)
 
     async def _run_scheduled_task(self, user_id: str):
-        """定时任务执行回调"""
         try:
-            logger.info(f"🕐 AI选股定时任务触发: user={user_id}")
+            logger.info(f"AI选股定时任务触发: user={user_id}")
             result = await self.create_task(user_id, trigger_type="scheduled")
-            task_id = result["task_id"]
-            await self.execute_task(task_id, user_id)
-            logger.info(f"✅ AI选股定时任务完成: user={user_id}, task={task_id}")
+            await self.execute_task(result["task_id"], user_id)
+            logger.info(f"AI选股定时任务完成: user={user_id}")
         except Exception as e:
-            logger.error(f"❌ AI选股定时任务执行失败: user={user_id}, error={e}", exc_info=True)
+            logger.error(f"AI选股定时任务失败: user={user_id}, error={e}", exc_info=True)
 
 
+# ============================================================
 # 单例
-_ai_selector_service: Optional[AiSelectorService] = None
-_ai_selector_service_lock = threading.Lock()
+# ============================================================
+
+_service_instance: Optional[AiSelectorService] = None
+_service_lock = threading.Lock()
+
 
 def get_ai_selector_service() -> AiSelectorService:
-    global _ai_selector_service
-    if _ai_selector_service is None:
-        with _ai_selector_service_lock:
-            if _ai_selector_service is None:
-                _ai_selector_service = AiSelectorService()
-    return _ai_selector_service
+    global _service_instance
+    if _service_instance is None:
+        with _service_lock:
+            if _service_instance is None:
+                _service_instance = AiSelectorService()
+    return _service_instance

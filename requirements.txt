@@ -58,3 +58,14 @@ concurrent-log-handler>=0.9.24  # Windows 友好的日志轮转处理器
 tenacity
 langchain-core
 booktype
+pandas
+numpy
+scikit-learn
+lightgbm
+scipy
+pyqlib
+lightgbm
+qlib # qlib-ai
+cvxpy
+joblib
+seaborn

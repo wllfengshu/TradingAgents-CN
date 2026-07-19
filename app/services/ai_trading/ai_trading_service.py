@@ -9,31 +9,28 @@ AI交易服务
 """
 
 import asyncio
-import re
-import uuid
 import logging
-import time
 import threading
+import time
+import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo
 
+from langchain_core.messages import HumanMessage
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from app.utils.xtquant_util import MockQMTUtil, AccountInfo, Position
-from langchain_core.messages import HumanMessage
-
-from tradingagents.graph.trading_graph import TradingAgentsGraph
+from app.core.database import get_mongo_db
+from app.models.analysis import SingleAnalysisRequest, AnalysisParameters
 from app.services.simple_analysis_service import (
     create_analysis_config,
     get_provider_and_url_by_model_sync,
     get_simple_analysis_service,
 )
-from app.utils.stock_utils import is_main_board_stock, extract_json_block, make_serializable, is_trading_hours
 from app.utils.schedule_utils import ScheduleManager, preview_cron
-from app.models.analysis import SingleAnalysisRequest, AnalysisParameters
-from app.core.database import get_mongo_db
-from app.services.ai_selector.ai_selector_service import AiSelectorService, ApiCache
+from app.utils.stock_utils import is_main_board_stock, extract_json_block, make_serializable, is_trading_hours
+from app.utils.xtquant_mock_util import MockQMTUtil, AccountInfo, Position
+from tradingagents.graph.trading_graph import TradingAgentsGraph
 
 logger = logging.getLogger(__name__)
 
@@ -593,7 +590,6 @@ class AiTradingService:
         4. 交易决策分析师：审核信号，执行下单
         """
         start_time = time.time()
-        api_cache = ApiCache()
         analyst_results: List[Dict] = []
 
         try:
@@ -615,7 +611,7 @@ class AiTradingService:
             # Step 2: 执行分析流程
             await self._raise_if_cancelled(task_id)
             position_analysis_results, selector_result = await self._step_run_analysis(
-                task_id, has_position, positions, quick_llm, deep_llm, api_cache, analyst_results,
+                task_id, has_position, positions, quick_llm, deep_llm, analyst_results,
             )
 
             # Step 3: 仓位管理分析师
@@ -734,7 +730,7 @@ class AiTradingService:
     async def _step_run_analysis(
         self, task_id: str, has_position: bool,
         positions: List[Position], quick_llm, deep_llm,
-        api_cache: ApiCache, analyst_results: List[Dict],
+            analyst_results: List[Dict],
     ) -> tuple:
         """Step 2: 根据是否有持仓，执行持仓分析和/或AI选股"""
         position_analysis_results: Dict[str, Dict] = {}
@@ -744,7 +740,7 @@ class AiTradingService:
             # 有持仓：先执行持仓分析，再执行AI选股
             await self._update_status(task_id, "running", 15, "正在执行持仓分析...")
             try:
-                position_analysis_results = await self._run_position_analysis(positions, api_cache)
+                position_analysis_results = await self._run_position_analysis(positions)
             except Exception as e:
                 logger.error(f"AI交易 持仓分析失败，跳过: {e}")
                 analyst_results.append({
@@ -755,7 +751,7 @@ class AiTradingService:
                 })
 
             await self._update_status(task_id, "running", 30, "正在执行AI选股...")
-            selector_result = await self._run_ai_selector_safe(quick_llm, deep_llm, api_cache, analyst_results)
+            selector_result = await self._run_ai_selector_safe(quick_llm, deep_llm, analyst_results)
 
             # 记录持仓分析结果
             for code, result in position_analysis_results.items():
@@ -770,7 +766,7 @@ class AiTradingService:
         else:
             # 无持仓：仅运行AI选股
             await self._update_status(task_id, "running", 15, "空仓，正在执行AI选股...")
-            selector_result = await self._run_ai_selector_safe(quick_llm, deep_llm, api_cache, analyst_results)
+            selector_result = await self._run_ai_selector_safe(quick_llm, deep_llm, analyst_results)
 
         # 统一记录选股子分析师结果
         self._append_selector_results(selector_result, analyst_results)
@@ -974,8 +970,7 @@ class AiTradingService:
     # 分析子任务
     # ============================================================
 
-    async def _run_position_analysis(self, positions: List[Position],
-                                     api_cache: ApiCache) -> Dict[str, Dict]:
+    async def _run_position_analysis(self, positions: List[Position]) -> Dict[str, Dict]:
         """逐个分析持仓股票（串行执行，避免LLM并发限流）"""
 
         async def _analyze_one(code: str, name: str) -> Dict:
@@ -1021,24 +1016,46 @@ class AiTradingService:
 
         return output
 
-    async def _run_ai_selector(self, quick_llm, deep_llm, api_cache: ApiCache) -> Dict:
-        """运行AI选股完整流程（直接调用AiSelectorService.run_analysis）"""
+    async def _run_ai_selector(self, quick_llm, deep_llm) -> Dict:
+        """运行AI选股完整流程（直接调用AiSelectorGraph）"""
         logger.info("AI交易 运行AI选股...")
 
         try:
-            service = AiSelectorService()
-            result = await service.run_analysis(quick_llm, deep_llm, api_cache)
-            return result
+            from tradingagents.graph.selector.selector_graph import AiSelectorGraph
+            from datetime import datetime as _dt
+
+            graph = AiSelectorGraph(
+                config={"max_sector_debate_rounds": 1, "max_stock_debate_rounds": 1},
+                quick_llm=quick_llm,
+                deep_llm=deep_llm,
+            )
+            analysis_date = _dt.now().strftime("%Y-%m-%d")
+            result = await asyncio.to_thread(graph.run, analysis_date=analysis_date)
+
+            analyst_results = result.get("analyst_results", [])
+            decision_data = result.get("decision", {})
+            decision_report = next(
+                (r.get("content", "") for r in analyst_results if r.get("name") == "决策分析师"),
+                "",
+            )
+            return {
+                "analyst_results": analyst_results,
+                "decision": decision_data,
+                "decision_report": decision_report,
+                "execution_trace": result.get("execution_trace", {}),
+                "early_stop": result.get("early_stop", False),
+                "early_stop_reason": result.get("early_stop_reason", ""),
+            }
         except Exception as e:
             logger.error(f"AI交易 AI选股失败: {e}")
             return {"decision": None, "analyst_results": [], "error": str(e),
                     "early_stop": True, "early_stop_reason": str(e)}
 
     async def _run_ai_selector_safe(self, quick_llm, deep_llm,
-                                     api_cache: ApiCache, analyst_results: List[Dict]) -> Optional[Dict]:
+                                    analyst_results: List[Dict]) -> Optional[Dict]:
         """运行AI选股，失败时自动记录到analyst_results"""
         try:
-            return await self._run_ai_selector(quick_llm, deep_llm, api_cache)
+            return await self._run_ai_selector(quick_llm, deep_llm)
         except Exception as e:
             logger.error(f"AI交易 AI选股失败，跳过: {e}")
             analyst_results.append({

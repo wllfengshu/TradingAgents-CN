@@ -14,6 +14,7 @@ from collections import defaultdict
 
 # 复用现有缓存系统
 from tradingagents.dataflows.cache import get_cache
+import tradingagents.utils.api_cache as api_cache
 
 # 复用现有数据源提供者
 from tradingagents.dataflows.providers.hk.hk_stock import HKStockProvider
@@ -1675,7 +1676,13 @@ class ForeignStockService:
         normalized_code = provider._normalize_hk_symbol(code)
 
         # 直接使用 AKShare API
-        df = ak.stock_hk_daily(symbol=normalized_code, adjust="qfq")
+        df = api_cache.call(
+            f'ak.stock_hk_daily(symbol="{normalized_code}", adjust="qfq")',
+            ak.stock_hk_daily,
+            expire=600,
+            symbol=normalized_code,
+            adjust="qfq",
+        )
 
         if df is None or df.empty:
             raise Exception("无数据")
@@ -1808,7 +1815,12 @@ class ForeignStockService:
 
             # 尝试获取港股新闻（使用东方财富港股新闻）
             try:
-                df = ak.stock_news_em(symbol=code)
+                df = api_cache.call(
+                    f'ak.stock_news_em(symbol="{code}")',
+                    ak.stock_news_em,
+                    expire=600,
+                    symbol=code,
+                )
                 if df is None or df.empty:
                     raise Exception("无数据")
 

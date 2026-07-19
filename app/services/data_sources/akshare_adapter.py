@@ -5,6 +5,7 @@ from typing import Optional, Dict
 import logging
 from datetime import datetime, timedelta
 import pandas as pd
+import tradingagents.utils.api_cache as api_cache
 
 from .base import DataSourceAdapter
 
@@ -41,7 +42,11 @@ class AKShareAdapter(DataSourceAdapter):
             logger.info("AKShare: Fetching stock list with real names from stock_info_a_code_name()...")
 
             # 使用 AKShare 的 stock_info_a_code_name 接口获取股票代码和名称
-            df = ak.stock_info_a_code_name()
+            df = api_cache.call(
+                'ak.stock_info_a_code_name()',
+                ak.stock_info_a_code_name,
+                expire=600,
+            )
 
             if df is None or df.empty:
                 logger.warning("AKShare: stock_info_a_code_name() returned empty data")
@@ -144,7 +149,12 @@ class AKShareAdapter(DataSourceAdapter):
                     ts_code = stock.get('ts_code', '')
                     if not symbol:
                         continue
-                    info_data = ak.stock_individual_info_em(symbol=symbol)
+                    info_data = api_cache.call(
+                        f'ak.stock_individual_info_em(symbol="{symbol}")',
+                        ak.stock_individual_info_em,
+                        expire=600,
+                        symbol=symbol,
+                    )
                     if info_data is not None and not info_data.empty:
                         info_dict = {}
                         for _, row in info_data.iterrows():
@@ -210,10 +220,18 @@ class AKShareAdapter(DataSourceAdapter):
 
             # 根据 source 参数选择接口
             if source == "sina":
-                df = ak.stock_zh_a_spot()  # 新浪财经接口
+                df = api_cache.call(
+                    'ak.stock_zh_a_spot()',
+                    ak.stock_zh_a_spot,
+                    expire=600,
+                )  # 新浪财经接口
                 logger.info("使用 AKShare 新浪财经接口获取实时行情")
             else:  # 默认使用东方财富
-                df = ak.stock_zh_a_spot_em()  # 东方财富接口
+                df = api_cache.call(
+                    'ak.stock_zh_a_spot_em()',
+                    ak.stock_zh_a_spot_em,
+                    expire=600,
+                )  # 东方财富接口
                 logger.info("使用 AKShare 东方财富接口获取实时行情")
 
             if df is None or getattr(df, "empty", True):
@@ -303,7 +321,15 @@ class AKShareAdapter(DataSourceAdapter):
             if period in ("day", "week", "month"):
                 period_map = {"day": "daily", "week": "weekly", "month": "monthly"}
                 adjust_map = {None: "", "qfq": "qfq", "hfq": "hfq"}
-                df = ak.stock_zh_a_hist(symbol=code6, period=period_map[period], adjust=adjust_map.get(adj, ""))
+                adjust_value = adjust_map.get(adj, "")
+                df = api_cache.call(
+                    f'ak.stock_zh_a_hist(symbol="{code6}", period="{period_map[period]}", adjust="{adjust_value}")',
+                    ak.stock_zh_a_hist,
+                    expire=7200,
+                    symbol=code6,
+                    period=period_map[period],
+                    adjust=adjust_value,
+                )
                 if df is None or getattr(df, 'empty', True):
                     return None
                 df = df.tail(limit)
@@ -323,7 +349,15 @@ class AKShareAdapter(DataSourceAdapter):
                 per_map = {"5m": "5", "15m": "15", "30m": "30", "60m": "60"}
                 if period not in per_map:
                     return None
-                df = ak.stock_zh_a_minute(symbol=code6, period=per_map[period], adjust=adj if adj in ("qfq", "hfq") else "")
+                adjust_value = adj if adj in ("qfq", "hfq") else ""
+                df = api_cache.call(
+                    f'ak.stock_zh_a_minute(symbol="{code6}", period="{per_map[period]}", adjust="{adjust_value}")',
+                    ak.stock_zh_a_minute,
+                    expire=300,
+                    symbol=code6,
+                    period=per_map[period],
+                    adjust=adjust_value,
+                )
                 if df is None or getattr(df, 'empty', True):
                     return None
                 df = df.tail(limit)
@@ -352,7 +386,12 @@ class AKShareAdapter(DataSourceAdapter):
             items = []
             # news
             try:
-                dfn = ak.stock_news_em(symbol=code6)
+                dfn = api_cache.call(
+                    f'ak.stock_news_em(symbol="{code6}")',
+                    ak.stock_news_em,
+                    expire=600,
+                    symbol=code6,
+                )
                 if dfn is not None and not dfn.empty:
                     for _, row in dfn.head(limit).iterrows():
                         items.append({
@@ -368,7 +407,12 @@ class AKShareAdapter(DataSourceAdapter):
             # announcements
             try:
                 if include_announcements:
-                    dfa = ak.stock_announcement_em(symbol=code6)
+                    dfa = api_cache.call(
+                        f'ak.stock_announcement_em(symbol="{code6}")',
+                        ak.stock_announcement_em,
+                        expire=3600,
+                        symbol=code6,
+                    )
                     if dfa is not None and not dfa.empty:
                         for _, row in dfa.head(max(0, limit - len(items))).iterrows():
                             items.append({

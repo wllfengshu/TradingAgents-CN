@@ -7,6 +7,7 @@ import { request, type ApiResponse } from './request'
 export interface AiSelectorRunRequest {
   quick_model?: string
   deep_model?: string
+  debate_rounds?: number
 }
 
 export interface AiSelectorTaskStatus {
@@ -18,6 +19,12 @@ export interface AiSelectorTaskStatus {
   error_message?: string
   created_at: string
   updated_at: string
+}
+
+export interface AiSelectorExecutionTrace {
+  executed_nodes: string[]
+  node_counts: Record<string, number>
+  mandatory_stage_status: Record<string, boolean>
 }
 
 export interface AiSelectorResult {
@@ -42,6 +49,12 @@ export interface AiSelectorResult {
     risk_warning?: string
   }
   decision_report: string
+  debate_rounds?: Array<{
+    round: number
+    bull: string
+    bear: string
+  }>
+  execution_trace?: AiSelectorExecutionTrace
   completed_at: string
 }
 

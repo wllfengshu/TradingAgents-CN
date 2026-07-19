@@ -380,11 +380,11 @@ class IntegratedCacheManager:
 
 
 # 全局集成缓存管理器实例
-_integrated_cache = None
+_cache_manager = None
 
 def get_cache() -> IntegratedCacheManager:
     """获取全局集成缓存管理器实例"""
-    global _integrated_cache
+    global _cache_manager
     if _integrated_cache is None:
         _integrated_cache = IntegratedCacheManager()
     return _integrated_cache

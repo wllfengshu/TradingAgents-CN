@@ -1,0 +1,60 @@
+{
+  "strategy_name": "截面日频龙头策略",
+  "description": "趋势 + 龙头 + 合力",
+  "version": "1.0.0",
+  "backtest": {
+    "start_date": "2026-01-01",
+    "end_date": "2026-06-30",
+    "initial_capital": 10000000,
+    "benchmark": "沪深300"
+  },
+  "filters": {
+    "bollinger": {
+      "window": 20,
+      "std_dev": 2,
+      "slope_window": 5,
+      "slope_threshold": 0.0
+    },
+    "mainboard": true,
+    "exclude_st": true,
+    "exclude_new_listing_days": 60,
+    "min_daily_volume": 20000000
+  },
+  "sector_layer": {
+    "top_sectors": 3,
+    "factors": [
+      "rps_20d",
+      "capital_flow",
+      "limit_up_density",
+      "consecutive_boards",
+      "volume_ratio_slope"
+    ]
+  },
+  "dragon_layer": {
+    "top_per_sector": 3,
+    "factors": [
+      "leading_performance_5d",
+      "popularity_volume",
+      "height_consecutive"
+    ]
+  },
+  "cooperative_force": {
+    "threshold_pct": 0.03
+  },
+  "final_score": {
+    "weights": {
+      "sector": 0.4,
+      "dragon": 0.35,
+      "cooperative": 0.25
+    },
+    "top_k": 5
+  },
+  "exit_rules": {
+    "hard_stop_loss_pct": -0.08,
+    "rank_percentile_threshold": 0.8,
+    "consecutive_days_out_of_top3": 2
+  },
+  "no_mainline": {
+    "rps_std_threshold": 0.15
+  }
+}

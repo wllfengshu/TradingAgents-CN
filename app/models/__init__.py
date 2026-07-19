@@ -17,6 +17,11 @@ from .stock_models import (
     StockStatus
 )
 
+from .model_xtquant import (
+    AccountInfo,
+    Position
+)
+
 __all__ = [
     "StockBasicInfoExtended",
     "MarketQuotesExtended",
@@ -28,5 +33,7 @@ __all__ = [
     "MarketType",
     "ExchangeType",
     "CurrencyType",
-    "StockStatus"
+    "StockStatus",
+    "AccountInfo",
+    "Position"
 ]

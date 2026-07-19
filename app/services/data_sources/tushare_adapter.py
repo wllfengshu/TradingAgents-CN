@@ -184,7 +184,7 @@ class TushareAdapter(DataSourceAdapter):
             if prov is None or prov.api is None:
                 return None
             # normalize ts_code
-            ts_code = prov._normalize_symbol(code) if hasattr(prov, "_normalize_symbol") else code
+            ts_code = prov.normalize_symbol(code) if hasattr(prov, "_normalize_symbol") else code
             # map period -> freq
             freq_map = {
                 "day": "D",
@@ -249,7 +249,7 @@ class TushareAdapter(DataSourceAdapter):
         items = []
         # resolve ts_code and date range
         try:
-            ts_code = self._provider._normalize_symbol(code) if hasattr(self._provider, "_normalize_symbol") else code
+            ts_code = self._provider.normalize_symbol(code) if hasattr(self._provider, "_normalize_symbol") else code
         except Exception:
             ts_code = code
         try:

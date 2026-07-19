@@ -9,6 +9,7 @@ import asyncio
 import time
 import logging
 from typing import Dict, List, Optional
+import tradingagents.utils.api_cache as api_cache
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,11 @@ class QuotesService:
         """
         try:
             import akshare as ak  # 已在项目中使用，不额外安装
-            df = ak.stock_zh_a_spot_em()
+            df = api_cache.call(
+                'ak.stock_zh_a_spot_em()',
+                ak.stock_zh_a_spot_em,
+                expire=600,
+            )
             if df is None or getattr(df, "empty", True):
                 logger.warning("AKShare spot 返回空数据")
                 return {}

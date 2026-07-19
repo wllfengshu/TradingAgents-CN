@@ -15,6 +15,7 @@ import numpy as np
 # 导入日志模块
 from tradingagents.utils.logging_manager import get_logger
 logger = get_logger('agents')
+import tradingagents.utils.api_cache as api_cache
 warnings.filterwarnings('ignore')
 
 # 导入统一日志系统
@@ -1674,7 +1675,12 @@ class DataSourceManager:
             logger.debug(f"📊 [AKShare股票信息] 原始代码: {symbol}, AKShare格式: {akshare_symbol}")
 
             # 尝试获取个股信息
-            stock_info = ak.stock_individual_info_em(symbol=akshare_symbol)
+            stock_info = api_cache.call(
+                f'ak.stock_individual_info_em(symbol="{akshare_symbol}")',
+                ak.stock_individual_info_em,
+                expire=8 * 3600,
+                symbol=akshare_symbol,
+            )
 
             if stock_info is not None and not stock_info.empty:
                 # 转换为字典格式

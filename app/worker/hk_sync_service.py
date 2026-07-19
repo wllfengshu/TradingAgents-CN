@@ -29,6 +29,7 @@ sys.path.insert(0, str(project_root))
 
 from tradingagents.dataflows.providers.hk.hk_stock import HKStockProvider
 from tradingagents.dataflows.providers.hk.improved_hk import ImprovedHKStockProvider
+import tradingagents.utils.api_cache as api_cache
 from app.core.database import get_mongo_db
 from app.core.config import settings
 
@@ -82,7 +83,11 @@ class HKDataService:
 
             # 获取所有港股实时行情（包含代码和名称）
             # 使用新浪财经接口（更稳定）
-            df = ak.stock_hk_spot()
+            df = api_cache.call(
+                'ak.stock_hk_spot()',
+                ak.stock_hk_spot,
+                expire=self._stock_list_cache_ttl,
+            )
 
             if df is None or df.empty:
                 logger.warning("⚠️ AKShare 返回空数据，使用备用列表")
@@ -250,7 +255,11 @@ class HKDataService:
 
             # 获取所有港股实时行情（包含代码、名称等基础信息）
             # 使用新浪财经接口（更稳定）
-            df = ak.stock_hk_spot()
+            df = api_cache.call(
+                'ak.stock_hk_spot()',
+                ak.stock_hk_spot,
+                expire=self._stock_list_cache_ttl,
+            )
 
             if df is None or df.empty:
                 logger.error("❌ AKShare 返回空数据")

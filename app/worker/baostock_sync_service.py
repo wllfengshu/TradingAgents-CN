@@ -10,7 +10,6 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
 from app.core.config import get_settings
-from app.core.database import get_database
 from app.services.historical_data_service import get_historical_data_service
 from tradingagents.dataflows.providers.china.baostock import BaoStockProvider
 

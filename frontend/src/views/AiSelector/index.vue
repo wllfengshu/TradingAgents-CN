@@ -91,6 +91,14 @@
             </div>
             <div class="flow-step">
               <div class="step-number">5</div>
+              <div class="step-text">多空辩论</div>
+              <div class="step-condition">看多/看空研判</div>
+            </div>
+            <div class="flow-arrow">
+              <el-icon><ArrowRight /></el-icon>
+            </div>
+            <div class="flow-step">
+              <div class="step-number">6</div>
               <div class="step-text">风险评估</div>
               <div class="step-condition">高风险则终止</div>
             </div>
@@ -98,7 +106,7 @@
               <el-icon><ArrowRight /></el-icon>
             </div>
             <div class="flow-step">
-              <div class="step-number">6</div>
+              <div class="step-number">7</div>
               <div class="step-text">综合决策</div>
             </div>
           </div>
@@ -112,6 +120,21 @@
             <h3>运行控制</h3>
           </div>
         </template>
+
+        <!-- 辩论轮次设置 -->
+        <div class="debate-config">
+          <span class="debate-label">
+            <el-icon><ChatLineSquare /></el-icon>
+            多空辩论轮次
+          </span>
+          <el-radio-group v-model="debateRounds" :disabled="running" size="default">
+            <el-radio-button :label="0">不辩论</el-radio-button>
+            <el-radio-button :label="1">1轮</el-radio-button>
+            <el-radio-button :label="2">2轮</el-radio-button>
+            <el-radio-button :label="3">3轮</el-radio-button>
+          </el-radio-group>
+          <span class="debate-hint">看多/看空研究员交替发言，轮次越多研判越充分（耗时也越长）</span>
+        </div>
 
         <div class="action-buttons">
           <el-button
@@ -385,6 +408,7 @@ import {
   ArrowRight,
   Download,
   Refresh,
+  ChatLineSquare,
 } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import { aiSelectorApi } from '@/api/aiSelector'
@@ -428,6 +452,13 @@ const analystTeam = [
     bgColor: 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)'
   },
   {
+    name: '多空研究员',
+    emoji: '⚖️',
+    description: '看多/看空研究员多轮辩论，评判员综合研判',
+    tags: ['看多论证', '看空质疑', '辩论评判'],
+    bgColor: 'linear-gradient(135deg, #30cfd0 0%, #330867 100%)'
+  },
+  {
     name: '风险分析师',
     emoji: '🛡️',
     description: '排除高风险标的，保障安全边际',
@@ -449,6 +480,8 @@ const progress = ref(0)
 const currentStep = ref('')
 const elapsedTime = ref(0)
 const currentTaskId = ref('')
+// 多空辩论轮次（0 表示跳过辩论）
+const debateRounds = ref(1)
 let timer: ReturnType<typeof setInterval> | null = null
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 
@@ -548,7 +581,7 @@ const handleRunNow = async () => {
 
   try {
     // 调用后端API启动任务
-    const res = await aiSelectorApi.run()
+    const res = await aiSelectorApi.run({ debate_rounds: debateRounds.value })
     if (!res.success) {
       throw new Error(res.message || '启动任务失败')
     }
@@ -995,12 +1028,41 @@ onMounted(() => {
       }
     }
 
+    // 辩论轮次设置
+    .debate-config {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 24px;
+      padding-bottom: 24px;
+      border-bottom: 1px dashed #e2e8f0;
+
+      .debate-label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 15px;
+        font-weight: 600;
+        color: #1a202c;
+
+        .el-icon {
+          color: #3b82f6;
+        }
+      }
+
+      .debate-hint {
+        font-size: 12px;
+        color: #94a3b8;
+        text-align: center;
+      }
+    }
+
     // 运行按钮
     .action-buttons {
       display: flex;
       justify-content: center;
       gap: 20px;
-
       .run-btn {
         width: 220px;
         height: 56px;

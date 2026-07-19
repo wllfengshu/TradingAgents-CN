@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo
 
 from app.core.database import get_mongo_db
-from app.utils.xtquant_util import MockQMTUtil
+from app.utils.xtquant_mock_util import MockQMTUtil
 
 logger = logging.getLogger("app.services.portfolio_service")
 

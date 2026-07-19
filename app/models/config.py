@@ -148,7 +148,7 @@ class DataSourceType(str, Enum):
     数据源类型枚举
 
     注意：这个枚举与 tradingagents.constants.DataSourceCode 保持同步
-    添加新数据源时，请先在 tradingagents/constants/data_sources.py 中注册
+    添加新数据源时，请先在 tradingagents/constants/database_service.py 中注册
     """
     # 缓存数据源
     MONGODB = "mongodb"

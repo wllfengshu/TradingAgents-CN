@@ -19,6 +19,7 @@ class AiSelectorRequest(BaseModel):
     """AI选股请求"""
     quick_model: str = Field(default="qwen-turbo", description="快速分析模型")
     deep_model: str = Field(default="qwen-max", description="深度决策模型")
+    debate_rounds: int = Field(default=1, ge=0, le=5, description="多空辩论轮次，0表示跳过辩论")
 
 
 class AiSelectorScheduleRequest(BaseModel):
@@ -40,21 +41,20 @@ async def run_ai_selector(
 ):
     """启动AI选股任务"""
     try:
-        logger.info(f"🎯 收到AI选股请求: quick_model={request.quick_model}, deep_model={request.deep_model}")
+        logger.info(f"🎯 收到AI选股请求: quick_model={request.quick_model}, deep_model={request.deep_model}, debate_rounds={request.debate_rounds}")
 
         service = get_ai_selector_service()
         result = await service.create_task(user["id"])
 
         task_id = result["task_id"]
         user_id = user["id"]
-        task_id = result["task_id"]
-        user_id = user["id"]
+        debate_rounds = request.debate_rounds
 
         async def run_task():
             try:
                 logger.info(f"🚀 [AI选股后台任务] 开始: {task_id}")
                 svc = get_ai_selector_service()
-                await svc.execute_task(task_id, user_id)
+                await svc.execute_task(task_id, user_id, debate_rounds=debate_rounds)
                 logger.info(f"✅ [AI选股后台任务] 完成: {task_id}")
             except Exception as e:
                 logger.error(f"❌ [AI选股后台任务] 失败: {task_id}, 错误: {e}", exc_info=True)

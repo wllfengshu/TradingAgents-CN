@@ -12,6 +12,7 @@ from bson import ObjectId
 
 from app.core.database import get_mongo_db
 from app.core.unified_config import unified_config
+import tradingagents.utils.api_cache as api_cache
 from app.models.config import (
     SystemConfig, LLMConfig, DataSourceConfig, DatabaseConfig,
     ModelProvider, DataSourceType, DatabaseType, LLMProvider,
@@ -1299,7 +1300,11 @@ class ConfigService:
                     import akshare as ak
                     # 使用更轻量级的接口测试 - 获取交易日历
                     # 这个接口数据量小，响应快，更适合测试连接
-                    df = ak.tool_trade_date_hist_sina()
+                    df = api_cache.call(
+                        'ak.tool_trade_date_hist_sina()',
+                        ak.tool_trade_date_hist_sina,
+                        expire=600,
+                    )
 
                     if df is not None and len(df) > 0:
                         response_time = time.time() - start_time

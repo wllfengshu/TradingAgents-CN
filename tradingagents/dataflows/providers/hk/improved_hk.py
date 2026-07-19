@@ -10,6 +10,7 @@ import os
 import pandas as pd
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
+import tradingagents.utils.api_cache as api_cache
 
 from tradingagents.config.runtime_settings import get_int
 # 导入统一日志系统
@@ -225,7 +226,11 @@ class ImprovedHKStockProvider:
                     # 尝试获取港股实时行情（包含名称）
                     try:
                         # 使用新浪财经接口（更稳定）
-                        df = ak.stock_hk_spot()
+                        df = api_cache.call(
+                            'ak.stock_hk_spot()',
+                            ak.stock_hk_spot,
+                            expire=600,
+                        )
                         if df is not None and not df.empty:
                             # 查找匹配的股票
                             matched = df[df['代码'] == normalized_symbol]
@@ -321,7 +326,12 @@ class ImprovedHKStockProvider:
             logger.info(f"📊 [港股财务指标] 获取财务指标: {normalized_symbol}")
 
             # 调用 AKShare 接口
-            df = ak.stock_financial_hk_analysis_indicator_em(symbol=normalized_symbol)
+            df = api_cache.call(
+                f'ak.stock_financial_hk_analysis_indicator_em(symbol="{normalized_symbol}")',
+                ak.stock_financial_hk_analysis_indicator_em,
+                expire=600,
+                symbol=normalized_symbol,
+            )
 
             if df is None or df.empty:
                 logger.warning(f"⚠️ [港股财务指标] 未获取到数据: {normalized_symbol}")
@@ -514,7 +524,13 @@ def get_hk_stock_data_akshare(symbol: str, start_date: str = None, end_date: str
         logger.info(f"🔄 [AKShare-新浪] 获取港股历史数据: {symbol} ({start_date} ~ {end_date})")
 
         # 使用新浪财经接口获取历史数据
-        df = ak.stock_hk_daily(symbol=normalized_symbol, adjust="qfq")
+        df = api_cache.call(
+            f'ak.stock_hk_daily(symbol="{normalized_symbol}", adjust="qfq")',
+            ak.stock_hk_daily,
+            expire=7200,
+            symbol=normalized_symbol,
+            adjust="qfq",
+        )
 
         if df is None or df.empty:
             logger.warning(f"⚠️ [AKShare-新浪] 返回空数据: {symbol}")
@@ -720,14 +736,22 @@ def get_hk_stock_info_akshare(symbol: str) -> Dict[str, Any]:
                     else:
                         # 缓存过期，需要调用 API
                         logger.info(f"🔄 [AKShare缓存-{thread_id}] 缓存过期（{elapsed:.1f}秒前），调用 API 刷新")
-                        df = ak.stock_hk_spot()
+                        df = api_cache.call(
+                            'ak.stock_hk_spot()',
+                            ak.stock_hk_spot,
+                            expire=cache['ttl'],
+                        )
                         cache['data'] = df
                         cache['timestamp'] = now
                         logger.info(f"✅ [AKShare缓存-{thread_id}] 已缓存 {len(df)} 只港股数据")
                 else:
                     # 缓存为空，首次调用
                     logger.info(f"🔄 [AKShare缓存-{thread_id}] 首次获取港股数据")
-                    df = ak.stock_hk_spot()
+                    df = api_cache.call(
+                        'ak.stock_hk_spot()',
+                        ak.stock_hk_spot,
+                        expire=cache['ttl'],
+                    )
                     cache['data'] = df
                     cache['timestamp'] = now
                     logger.info(f"✅ [AKShare缓存-{thread_id}] 已缓存 {len(df)} 只港股数据")
