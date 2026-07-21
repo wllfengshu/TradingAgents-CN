@@ -122,7 +122,7 @@ async def main() -> bool:
     try:
         batch_codes_flow = codes[:10] if len(codes) >= 10 else codes
         print(f"\n📌 测试 get_capital_flow_batch({len(batch_codes_flow)}只, 2026-07-06) ...")
-        result = await query_service.get_capital_flow_batch(batch_codes_flow, '20260706')
+        result = await query_service.get_capital_flow_recent_days(batch_codes_flow, '20260706')
         print(f"  ✅ capital_flow batch: {len(result)} 只有数据")
         for code, flow in list(result.items())[:2]:
             print(f"     {code}: main_inflow={flow.get('main_inflow')}")

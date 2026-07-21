@@ -42,6 +42,13 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# ===================== 板块因子权重 =====================
+# 等权为默认基线，可按需调整（如看好资金流可上调 _W_F22）
+_W_F21 = 0.30   # F2.1 板块RPS（20日收益率），动量核心
+_W_F22 = 0.20   # F2.2 板块资金净流入
+_W_F23 = 0.30   # F2.3 涨停浓度
+_W_F24 = 0.10   # F2.4 连板高度
+_W_F25 = 0.10   # F2.5 成交占比斜率
 
 class SectorFactors:
     """板块层因子计算器。黑盒设计，所有实现隐藏，只暴露一个统一入口"""
@@ -387,14 +394,15 @@ class SectorFactors:
     @staticmethod
     def _combine_five_factors(rps_scores: Dict[str, float], capital_flow_scores: Dict[str, float], limit_up_scores: Dict[str, float], consecutive_boards_scores: Dict[str, float], volume_slope_scores: Dict[str, float]) -> Dict[str, float]:
         """
-        【私有】等权平均合成5个因子为M2得分
+        【私有】加权合成5个因子为M2得分
+
+        权重定义在类常量 _W_F21 ~ _W_F25，默认等权各 0.20。
 
         逻辑：
         1. 只合成同时拥有 F2.1(RPS) 和 F2.5(volume_slope) 的板块——两者都依赖
            OHLCV，缺失说明该板块数据不足，不应进入选板块环节
-        2. F2.2/F2.3/F2.4 缺失时仍用中性值50填充（这三个因子在零行情日
-           可能合理为0或空，不应因此淘汰板块）
-        3. M2 = (F2.1 + F2.2 + F2.3 + F2.4 + F2.5) / 5
+        2. F2.2/F2.3/F2.4 缺失时该因子不参与加权（按实际可用因子归一化权重）
+        3. M2 = Σ(score_i × weight_i) / Σ(weight_i)（仅对可用因子）
         """
         # 必须同时拥有 F2.1 和 F2.5（都依赖 OHLCV，缺失 = 数据不足）
         valid_sectors = set(rps_scores.keys()) & set(volume_slope_scores.keys())
@@ -413,15 +421,15 @@ class SectorFactors:
             if missing:
                 logger.warning(f"⚠️ 板块 {sector_code} 缺少因子 {missing}，按实际可用因子加权平均")
 
-            # 按实际可用因子数量动态加权，避免缺失因子用固定中性值压缩得分范围
+            # 按实际可用因子动态加权，缺失因子不参与分母
             scores = [rps_scores[sector_code], volume_slope_scores[sector_code]]
-            weights = [1, 1]
+            weights = [SectorFactors._W_F21, SectorFactors._W_F25]
             if sector_code in capital_flow_scores:
-                scores.append(capital_flow_scores[sector_code]); weights.append(1)
+                scores.append(capital_flow_scores[sector_code]); weights.append(SectorFactors._W_F22)
             if sector_code in limit_up_scores:
-                scores.append(limit_up_scores[sector_code]); weights.append(1)
+                scores.append(limit_up_scores[sector_code]); weights.append(SectorFactors._W_F23)
             if sector_code in consecutive_boards_scores:
-                scores.append(consecutive_boards_scores[sector_code]); weights.append(1)
+                scores.append(consecutive_boards_scores[sector_code]); weights.append(SectorFactors._W_F24)
 
             score = sum(s * w for s, w in zip(scores, weights)) / sum(weights)
             result[sector_code] = score

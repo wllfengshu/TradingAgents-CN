@@ -1,5 +1,3 @@
-import asyncio
-
 # =========================== 通用工具 ===========================
 
 def normalize_code(symbol: str) -> str:
@@ -22,10 +20,6 @@ def normalize_date(date_str: str) -> str:
 def to_yyyymmdd(date_str: str) -> str:
     """YYYY-MM-DD 或 YYYYMMDD → YYYYMMDD。"""
     return (date_str or '').replace('-', '').replace('/', '').strip()[:8]
-
-async def to_thread(func, *args, **kwargs):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
 def is_main_board(code: str) -> bool:
     """根据代码前缀判断是否主板（排除科创板688/创业板300-301/北交所8xx）。"""

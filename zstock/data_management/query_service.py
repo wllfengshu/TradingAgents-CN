@@ -174,30 +174,6 @@ class DataQueryService:
 
         raise ValueError(f"❌ get_capital_flow无数据: {symbol} ({trade_date})")
 
-    async def get_capital_flow_batch(self, codes: List[str], trade_date: str) -> Dict[str, Dict]:
-        """一次性查多只股票的资金流，返回 {code: dict}。MongoDB取。"""
-        if not codes:
-            return {}
-        td_norm = to_yyyymmdd(trade_date)
-
-        # MongoDB 查询
-        result: Dict[str, Dict] = {}
-        try:
-            docs = await self.database_service.query(
-                COL_CAPITAL_FLOW,
-                {'code': {'$in': codes}, 'trade_date': td_norm},
-            )
-            for doc in (docs or []):
-                code = doc.get('code')
-                if code:
-                    doc.pop('_id', None)
-                    result[code] = doc
-            return result
-        except Exception as e:
-            logger.error(f"capital_flow batch MongoDB 查询失败: {e}")
-
-        raise ValueError(f"❌ get_capital_flow_batch无法获取数据")
-
     async def get_capital_flow_recent_days(self, codes: List[str], end_date: str, days: int = 5) -> Dict[str, List[Dict]]:
         """
         查询多只股票近 N 个交易日的资金流数据。

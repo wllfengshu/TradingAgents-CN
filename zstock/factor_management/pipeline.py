@@ -250,7 +250,7 @@ class CrossSectionStrategyPipeline:
 
         # 3.3 计算龙头股得分并选出候选
         all_candidates = []
-        top_per_sector = self.config.get('top_per_sector', 3)
+        top_per_sector = self.config.get('top_per_sector', 5)
 
         for sector_code, _ in top_sectors:
             sector_stock_list = [s for s in sector_stocks.get(sector_code, []) if s in filtered_stocks_set]
@@ -278,7 +278,7 @@ class CrossSectionStrategyPipeline:
         logger.info(f"✅ M3 龙头股筛选完成: {len(all_candidates)} 只候选")
 
         if not all_candidates:
-            logger.warning("⚠️ M3 筛选后无候选股票，流程终止")
+            logger.error("⚠️ M3 筛选后无候选股票，流程终止")
             return []
 
         # ===== M4+M5: 合力评分 =====
@@ -304,11 +304,11 @@ class CrossSectionStrategyPipeline:
         logger.info(f"✅ M4+M5 合力评分完成: {len(ranked_candidates)} 只候选")
 
         if not ranked_candidates:
-            logger.warning("⚠️ M4+M5 筛选后无候选股票，流程终止")
+            logger.error("⚠️ M4+M5 筛选后无候选股票，流程终止")
             return []
 
         # ===== M6: 最终选股（按 final_score 降序排序后取前 top_k 个）=====
-        top_k_final = self.config.get('top_k', 10)
+        top_k_final = self.config.get('top_k', 5)
         signals = ranked_candidates[:top_k_final]
         logger.info(f"✅ M6 最终选股完成: {len(signals)} 只股票")
 
