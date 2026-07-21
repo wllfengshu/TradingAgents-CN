@@ -1,0 +1,20 @@
+zstock/factor_management/sector_factors.py
+  s_f8a86fe111b117::t_1035550a469497 397-399,404-405
+  s_f8a86fe111b117::t_a85714eac662cd 424,426,428,430,432
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.35-trip",
+  "base_commit_sha": "1d29a7f01ba0665ebf31454e12fb2e59b4d677b3",
+  "prompts": {},
+  "sessions": {
+    "s_f8a86fe111b117": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24ecdf18-473c-4212-b70c-85b04dba2844",
+        "model": "qwen3.7-plus"
+      },
+      "human_author": "liangliang.wang <liangliang.wang@trip.com>"
+    }
+  }
+}
