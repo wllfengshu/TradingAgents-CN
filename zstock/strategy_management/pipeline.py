@@ -56,6 +56,7 @@ class StrategyPipeline:
         total_capital: float = 1e7,
         config: Optional[Dict] = None,
         prebuilt_data: Optional[Dict] = None,
+        precomputed_signals: Optional[pd.DataFrame] = None,  # ← 新增
     ) -> Dict:
         """
         Args:
@@ -79,13 +80,17 @@ class StrategyPipeline:
         results: Dict[str, Any] = {}
 
         # 1. 信号
-        signals_df = await self.signal_generator.generate_signals(
-            trade_date=td,
-            lookback_days=lookback_days,
-            sectors=sectors,
-            max_stocks=max_stocks,
-            prebuilt_data=prebuilt_data,
-        )
+        if precomputed_signals is not None:
+            signals_df = precomputed_signals
+            logger.info(f"✅ 使用预计算信号: {len(signals_df)} 只候选")
+        else:
+            signals_df = await self.signal_generator.generate_signals(
+                trade_date=td,
+                lookback_days=lookback_days,
+                sectors=sectors,
+                max_stocks=max_stocks,
+                prebuilt_data=prebuilt_data,
+            )
         results['signals'] = signals_df
         if signals_df.empty:
             logger.error("⚠️ 无信号，管道终止")

@@ -41,4 +41,6 @@ async def check():
 
     await db.db_manager.close_connections()
 
-asyncio.run(check())
+
+if __name__ == '__main__':
+    asyncio.run(check())

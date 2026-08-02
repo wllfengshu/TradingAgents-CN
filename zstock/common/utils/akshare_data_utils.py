@@ -18,7 +18,13 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from .common_utils import normalize_code, to_yyyymmdd, determine_market, is_index_code
+from .common_utils import (
+    determine_market,
+    is_index_code,
+    normalize_code,
+    normalize_date,
+    to_yyyymmdd,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -471,7 +477,7 @@ def fetch_capital_flow_history(symbol: str, start_date: str = '', end_date: str 
 
         return {
             'code':             code,
-            'trade_date':       str(row[date_col]),
+            'trade_date':       normalize_date(str(row[date_col])),
             'last_price':       0.0,
             'turnover_amount':  _f(['成交额']),
             'turnover_volume':  0.0,
@@ -564,7 +570,7 @@ def fetch_trade_status(symbol: str, trade_date: str) -> Optional[Dict[str, Any]]
 
     return {
         'code':            code,
-        'trade_date':      td,
+        'trade_date':      normalize_date(trade_date),
         'name':            name,
         'open_date':       open_date,
         'is_st':           is_st,
@@ -591,7 +597,7 @@ def fetch_trade_status_batch(
     Returns: {code: {trade_date, name, is_st, is_suspended, is_limit_up, ...}}
     """
     ak = _get_ak()
-    td = to_yyyymmdd(trade_date)
+    td = normalize_date(trade_date)
     code_set = set(normalize_code(c) for c in codes)
     result: Dict[str, Dict[str, Any]] = {}
 
@@ -658,7 +664,7 @@ def fetch_capital_flow_batch(
     Returns: {code: {code, trade_date, main_inflow, medium_inflow, small_inflow, turnover_amount, ...}}
     """
     ak = _get_ak()
-    td = to_yyyymmdd(trade_date)
+    td = normalize_date(trade_date)
     code_set = set(normalize_code(c) for c in codes)
     result: Dict[str, Dict[str, Any]] = {}
 

@@ -116,7 +116,7 @@ class DatabaseService:
         try:
             result = await self.db[collection].insert_many(documents)
             logger.info(f"✅ 批量插入 {collection}: {len(result.inserted_ids)} 条")
-            return [str(id) for id in result.inserted_ids]
+            return [str(_id) for _id in result.inserted_ids]
         except Exception as e:
             logger.error(f"❌ 批量插入失败 {collection}: {e}")
             raise

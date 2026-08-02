@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from .common_utils import normalize_code, to_yyyymmdd
+from .common_utils import normalize_code, normalize_date, to_yyyymmdd
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +404,7 @@ def fetch_trade_status(symbol: str, trade_date: str) -> Optional[Dict[str, Any]]
 
     return {
         'code': normalize_code(symbol),
-        'trade_date': to_yyyymmdd(trade_date),
+        'trade_date': normalize_date(trade_date),
         'name': name,
         'open_date': open_date,
         'is_st': is_st,
@@ -429,7 +429,8 @@ def fetch_trade_status_batch(
     Returns: {code: {trade_date, name, is_st, is_suspended, is_limit_up, ...}}
     """
     xtdata = _get_xtdata()
-    td = to_yyyymmdd(trade_date)
+    td_compact = to_yyyymmdd(trade_date)
+    td = normalize_date(trade_date)
     result: Dict[str, Dict[str, Any]] = {}
 
     # 构建 xt_code → 纯代码 映射
@@ -459,18 +460,18 @@ def fetch_trade_status_batch(
         days_listed = 0
         if len(open_date) == 8 and open_date.isdigit():
             try:
-                open_dt = datetime.strptime(open_date, '%Y%m%d')
-                ref_dt = datetime.strptime(td, '%Y%m%d')
+                open_dt = datetime.strptime(open_date, "%Y%m%d")
+                ref_dt = datetime.strptime(td_compact, "%Y%m%d")
                 days_listed = max((ref_dt - open_dt).days, 0)
             except Exception:
                 pass
 
-        up_stop = float(detail.get('UpStopPrice', 0.0) or 0.0)
-        down_stop = float(detail.get('DownStopPrice', 0.0) or 0.0)
-        pre_close = float(detail.get('PreClose', 0.0) or 0.0)
+        up_stop = float(detail.get("UpStopPrice", 0.0) or 0.0)
+        down_stop = float(detail.get("DownStopPrice", 0.0) or 0.0)
+        pre_close = float(detail.get("PreClose", 0.0) or 0.0)
 
         tick = ticks.get(xt_code) or {}
-        last_price = float(tick.get('lastPrice', 0.0) or 0.0)
+        last_price = float(tick.get("lastPrice", 0.0) or 0.0)
         is_limit_up = False
         is_limit_down = False
         is_suspended = False

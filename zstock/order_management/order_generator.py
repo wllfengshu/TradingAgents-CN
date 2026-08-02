@@ -47,16 +47,18 @@ class OrderGenerator:
             target_positions: 目标持仓 DataFrame，须含 ``stock_code``，
                 以及 ``target_shares`` 或 ``weight``。
             current_positions: 当前持仓 DataFrame，须含 ``stock_code``、``volume``。
-            trade_date: 'YYYYMMDD'。
+            trade_date: 'YYYY-MM-DD'（也接受 YYYYMMDD，内部规范化）。
             price_map: 用于把 weight 换算成股数的最新价 {code: price}。
                 没有就只能依赖 target_positions 里已带的 ``target_shares``。
             total_capital: 总资金（元）。仅在依赖 weight 换算股数时使用。
         """
+        from zstock.common.utils.common_utils import normalize_date
+
         logger.info("📋 开始生成订单")
 
         if trade_date is None:
-            trade_date = pd.Timestamp.today().strftime('%Y%m%d')
-        self.trade_date = trade_date
+            trade_date = pd.Timestamp.today().strftime("%Y-%m-%d")
+        self.trade_date = normalize_date(trade_date)
         self.order_sequence = 0
         orders: List[Order] = []
 

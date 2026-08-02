@@ -31,9 +31,12 @@
 """
 
 import logging
+from typing import Dict, Optional
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional
+
+from zstock.common.utils.common_utils import ensure_ohlcv_sorted, ohlcv_asof
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,7 @@ _MA_WINDOW       = 20
 _BOLL_STD        = 2.0
 _SLOPE_WINDOW    = 5    # 用近 N 根均线估算斜率
 _MOMENTUM_WINDOW = 5
+_MOMENTUM_WINDOWS = (3, 5, 10)  # 预计算多窗口
 _ATR_WINDOW      = 20
 _VOL_MA_WINDOW   = 20
 _MIN_BARS        = 21   # 至少需要的 K 线根数（ATR/MA 需要20根 + 1根计算 True Range）
@@ -72,6 +76,7 @@ class MarketFactors:
     def calculate_market_sentiment(
         index_ohlcv: pd.DataFrame,
         index_name: str = '沪深300',
+        trade_date: str = None,
     ) -> Dict:
         """
         【公开接口】根据指数 OHLCV 计算市场情绪得分与风险等级。
@@ -105,7 +110,18 @@ class MarketFactors:
             )
             return MarketFactors._neutral_result(index_name, reason='data_insufficient')
 
-        df = index_ohlcv.copy().reset_index(drop=True)
+        df = ensure_ohlcv_sorted(index_ohlcv.copy()).reset_index(drop=True)
+        if trade_date:
+            asof = ohlcv_asof(df, trade_date, require_exact=True)
+            if asof is None or len(asof) < _MIN_BARS:
+                logger.warning(
+                    f"⚠️ [{index_name}] trade_date={trade_date} 无当日指数 bar 或数据不足，"
+                    f"返回中性评估"
+                )
+                return MarketFactors._neutral_result(
+                    index_name, reason="asof_mismatch_or_insufficient"
+                )
+            df = asof.reset_index(drop=True)
         for col in ('close', 'high', 'low', 'volume'):
             if col not in df.columns:
                 logger.warning(f"⚠️ [{index_name}] 缺少列 '{col}'，返回中性评估")
@@ -132,40 +148,166 @@ class MarketFactors:
         score = float(np.clip(score, 0.0, 100.0))
 
         if score >= _GRADE_GREEN:
-            grade = 'green'
+            grade = "green"
             scale = _SCALE_GREEN
         elif score >= _GRADE_YELLOW:
-            grade = 'yellow'
+            grade = "yellow"
             scale = _SCALE_YELLOW
         else:
-            grade = 'red'
+            grade = "red"
             scale = _SCALE_RED
 
-        allow_new_open = grade != 'red'
+        allow_new_open = grade != "red"
 
         logger.info(
             f"📊 [{index_name}] 市场得分={score:.1f} 等级={grade} "
             f"MF1={mf1:.0f} MF2={mf2:.0f} MF3={mf3:.0f} MF4={mf4:.0f} MF5={mf5:.0f}"
         )
 
+        # mf5_atr_ratio_inv = 1/ATR比率（波动越低该值越大）；打分仍用 mf5_atr_ratio
+        atr_inv = (
+            (1.0 / mf5_raw)
+            if (mf5_raw is not None and mf5_raw == mf5_raw and mf5_raw > 0)
+            else float("nan")
+        )
+        detail = {
+            "mf1_slope_pct": mf1_raw,
+            "mf2_boll_pct": mf2_raw,
+            "mf3_vol_ratio": mf3_raw,
+            "mf4_momentum_5d": mf4_raw,
+            "mf5_atr_ratio": mf5_raw,
+            "mf5_atr_ratio_inv": atr_inv,
+        }
+        # 多窗口动量原始值（网格搜索用）
+        for w in _MOMENTUM_WINDOWS:
+            _, raw_w = MarketFactors._score_momentum(df, window=w)
+            detail[f"mf4_momentum_{w}d"] = raw_w
+
+        return {
+            "market_score": score,
+            "market_grade": grade,
+            "position_scale": scale,
+            "allow_new_open": allow_new_open,
+            "mf1_trend": mf1,
+            "mf2_boll": mf2,
+            "mf3_volume": mf3,
+            "mf4_momentum": mf4,
+            "mf5_volatility": mf5,
+            "detail": detail,
+        }
+
+    # ===================== 公开接口 =====================
+
+    @staticmethod
+    def score_from_raw(
+        mf1_slope_pct: float,
+        mf2_boll_pct: float,
+        mf3_vol_ratio: float,
+        mf4_momentum_5d: float,
+        mf5_atr_ratio: float,
+    ) -> Dict:
+        """
+        【公开接口】从 M1 5个子因子原始值直接打分，不需要 OHLCV DataFrame。
+
+        用于 pipeline.score_signals 从预计算原始值重建市场情绪结果。
+        映射逻辑与 calculate_market_sentiment() 完全一致（Single Source of Truth）。
+
+        Args:
+            mf1_slope_pct:   20MA 5日百分比斜率
+            mf2_boll_pct:    布林带位置 (0~1)
+            mf3_vol_ratio:   当日量/20日均量
+            mf4_momentum_5d: 5日涨跌幅
+            mf5_atr_ratio:   ATR(20)/MA(20) 原值
+
+        Returns:
+            与 calculate_market_sentiment() 返回结构一致的 dict
+        """
+        mf1 = MarketFactors._map_slope_to_score(mf1_slope_pct) if not np.isnan(mf1_slope_pct) else 50.0
+        mf2 = mf2_boll_pct * 100.0 if not np.isnan(mf2_boll_pct) else 50.0
+        mf3 = MarketFactors._map_vol_ratio_to_score(mf3_vol_ratio) if not np.isnan(mf3_vol_ratio) else 50.0
+        mf4 = MarketFactors._map_momentum_to_score(mf4_momentum_5d) if not np.isnan(mf4_momentum_5d) else 50.0
+        mf5 = MarketFactors._map_atr_ratio_to_score(mf5_atr_ratio) if not np.isnan(mf5_atr_ratio) else 50.0
+
+        score = float(np.clip(
+            _W_MF1 * mf1 + _W_MF2 * mf2 + _W_MF3 * mf3 + _W_MF4 * mf4 + _W_MF5 * mf5,
+            0.0, 100.0,
+        ))
+
+        if score >= _GRADE_GREEN:
+            grade, scale = 'green', _SCALE_GREEN
+        elif score >= _GRADE_YELLOW:
+            grade, scale = 'yellow', _SCALE_YELLOW
+        else:
+            grade, scale = 'red', _SCALE_RED
+
         return {
             'market_score':   score,
             'market_grade':   grade,
             'position_scale': scale,
-            'allow_new_open': allow_new_open,
+            'allow_new_open': grade != 'red',
             'mf1_trend':      mf1,
             'mf2_boll':       mf2,
             'mf3_volume':     mf3,
             'mf4_momentum':   mf4,
             'mf5_volatility': mf5,
             'detail': {
-                'mf1_slope_pct':      mf1_raw,
-                'mf2_boll_pct':       mf2_raw,
-                'mf3_vol_ratio':      mf3_raw,
-                'mf4_momentum_5d':    mf4_raw,
-                'mf5_atr_ratio_inv':  mf5_raw,
+                'mf1_slope_pct':      mf1_slope_pct,
+                'mf2_boll_pct':       mf2_boll_pct,
+                'mf3_vol_ratio':      mf3_vol_ratio,
+                'mf4_momentum_5d':    mf4_momentum_5d,
+                'mf5_atr_ratio':      mf5_atr_ratio,
+                'mf5_atr_ratio_inv':  (
+                    (1.0 / mf5_atr_ratio)
+                    if (mf5_atr_ratio is not None
+                        and mf5_atr_ratio == mf5_atr_ratio
+                        and mf5_atr_ratio > 0)
+                    else float('nan')
+                ),
             },
         }
+
+    # ===================== 原始值映射函数（供 score_from_raw 和 _score_* 共用）=====================
+
+    @staticmethod
+    def _map_slope_to_score(slope_pct: float, k: float = 800.0) -> float:
+        """sigmoid 映射：百分比斜率 → 0~100 得分"""
+        exp_arg = np.clip(-k * slope_pct, -709, 709)
+        return float(np.clip(100.0 / (1.0 + np.exp(exp_arg)), 0.0, 100.0))
+
+    @staticmethod
+    def _map_vol_ratio_to_score(ratio: float) -> float:
+        """折线映射：量比 → 0~100 得分"""
+        if ratio < 0.5:
+            score = 10.0
+        elif ratio <= 1.0:
+            score = 10.0 + 80.0 * (ratio - 0.5) / 0.5
+        elif ratio <= 1.5:
+            score = 90.0 + 10.0 * (ratio - 1.0) / 0.5
+        elif ratio <= 3.0:
+            score = 100.0 - 80.0 * (ratio - 1.5) / 1.5
+        else:
+            decay = min((ratio - 3.0) / 2.0, 1.0)
+            score = 20.0 - 10.0 * decay
+        return float(np.clip(score, 0.0, 100.0))
+
+    @staticmethod
+    def _map_momentum_to_score(momentum: float, k: float = 30.0) -> float:
+        """sigmoid 映射：5日涨跌幅 → 0~100 得分"""
+        exp_arg = np.clip(-k * momentum, -709, 709)
+        return float(np.clip(100.0 / (1.0 + np.exp(exp_arg)), 0.0, 100.0))
+
+    @staticmethod
+    def _map_atr_ratio_to_score(atr_ratio: float) -> float:
+        """折线映射：ATR/MA 比率 → 0~100 得分（低波动=高分）"""
+        if atr_ratio <= 0.01:
+            score = 90.0
+        elif atr_ratio <= 0.03:
+            score = 90.0 - 40.0 * (atr_ratio - 0.01) / 0.02
+        elif atr_ratio <= 0.06:
+            score = 50.0 - 40.0 * (atr_ratio - 0.03) / 0.03
+        else:
+            score = 10.0
+        return float(np.clip(score, 0.0, 100.0))
 
     # ===================== 私有方法（实现细节，对外隐藏）=====================
 
@@ -198,10 +340,8 @@ class MarketFactors:
         slope_pct = slope / valid_ma[-1]   # 相对斜率，消除绝对值影响
 
         # sigmoid 映射：s = 100 / (1 + exp(-k * slope_pct))
-        k = 800.0
-        exp_arg = np.clip(-k * slope_pct, -709, 709)
-        score = 100.0 / (1.0 + np.exp(exp_arg))
-        return float(np.clip(score, 0.0, 100.0)), slope_pct
+        score = MarketFactors._map_slope_to_score(slope_pct)
+        return score, slope_pct
 
     @staticmethod
     def _score_boll_position(df: pd.DataFrame) -> tuple:
@@ -267,47 +407,31 @@ class MarketFactors:
             return 50.0, float('nan')
 
         ratio = last_vol / last_vol_ma
-
-        if ratio < 0.5:
-            score = 10.0
-        elif ratio <= 1.0:
-            score = 10.0 + 80.0 * (ratio - 0.5) / 0.5
-        elif ratio <= 1.5:
-            score = 90.0 + 10.0 * (ratio - 1.0) / 0.5
-        elif ratio <= 3.0:
-            # 放量过大区间：从100线性衰减到20
-            score = 100.0 - 80.0 * (ratio - 1.5) / 1.5
-        else:
-            # 极端放量（天量）：恐慌/狂热信号，继续衰减到最低10
-            decay = min((ratio - 3.0) / 2.0, 1.0)
-            score = 20.0 - 10.0 * decay
-
-        return float(np.clip(score, 0.0, 100.0)), ratio
+        score = MarketFactors._map_vol_ratio_to_score(ratio)
+        return score, ratio
 
     @staticmethod
-    def _score_momentum(df: pd.DataFrame) -> tuple:
+    def _score_momentum(df: pd.DataFrame, window: int = None) -> tuple:
         """
-        【私有】MF4：近期动量（5日涨跌幅）。
+        【私有】MF4：近期动量（N 日涨跌幅，默认 5）。
 
         sigmoid 映射，参数 k=30：
         - 涨幅 +5%  → 约82分
         - 涨幅  0%  → 50分
         - 跌幅 -5%  → 约18分
-        覆盖指数正常波动区间（±5%）。
         """
-        close = df['close'].values
-        if len(close) <= _MOMENTUM_WINDOW:
-            return 50.0, float('nan')
+        w = _MOMENTUM_WINDOW if window is None else window
+        close = df["close"].values
+        if len(close) <= w:
+            return 50.0, float("nan")
 
-        ref_close = float(close[-_MOMENTUM_WINDOW - 1])
+        ref_close = float(close[-w - 1])
         if ref_close <= 0:
-            return 50.0, float('nan')
+            return 50.0, float("nan")
 
         momentum = (float(close[-1]) - ref_close) / ref_close
-        k = 30.0
-        exp_arg = np.clip(-k * momentum, -709, 709)
-        score = 100.0 / (1.0 + np.exp(exp_arg))
-        return float(np.clip(score, 0.0, 100.0)), momentum
+        score = MarketFactors._map_momentum_to_score(momentum)
+        return score, momentum
 
     @staticmethod
     def _score_volatility(df: pd.DataFrame) -> tuple:
@@ -355,16 +479,8 @@ class MarketFactors:
 
         atr_ratio = atr / ma
 
-        if atr_ratio <= 0.01:
-            score = 90.0
-        elif atr_ratio <= 0.03:
-            score = 90.0 - 40.0 * (atr_ratio - 0.01) / 0.02
-        elif atr_ratio <= 0.06:
-            score = 50.0 - 40.0 * (atr_ratio - 0.03) / 0.03
-        else:
-            score = 10.0
-
-        return float(np.clip(score, 0.0, 100.0)), atr_ratio
+        score = MarketFactors._map_atr_ratio_to_score(atr_ratio)
+        return score, atr_ratio
 
     @staticmethod
     def _neutral_result(index_name: str, reason: str = '') -> Dict:

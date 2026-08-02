@@ -105,7 +105,7 @@ def fetch_money_flow(
         timeout: HTTP 超时秒数
 
     Returns:
-        DataFrame，列：trade_date(YYYYMMDD), main_inflow, small_inflow,
+        DataFrame，列：trade_date(YYYY-MM-DD), main_inflow, small_inflow,
         medium_inflow, large_inflow, super_large_inflow, code
         无数据返回空 DataFrame。
 
@@ -113,6 +113,8 @@ def fetch_money_flow(
         东财 push2his 端点无 beg/end 参数，只能靠 lmt 拉全量后 Python 侧截断。
         lmt=200 可覆盖约 130 个交易日（约 6 个月）。
     """
+    from zstock.common.utils.common_utils import normalize_date
+
     pure_code = code.split(".")[0].strip()
     secid = _to_secid(pure_code)
 
@@ -144,13 +146,13 @@ def fetch_money_flow(
     # 转换类型
     for c in cols[1:]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    # trade_date 统一为 YYYYMMDD
-    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime("%Y%m%d")
+    # trade_date 统一为 YYYY-MM-DD（与 MongoDB / ohlcv 一致）
+    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime("%Y-%m-%d")
     df["code"] = pure_code
 
     # 按指定日期过滤
     if date is not None:
-        target = date.replace("-", "")  # 统一为 YYYYMMDD
+        target = normalize_date(date)
         df = df[df["trade_date"] == target].reset_index(drop=True)
 
     return df
@@ -180,12 +182,14 @@ def fetch_money_flow_range(
     Note:
         东财 push2his 最多返回约 120 个交易日数据。超出范围的日期无法获取。
     """
+    from zstock.common.utils.common_utils import normalize_date
+
     df = fetch_money_flow(code, lmt=lmt, timeout=timeout)
     if df.empty:
         return df
 
-    s = start_date.replace("-", "")
-    e = end_date.replace("-", "")
+    s = normalize_date(start_date)
+    e = normalize_date(end_date)
     mask = (df["trade_date"] >= s) & (df["trade_date"] <= e)
     return df.loc[mask].reset_index(drop=True)
 
@@ -361,7 +365,7 @@ def fetch_money_flow_all(
         pf["main_pct"]: "main_pct",
     })
     df["period"] = period
-    df["trade_date"] = datetime.now().strftime("%Y%m%d")
+    df["trade_date"] = datetime.now().strftime("%Y-%m-%d")
 
     keep = [
         "code", "name", "trade_date", "period",

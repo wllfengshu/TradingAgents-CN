@@ -5,14 +5,15 @@
 
 用法：
     python sync_ohlcv.py
+    python sync_ohlcv.py --start 2025-01-01 --end 2026-08-02
 """
+import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import List
-
 
 import pandas as pd
 
@@ -28,8 +29,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─────────────────── 可调参数 ───────────────────
-OHLCV_DAYS = 30          # 同步最近 N 天日线
-
 # 需同步的指数列表（code, name）。
 # 注意：沪深300 用 399300（深交所版），不用 000300（后者库里 0 条且与个股 code 易冲突）。
 # 000016（上证50）不在此列——to_xt_code 会把 000016 映射成 .SZ，与平安银行撞 code。
@@ -39,6 +38,8 @@ INDEX_CODES = [
     ('399006', '创业板指'),
     ('899050', '北证50'),
 ]
+# 默认补齐缺口：2025Q1 空洞 + 续同步到最近交易日
+DEFAULT_START = '2025-01-01'
 # ────────────────────────────────────────────────
 
 async def _persist_ohlcv(df: pd.DataFrame, period: str = 'D') -> None:
@@ -47,12 +48,17 @@ async def _persist_ohlcv(df: pd.DataFrame, period: str = 'D') -> None:
     try:
         from pymongo import UpdateOne
         from app.core import database as db_module
-        await db_module.db_manager.init_mongodb()
+        from zstock.data_management.query_service import COL_OHLCV
+
         db = db_module.db_manager.mongo_db
+        if db is None:
+            await db_module.db_manager.init_mongodb()
+            db = db_module.db_manager.mongo_db
+
         ops = []
         for record in df.to_dict(orient='records'):
             code = record.get('code')
-            td   = record.get('trade_date')
+            td = record.get('trade_date')
             if not code or not td:
                 continue
             ops.append(UpdateOne(
@@ -61,7 +67,6 @@ async def _persist_ohlcv(df: pd.DataFrame, period: str = 'D') -> None:
                 upsert=True,
             ))
         if ops:
-            from zstock.data_management.query_service import DataQueryService, COL_OHLCV
             await db[COL_OHLCV].bulk_write(ops, ordered=False)
             logger.info(f"💾 落库 {COL_OHLCV}({period}): {len(ops)} 条")
     except Exception as e:
@@ -91,20 +96,34 @@ def _enrich_turnover_rate(df: pd.DataFrame, codes: List[str]) -> pd.DataFrame:
     return df
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description='同步 zstock_ohlcv 日线数据（xtquant → MongoDB）')
+    parser.add_argument('--start', default=DEFAULT_START, help=f'起始日期 YYYY-MM-DD，默认 {DEFAULT_START}')
+    parser.add_argument(
+        '--end',
+        default=datetime.now().strftime('%Y-%m-%d'),
+        help='结束日期 YYYY-MM-DD，默认今天',
+    )
+    return parser.parse_args()
+
+
 async def main():
-    # 分批写入，每批 500 行避免单次写入过大
-    BATCH_SIZE = 500
+    args = _parse_args()
+    start = args.start
+    end = args.end
+
+    # 分批写入，避免单次 bulk_write 过大
+    BATCH_SIZE = 5000
     # 1. 连接 MongoDB
     from app.core import database as db_module
     await db_module.db_manager.init_mongodb()
     logger.info("MongoDB 已连接")
 
     # 2. 初始化服务
-    import zstock.data_management.query_service as qs_module
     from zstock.data_management.query_service import DataQueryService
     qs = DataQueryService()
     await qs.ensure_indexes()
-    logger.info(f"数据源")
+    logger.info("数据源")
 
     t0 = datetime.now()
 
@@ -113,8 +132,6 @@ async def main():
     logger.info(f"  ✓ 全市场 {len(all_stocks)} 只 (来源: {source})")
 
     # ── 表: ohlcv ──
-    end = datetime.now().strftime('%Y-%m-%d')
-    start = (datetime.now() - timedelta(days=OHLCV_DAYS)).strftime('%Y-%m-%d')
     logger.info(f"▶ ohlcv — {len(all_stocks)} 只股票  {start} ~ {end}")
 
     # 批量获取所有股票的 OHLCV（返回纵向拼接的 DataFrame）
@@ -169,8 +186,6 @@ async def main():
     logger.info("=" * 50)
 
     await db_module.db_manager.close_connections()
-
-
 
 
 if __name__ == '__main__':

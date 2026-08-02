@@ -10,6 +10,9 @@
   超B量 超S量 大B量 大S量 中B量 中S量 小B量 小S量
   主力净额 超净 大净 中净 小净
 
+落库约定：
+    trade_date 统一为 YYYY-MM-DD（与 zstock_ohlcv / 因子表一致）
+
 用法：
     python import_l2_capital_flow.py                      # 导入全部文件
     python import_l2_capital_flow.py --dry-run            # 仅打印，不写库
@@ -17,17 +20,18 @@
     python import_l2_capital_flow.py --end   20260331     # 只导入该日期及之前
 """
 import logging
-import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]   # TradingAgents-CN/
-ZSTOCK_ROOT  = Path(__file__).resolve().parents[2]   # TradingAgents-CN/zstock/
+PROJECT_ROOT = Path(__file__).resolve().parents[4]   # TradingAgents-CN/
+ZSTOCK_ROOT  = Path(__file__).resolve().parents[3]   # TradingAgents-CN/zstock/
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from zstock.common.utils.common_utils import normalize_date, to_yyyymmdd
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +41,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─────────────────── 数据路径 ───────────────────
-DATA_DIR = ZSTOCK_ROOT / 'data_management' / 'script' / 'L2数据' / 'export'
+# 通达信导出文件放在 work/ 下（可含子目录，如 xiazai / xiazai2）
+DATA_DIR = ZSTOCK_ROOT / 'data_management' / 'script' / 'L2数据' / 'work'
 
 # ─────────────────── 字段映射 ───────────────────
 # 中文列名 -> MongoDB 字段名
@@ -94,8 +99,13 @@ def parse_filename(fname: str) -> Optional[str]:
 
 def _parse_code(raw: str) -> str:
     """把 ='000001' / ="000001" / 000001 统一成纯数字 code。"""
-    s = raw.strip().strip('=').strip('"').strip("'")
+    s = raw.strip().strip("=").strip('"').strip("'")
     return s
+
+
+def _is_valid_code(code: str) -> bool:
+    """仅接受 6 位数字股票代码；跳过文件末尾说明行等脏数据。"""
+    return bool(code) and code.isdigit() and len(code) == 6
 
 
 def _parse_float(s: str) -> float:
@@ -114,10 +124,10 @@ def read_l2_file(filepath: str) -> Tuple[str, List[Dict]]:
     读取一个 L2 导出文件。
 
     Returns:
-        (trade_date, rows) — trade_date 格式 YYYYMMDD
+        (trade_date, rows) — trade_date 格式 YYYY-MM-DD
         rows 每行是 dict，字段名已映射为英文
     """
-    with open(filepath, 'r', encoding='gbk') as fp:
+    with open(filepath, "r", encoding="gbk") as fp:
         # 第 1 行：元数据，包含日期
         meta_line = fp.readline()
         # 第 2 行：列名
@@ -126,13 +136,15 @@ def read_l2_file(filepath: str) -> Tuple[str, List[Dict]]:
         data_lines = fp.readlines()
 
     # 从 meta 行提取日期（格式 日期:2026-01-05）
-    meta_date_m = re.search(r'日期:(\d{4})-(\d{2})-(\d{2})', meta_line)
+    meta_date_m = re.search(r"日期:(\d{4})-(\d{2})-(\d{2})", meta_line)
     if not meta_date_m:
         raise ValueError(f"无法从 meta 行解析日期: {meta_line!r}")
-    trade_date = f'{meta_date_m.group(1)}{meta_date_m.group(2)}{meta_date_m.group(3)}'
+    trade_date = normalize_date(
+        f"{meta_date_m.group(1)}{meta_date_m.group(2)}{meta_date_m.group(3)}"
+    )
 
     # 解析列名
-    raw_cols = [c.strip() for c in header_line.rstrip('\r\n').split('\t')]
+    raw_cols = [c.strip() for c in header_line.rstrip("\r\n").split("\t")]
     # 建立 col_index -> field_name 映射
     col_indices: List[Tuple[int, str]] = []
     for idx, col in enumerate(raw_cols):
@@ -143,24 +155,24 @@ def read_l2_file(filepath: str) -> Tuple[str, List[Dict]]:
     # 解析数据行
     rows = []
     for line in data_lines:
-        line = line.rstrip('\r\n')
-        if not line.strip():
+        line = line.rstrip("\r\n")
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        parts = line.split('\t')
-        row: Dict = {'trade_date': trade_date, 'period': PERIOD}
+        parts = line.split("\t")
+        row: Dict = {"trade_date": trade_date, "period": PERIOD}
         for idx, field in col_indices:
             if idx >= len(parts):
-                val = 0.0 if field not in ('code', 'name') else ''
+                val = 0.0 if field not in ("code", "name") else ""
             else:
                 raw = parts[idx]
-                if field == 'code':
+                if field == "code":
                     val = _parse_code(raw)
-                elif field == 'name':
+                elif field == "name":
                     val = raw.strip()
                 else:
                     val = _parse_float(raw)
             row[field] = val
-        if row.get('code'):
+        if _is_valid_code(row.get("code", "")):
             rows.append(row)
 
     return trade_date, rows
@@ -215,6 +227,8 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description='导入 L2 资金流历史数据')
     parser.add_argument('--dry-run',  action='store_true', help='只解析，不写库')
+    parser.add_argument('--force',    action='store_true',
+                        help='强制重导已存在的交易日（默认跳过）')
     parser.add_argument('--start',    type=str, default='', metavar='YYYYMMDD',
                         help='只导入 >= 该日期的文件')
     parser.add_argument('--end',      type=str, default='', metavar='YYYYMMDD',
@@ -225,84 +239,129 @@ def main():
         logger.error(f"数据目录不存在: {DATA_DIR}")
         sys.exit(1)
 
-    files = sorted(os.listdir(DATA_DIR))
-    files = [f for f in files if f.lower().endswith('.xls')]
-    logger.info(f"扫描到 {len(files)} 个 .xls 文件，目录: {DATA_DIR}")
+    # 递归扫描 work/ 及其子目录（xiazai、xiazai2 等）
+    all_xls = sorted(DATA_DIR.rglob('*.xls'))
+    logger.info(f"扫描到 {len(all_xls)} 个 .xls 文件，目录: {DATA_DIR}")
 
-    # 按日期过滤
-    file_with_dates = []
-    for f in files:
-        d = parse_filename(f)
+    start_key = to_yyyymmdd(args.start) if args.start else ""
+    end_key = to_yyyymmdd(args.end) if args.end else ""
+
+    # 按日期过滤；同一日期多文件只保留一份（避免重复导入）
+    # key 用 YYYYMMDD 排序/去重，落库用 YYYY-MM-DD
+    date_to_path: Dict[str, Path] = {}
+    for path in all_xls:
+        d = parse_filename(path.name)  # YYYYMMDD
         if not d:
-            logger.warning(f"  跳过（文件名无法解析）: {f}")
+            logger.warning(f"  跳过（文件名无法解析）: {path.relative_to(DATA_DIR)}")
             continue
-        if args.start and d < args.start:
+        if start_key and d < start_key:
             continue
-        if args.end and d > args.end:
+        if end_key and d > end_key:
             continue
-        file_with_dates.append((f, d))
+        if d in date_to_path:
+            logger.warning(
+                f"  日期 {d} 重复，跳过: {path.relative_to(DATA_DIR)} "
+                f"(已用 {date_to_path[d].relative_to(DATA_DIR)})"
+            )
+            continue
+        date_to_path[d] = path
+
+    file_with_dates = sorted(date_to_path.items(), key=lambda x: x[0])
 
     if not file_with_dates:
         logger.info("没有需要导入的文件（可能被 start/end 过滤掉了）")
         return
 
-    logger.info(f"待导入: {len(file_with_dates)} 个文件  "
-                f"({file_with_dates[0][1]} ~ {file_with_dates[-1][1]})")
+    logger.info(
+        f"待导入: {len(file_with_dates)} 个交易日  "
+        f"({normalize_date(file_with_dates[0][0])} ~ "
+        f"{normalize_date(file_with_dates[-1][0])})"
+    )
 
     db = None
+    existing_dates: Set[str] = set()
     if not args.dry_run:
         client, db = _connect_mongo()
         logger.info(f"MongoDB 已连接: {client.address}")
         _ensure_indexes(db)
+        if not args.force:
+            # 已入库的 L2 日期直接跳过，避免重复写；--force 可强制重导
+            existing_dates = {
+                normalize_date(d)
+                for d in db[COL_CAPITAL_FLOW].distinct(
+                    "trade_date", {"period": PERIOD}
+                )
+            }
+            if existing_dates:
+                logger.info(f"库中已有 L2_daily {len(existing_dates)} 个交易日，将跳过")
     else:
         logger.info("🔸 dry-run 模式，不写库")
 
     total_files = len(file_with_dates)
     total_rows = 0
     total_written = 0
+    skipped_existing = 0
 
-    for i, (fname, trade_date) in enumerate(file_with_dates, 1):
-        filepath = str(DATA_DIR / fname)
+    for i, (date_key, filepath) in enumerate(file_with_dates, 1):
+        trade_date = normalize_date(date_key)
+        rel = filepath.relative_to(DATA_DIR)
+        if not args.dry_run and trade_date in existing_dates:
+            skipped_existing += 1
+            if skipped_existing <= 5 or skipped_existing % 50 == 0:
+                logger.info(
+                    f"  [{i}/{total_files}] {rel}  {trade_date}: 已存在，跳过"
+                )
+            continue
+
         try:
-            _, rows = read_l2_file(filepath)
+            _, rows = read_l2_file(str(filepath))
         except Exception as e:
-            logger.error(f"  [{i}/{total_files}] 读取失败 {fname}: {e}")
+            logger.error(f"  [{i}/{total_files}] 读取失败 {rel}: {e}")
             continue
 
         if not rows:
-            logger.warning(f"  [{i}/{total_files}] 空数据 {fname}")
+            logger.warning(f"  [{i}/{total_files}] 空数据 {rel}")
             continue
 
         total_rows += len(rows)
 
         if args.dry_run:
-            logger.info(f"  [{i}/{total_files}] {fname}: {len(rows)} 行  (dry-run)")
+            logger.info(f"  [{i}/{total_files}] {rel}: {len(rows)} 行  (dry-run)")
             continue
 
-        # upsert 写入
+        # upsert 写入（唯一键 code+trade_date+period，防止重复）
         from pymongo import UpdateOne
-        now = datetime.utcnow()
+
+        now = datetime.now(timezone.utc)
         ops = []
         for row in rows:
-            ops.append(UpdateOne(
-                {'code': row['code'], 'trade_date': trade_date, 'period': PERIOD},
-                {'$set': {**row, 'updated_at': now}},
-                upsert=True,
-            ))
+            ops.append(
+                UpdateOne(
+                    {
+                        "code": row["code"],
+                        "trade_date": trade_date,
+                        "period": PERIOD,
+                    },
+                    {"$set": {**row, "updated_at": now}},
+                    upsert=True,
+                )
+            )
         result = db[COL_CAPITAL_FLOW].bulk_write(ops, ordered=False)
         upserted = result.upserted_count
         modified = result.modified_count
         total_written += upserted + modified
         logger.info(
-            f"  [{i}/{total_files}] {fname}  {trade_date}: "
+            f"  [{i}/{total_files}] {rel}  {trade_date}: "
             f"{len(rows)} 行, 新增 {upserted}, 更新 {modified}"
         )
 
     if args.dry_run:
         logger.info(f"🔸 dry-run 完成，共解析 {total_rows} 行")
     else:
-        logger.info(f"✅ 导入完成: {total_files} 个文件, {total_rows} 行数据, "
-                    f"写库 {total_written} 条")
+        logger.info(
+            f"✅ 导入完成: {total_files} 个交易日, 跳过已有 {skipped_existing}, "
+            f"解析 {total_rows} 行, 写库 {total_written} 条"
+        )
 
 
 if __name__ == '__main__':

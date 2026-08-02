@@ -82,10 +82,6 @@ class CacheService:
             logger.warning(f"删除 Redis 缓存失败: {e}")
             return False
 
-    async def clear_expired(self) -> int:
-        """Redis 过期由服务端自动处理。"""
-        return 0
-
     def get_stats(self) -> Dict[str, int]:
         """获取缓存统计信息"""
         return {

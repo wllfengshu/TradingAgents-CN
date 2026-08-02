@@ -16,22 +16,33 @@
 - BacktestResult.daily_returns 日收益率
 - BacktestResult.holdings_log  每个再平衡日的持仓快照
 - BacktestResult.metrics       综合指标
-"""
+不要用这个，用run_backtest.py"""
 
 from __future__ import annotations
 
 import asyncio
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List, Dict, Any
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-from zstock.strategy_management.pipeline import StrategyPipeline
+if TYPE_CHECKING:
+    from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from zstock.strategy_management.pipeline import StrategyPipeline
 
 
 @dataclass
@@ -246,10 +257,12 @@ class Backtester:
         strategy_pipeline: Optional[StrategyPipeline] = None,
         fee_rate: float = 0.0015,
         initial_capital: float = 1e7,
+        factor_pipeline: Optional["CrossSectionStrategyPipeline"] = None,
     ):
         self.strategy = strategy_pipeline or StrategyPipeline()
         self.fee_rate = fee_rate
         self.initial_capital = initial_capital
+        self.factor_pipeline = factor_pipeline
         # 同步 fee_rate 到 turnover_controller，保持成本估算一致
         self.strategy.turnover_controller.fee_rate = fee_rate
         logger.info(f"✅ Backtester 初始化完成: fee={fee_rate} init_capital={initial_capital}")
@@ -265,6 +278,7 @@ class Backtester:
         sectors: Optional[List[str]] = None,
         max_stocks: Optional[int] = None,
         verbose: bool = True,
+        use_precomputed_factors: bool = False,
     ) -> BacktestResult:
         """
         Args:
@@ -279,6 +293,7 @@ class Backtester:
             strategy_config: 透传给 StrategyPipeline 的 config。
             sectors / max_stocks: 透传。
             verbose: True 时每个交易日都打印日志。
+            use_precomputed_factors: True 时用 factor_pipeline.score_signals 读预计算因子。
 
         Returns:
             BacktestResult
@@ -287,8 +302,8 @@ class Backtester:
         if not trade_dates:
             raise ValueError(f"start_date={start_date} ~ end_date={end_date} 无可用交易日")
 
-        # 打印开场 banner
-        cfg_print = strategy_config or {}
+        # 打印开场 banner（无 strategy_config 时用 StrategyPipeline 默认配置）
+        cfg_print = strategy_config or StrategyPipeline._default_config()
         opt_cfg = (cfg_print.get('portfolio_optimization') or {})
         tov_cfg = (cfg_print.get('turnover_control') or {})
         if verbose:
@@ -361,20 +376,35 @@ class Backtester:
             n_holdings_today = len(last_holdings) if last_holdings is not None else 0
 
             if do_rebalance:
-                prebuilt = signal_provider(td) if signal_provider else None
-                try:
+                if use_precomputed_factors and self.factor_pipeline:
+                    # ── 快速路径：从 MongoDB 读预计算信号 ──
+                    try:
+                        precomputed_signals = await self.factor_pipeline.score_signals(td)
+                    except ValueError as e:
+                        raise ValueError(f"{td} 无预计算因子数据: {e}")
                     summary = await self.strategy.execute_full_pipeline(
                         trade_date=td,
                         current_positions=last_holdings,
                         total_capital=equity,
                         config=strategy_config,
-                        sectors=sectors,
-                        max_stocks=max_stocks,
-                        prebuilt_data=prebuilt,
+                        precomputed_signals=precomputed_signals,
                     )
-                except Exception as e:
-                    logger.error(f"{td} strategy pipeline 失败: {e}")
-                    summary = {'status': 'failed', 'error': str(e)}
+                else:
+                    # ── 原有路径：实时计算 ──
+                    prebuilt = signal_provider(td) if signal_provider else None
+                    try:
+                        summary = await self.strategy.execute_full_pipeline(
+                            trade_date=td,
+                            current_positions=last_holdings,
+                            total_capital=equity,
+                            config=strategy_config,
+                            sectors=sectors,
+                            max_stocks=max_stocks,
+                            prebuilt_data=prebuilt,
+                        )
+                    except Exception as e:
+                        logger.error(f"{td} strategy pipeline 失败: {e}")
+                        summary = {'status': 'failed', 'error': str(e)}
 
                 rebalance_status = summary.get('status', 'failed')
 

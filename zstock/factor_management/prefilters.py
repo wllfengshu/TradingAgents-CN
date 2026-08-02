@@ -15,7 +15,12 @@ import json
 from pathlib import Path
 import fnmatch
 
-from zstock.common.utils.common_utils import is_main_board, is_st, normalize_code
+from zstock.common.utils.common_utils import (
+    ensure_ohlcv_sorted,
+    is_main_board,
+    is_st,
+    normalize_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,13 +99,19 @@ class PreFilters:
         for code in stocks:
             normalized = normalize_code(code)
             # stock_infos 的 key 可能是原始代码或规范化代码，两种都尝试匹配
-            name = ''
+            name = ""
+            flagged_st = False
             if stock_infos:
-                info = stock_infos.get(code) or stock_infos.get(normalized)
-                if info:
-                    name = info.get('name', '')
-            # 主板（沪60/深000-003）且非 ST/*ST（is_st）且非退市（名称含"退"，如"退市XXX"/"XXX退"）
-            if is_main_board(normalized) and not is_st(name) and '退' not in name:
+                info = stock_infos.get(code) or stock_infos.get(normalized) or {}
+                name = info.get("name", "") or ""
+                flagged_st = bool(info.get("is_st", False))
+            # 主板且非 ST（优先 is_st 字段，名称兜底）且非退市
+            if (
+                is_main_board(normalized)
+                and not flagged_st
+                and not is_st(name)
+                and "退" not in name
+            ):
                 result.append(code)
         logger.info(f"✅ M2.2 主板过滤完成: {len(stocks)} → {len(result)} 只")
         return result
@@ -125,12 +136,13 @@ class PreFilters:
         """
         result = {}
         for code, df in stock_data.items():
-            if df.empty or len(df) < 25:  # 需要 window(20) + slope_window(5) = 25 根
+            df = ensure_ohlcv_sorted(df)
+            if df is None or df.empty or len(df) < 25:  # window(20)+slope(5)
                 continue
             if self._apply_bollinger_filter_check(df, slope_threshold):
                 result[code] = df
-                logger.debug(f"✅ {code} 通过 M3.2 布林过滤")
-        logger.info(f"✅ M3.2 布林过滤完成: {len(stock_data)} → {len(result)} 只")
+                logger.debug(f"✅ {code} 通过 M3.3 布林过滤")
+        logger.info(f"✅ M3.3 布林过滤完成: {len(stock_data)} → {len(result)} 只")
         return result
 
     # ===================== 公开接口3：板块黑名单过滤 =====================
@@ -236,7 +248,8 @@ class PreFilters:
         shift(slope_window) 再需要 slope_window 根才能计算最后一根的斜率。
         """
         min_bars = window + slope_window
-        if len(df) < min_bars:
+        df = ensure_ohlcv_sorted(df)
+        if df is None or len(df) < min_bars:
             return False
         df = df.copy()
         boll = PreFilters._calculate_bollinger_bands(df, window=window, std_dev=std_dev)
