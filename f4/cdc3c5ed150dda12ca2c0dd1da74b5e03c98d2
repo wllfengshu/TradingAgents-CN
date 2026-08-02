@@ -1,0 +1,19 @@
+zstock/strategy_management/script/backtester.py
+  s_e9c575ec519389::t_67a0106865be67 381,385-397
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.39-trip",
+  "base_commit_sha": "f4cdc3c5ed150dda12ca2c0dd1da74b5e03c98d2",
+  "prompts": {},
+  "sessions": {
+    "s_e9c575ec519389": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "70c7a7aa-8ade-4463-9c1c-e6711f27e68d",
+        "model": "grok-4.5"
+      },
+      "human_author": "liangliang.wang <liangliang.wang@trip.com>"
+    }
+  }
+}
