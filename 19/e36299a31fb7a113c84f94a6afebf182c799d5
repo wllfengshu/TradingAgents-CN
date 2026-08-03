@@ -1,0 +1,64 @@
+zstock/strategy_management/risk_manager.py
+  s_e9c575ec519389::t_dc07d08e13a631 127-133
+  s_e9c575ec519389::t_4c7918ddc4337f 232-238
+  s_e9c575ec519389::t_bb047f1f9bfbc8 47,52-55,57-62,64-65
+zstock/common/config/strategy_params.json
+  s_e9c575ec519389::t_23f0bdd34e3e8b 54,59
+  s_e9c575ec519389::t_774bcff0d0668f 9,53,56-57
+  s_e9c575ec519389::t_b21eb559703c7f 3-4,25,35,47,49,55,58
+  s_e9c575ec519389::t_e18e078f5903de 10
+zstock/factor_management/script/因子测评/run_eval.py
+  s_e9c575ec519389::t_fd92b3e9bf8b76 200-201
+  s_e9c575ec519389::t_d81ddea0ddf530 150
+  s_e9c575ec519389::t_742d748dfc4dd5 176
+zstock/factor_management/dragon_factors.py
+  s_e9c575ec519389::t_ef0cc92cf78090 245-249,255
+  s_e9c575ec519389::t_00053ae57af27d 26-29,31,35-36
+zstock/strategy_management/turnover_controller.py
+  s_e9c575ec519389::t_35e84700c5e1ea 5,9,12,28-37,39,41-46,49-53,60-61,66,68-69,72,76-77,80-91,115-119,127-132,139-147,150-176
+  s_e9c575ec519389::t_848710cdcd6161 180,183,185
+zstock/strategy_management/script/run_backtest.py
+  s_e9c575ec519389::t_c1fdd64653a9bb 54-59
+  s_e9c575ec519389::t_193c4b5bd864c1 64-82,87
+  s_e9c575ec519389::t_744dfec6e836e5 176
+zstock/factor_management/market_factors.py
+  s_e9c575ec519389::t_42e8833dae1a1c 56
+zstock/strategy_management/pipeline.py
+  s_e9c575ec519389::t_e4b44cd9283dbe 46-52
+  s_e9c575ec519389::t_0b59c6c60f87f6 137,143-144,155-176,179,193
+  s_e9c575ec519389::t_4c16403d8e2829 228-230,236-238,242-243,246-247
+  s_e9c575ec519389::t_d28fae3ed2d2e9 17
+zstock/strategy_management/script/backtester.py
+  s_e9c575ec519389::t_41c1c1f71b551d 466-487
+  s_e9c575ec519389::t_6f0687aed64fa7 435-444,457
+  s_e9c575ec519389::t_bcecac990d1016 554-646
+  s_e9c575ec519389::t_fb1af87949283f 337-341,376,379-389
+zstock/factor_management/test/test_factor_fixes.py
+  s_e9c575ec519389::t_47c068ff10dea7 99-100,102
+  s_e9c575ec519389::t_b4276d374415c9 197-218
+  s_e9c575ec519389::t_b3a602d1338ea1 354
+zstock/factor_management/script/grid_search_real.py
+  s_e9c575ec519389::t_5bd902710c3cfe 2-19,22-24,26,29-31,34-36,38,40,46-48,51-81,83-85,88-108,110-121,125-152,155-197,199-203,205-222,225-254,257-279,281-317,319-320,322-323,325,327,329-331,333-379,383-390,392-400,403-406,408-560,565-581,583-586,589-599,602-612,616
+zstock/factor_management/script/因子测评/data_loader.py
+  s_e9c575ec519389::t_44a3e281f381db 55
+zstock/factor_management/pipeline.py
+  s_e9c575ec519389::t_3d391b1945f89b 921-922,928-931
+zstock/strategy_management/portfolio_optimizer.py
+  s_e9c575ec519389::t_8be021a81e87bd 86,89,94-95,97,99,107-114,123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.39-trip",
+  "base_commit_sha": "19e36299a31fb7a113c84f94a6afebf182c799d5",
+  "prompts": {},
+  "sessions": {
+    "s_e9c575ec519389": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "70c7a7aa-8ade-4463-9c1c-e6711f27e68d",
+        "model": "grok-4.5"
+      },
+      "human_author": "liangliang.wang <liangliang.wang@trip.com>"
+    }
+  }
+}
