@@ -1,0 +1,45 @@
+zstock/strategy_management/pipeline.py
+  s_e9c575ec519389::t_10349e04d13bb3 175,183-184,201
+  s_e9c575ec519389::t_6882d2628d9475 148-155,163
+  s_e9c575ec519389::t_78a3994362bf8c 207,209-214
+  s_e9c575ec519389::t_ccd031afe0a89e 102,104-110,113-118,121
+  s_e9c575ec519389::t_7cd41888b55350 238-283
+  s_e9c575ec519389::t_67eff78c3f4167 324-345
+zstock/factor_management/script/grid_search_real.py
+  s_e9c575ec519389::t_2dec879d48766b 88,90-92,94,101,109-124,126-137
+  s_e9c575ec519389::t_1296208a58830f 611-625,633-634,637-643,646-650
+  s_e9c575ec519389::t_e39affabd3c0f5 11-19
+  s_e9c575ec519389::t_471c33c267c5a3 163,167,170-172
+zstock/common/config/strategy_params.json
+  s_e9c575ec519389::t_4709838b163dc0 64-67
+zstock/strategy_management/script/backtester.py
+  s_e9c575ec519389::t_cd2f936cf1b781 674-777
+  s_e9c575ec519389::t_8eb5b1542511ac 458-460,462,485
+  s_e9c575ec519389::t_431f93ee7673b7 338-341,345-360
+  s_e9c575ec519389::t_7eba150b457785 414,452-456,475-484,486-535,537-538,540-559,561-566,595,597-600,604-607
+  s_e9c575ec519389::t_a6d2b6e0ff7886 461,463-474
+zstock/factor_management/pipeline.py
+  s_e9c575ec519389::t_7dc9f89f236899 859-861
+  s_e9c575ec519389::t_f70286425e8c98 1116-1121,1130-1131,1135-1138
+  s_e9c575ec519389::t_18257a1ca16905 896-898,909-911,914-916,930,938-940,942-943
+  s_e9c575ec519389::t_835544c02a22ac 831-833
+zstock/strategy_management/turnover_controller.py
+  s_e9c575ec519389::t_7d4101c13d8cf4 134,136,138-144
+  s_e9c575ec519389::t_e04c5e19639595 62,71,80,83,93-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.39-trip",
+  "base_commit_sha": "d38d3cee3ecc2a35166786fc2ec01bc4e83aaa5f",
+  "prompts": {},
+  "sessions": {
+    "s_e9c575ec519389": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "70c7a7aa-8ade-4463-9c1c-e6711f27e68d",
+        "model": "grok-4.5"
+      },
+      "human_author": "liangliang.wang <liangliang.wang@trip.com>"
+    }
+  }
+}
