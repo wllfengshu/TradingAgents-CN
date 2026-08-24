@@ -14,7 +14,6 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -90,7 +89,7 @@ async def main() -> int:
     parser.add_argument("--date", help="同步单个日期 YYYY-MM-DD")
     parser.add_argument("--start", help="开始日期 YYYY-MM-DD")
     parser.add_argument("--end", help="结束日期 YYYY-MM-DD")
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
 
     if args.date:
         start_date = end_date = args.date

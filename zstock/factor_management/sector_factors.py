@@ -133,16 +133,14 @@ class SectorFactors:
                 )
             )
         else:
-            # 资金流仍按当日切片重算（便宜）；OHLCV 用预聚合
             sector_ohlcv = {
                 k: v for k, v in sector_ohlcv.items() if k in need_codes
             }
+            # 如果提供了预聚合的 sector_ohlcv，那么只计算资金流
             _, sector_capital_flow = SectorFactors._aggregate_sectors_from_stocks(
                 sector_stocks_use,
                 stock_ohlcv,
                 stock_flow_recent or {},
-                ohlcv_only=False,
-                flow_only=True,
                 eligible_codes=eligible_codes,
             )
 
@@ -460,8 +458,6 @@ class SectorFactors:
         stock_ohlcv: Dict[str, pd.DataFrame],
         stock_flow_recent: Dict[str, List[Dict]],
         *,
-        ohlcv_only: bool = False,
-        flow_only: bool = False,
         eligible_codes: Optional[set] = None,
     ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Dict[str, float]]]:
         """【私有】从个股聚合板块 OHLCV + 资金流（numpy 累加，避免 pandas concat）。
@@ -474,30 +470,29 @@ class SectorFactors:
 
         # 个股面板只建一次，供所有板块复用
         stock_panel: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
-        if not flow_only:
-            for code, df in (stock_ohlcv or {}).items():
-                if df is None or df.empty:
-                    continue
-                if "trade_date" not in df.columns or "close" not in df.columns:
-                    continue
-                dates = pd.to_datetime(df["trade_date"], errors="coerce").to_numpy()
-                close = df["close"].to_numpy(dtype=float, copy=False)
-                if "volume" in df.columns:
-                    vol = df["volume"].to_numpy(dtype=float, copy=False)
-                else:
-                    vol = np.zeros(len(close), dtype=float)
-                if "amount" in df.columns:
-                    amt = df["amount"].to_numpy(dtype=float, copy=False)
-                else:
-                    # 无 amount 时用 volume*close 近似，避免 F2.5 整列为 0
-                    amt = vol * np.abs(close)
-                ret = np.empty(len(close), dtype=float)
-                ret[0] = np.nan
-                prev = close[:-1]
-                cur = close[1:]
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    ret[1:] = np.where(prev > 0, cur / prev - 1.0, np.nan)
-                stock_panel[code] = (dates, close, vol, amt, ret)
+        for code, df in (stock_ohlcv or {}).items():
+            if df is None or df.empty:
+                continue
+            if "trade_date" not in df.columns or "close" not in df.columns:
+                continue
+            dates = pd.to_datetime(df["trade_date"], errors="coerce").to_numpy()
+            close = df["close"].to_numpy(dtype=float, copy=False)
+            if "volume" in df.columns:
+                vol = df["volume"].to_numpy(dtype=float, copy=False)
+            else:
+                vol = np.zeros(len(close), dtype=float)
+            if "amount" in df.columns:
+                amt = df["amount"].to_numpy(dtype=float, copy=False)
+            else:
+                # 无 amount 时用 volume*close 近似，避免 F2.5 整列为 0
+                amt = vol * np.abs(close)
+            ret = np.empty(len(close), dtype=float)
+            ret[0] = np.nan
+            prev = close[:-1]
+            cur = close[1:]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ret[1:] = np.where(prev > 0, cur / prev - 1.0, np.nan)
+            stock_panel[code] = (dates, close, vol, amt, ret)
 
         for sector_code, codes in sector_stocks.items():
             members = [c for c in codes if c in (stock_ohlcv or {})]
@@ -509,85 +504,83 @@ class SectorFactors:
                 else members
             )
 
-            if not flow_only:
-                vol_sum: Dict[Any, float] = {}
-                amt_sum: Dict[Any, float] = {}
-                ret_sum: Dict[Any, float] = {}
-                ret_cnt: Dict[Any, int] = {}
-                for c in members:
-                    panel = stock_panel.get(c)
-                    if panel is None:
-                        continue
-                    dates, _close, vol, amt, ret = panel
-                    for i, d in enumerate(dates):
-                        if d is None or (isinstance(d, float) and np.isnan(d)):
-                            continue
-                        # pandas NaT
-                        if pd.isna(d):
-                            continue
-                        vol_sum[d] = vol_sum.get(d, 0.0) + float(vol[i])
-                        amt_sum[d] = amt_sum.get(d, 0.0) + float(amt[i])
-                        r = ret[i]
-                        if r == r:  # not nan
-                            ret_sum[d] = ret_sum.get(d, 0.0) + float(r)
-                            ret_cnt[d] = ret_cnt.get(d, 0) + 1
-
-                if not ret_sum:
+            vol_sum: Dict[Any, float] = {}
+            amt_sum: Dict[Any, float] = {}
+            ret_sum: Dict[Any, float] = {}
+            ret_cnt: Dict[Any, int] = {}
+            for c in members:
+                panel = stock_panel.get(c)
+                if panel is None:
                     continue
-
-                # 与旧逻辑一致：ret 与 vol/amt 按日期 inner（以有 ret 的日期为主，且需有 vol）
-                common = sorted(d for d in ret_sum if d in vol_sum)
-                if not common:
-                    continue
-                rets = np.array(
-                    [
-                        (ret_sum[d] / ret_cnt[d]) if ret_cnt.get(d) else 0.0
-                        for d in common
-                    ],
-                    dtype=float,
-                )
-                rets = np.nan_to_num(rets, nan=0.0)
-                closes = 100.0 * np.cumprod(1.0 + rets)
-                vols = np.array([vol_sum[d] for d in common], dtype=float)
-                amts = np.array([amt_sum[d] for d in common], dtype=float)
-                opens = np.empty_like(closes)
-                opens[0] = closes[0]
-                opens[1:] = closes[:-1]
-                ret_abs = np.abs(rets)
-                # 注意：high/low 为从收益率反推的近似值，非真实日内极值。
-                # 对板块 RPS 和布林计算影响可忽略，因为板块 OHLCV 仅用于比值类因子。
-                highs = np.maximum(closes, opens) * (1 + ret_abs * 0.5 + 0.001)
-                lows = np.minimum(closes, opens) / (1 + ret_abs * 0.5 + 0.001)
-                sector_ohlcv[sector_code] = pd.DataFrame(
-                    {
-                        "trade_date": common,
-                        "close": closes,
-                        "volume": vols,
-                        "amount": amts,
-                        "open": opens,
-                        "high": highs,
-                        "low": lows,
-                    }
-                )
-
-            if not ohlcv_only:
-                main_sum = 0.0
-                total_amt = 0.0
-                for c in flow_members:
-                    rows = (stock_flow_recent or {}).get(c) or []
-                    if not rows:
+                dates, _close, vol, amt, ret = panel
+                for i, d in enumerate(dates):
+                    if d is None or (isinstance(d, float) and np.isnan(d)):
                         continue
-                    today_doc = rows[-1]
-                    try:
-                        main_sum += float(today_doc.get("main_net", 0.0) or 0.0) * WAN_TO_YUAN
-                        total_amt += float(today_doc.get("turnover", 0.0) or 0.0)
-                    except (ValueError, TypeError):
-                        pass
-                sector_capital_flow[sector_code] = {
-                    "main_flow": main_sum,
-                    "retail_flow": 0.0,
-                    "total_amount": total_amt,
+                    # pandas NaT
+                    if pd.isna(d):
+                        continue
+                    vol_sum[d] = vol_sum.get(d, 0.0) + float(vol[i])
+                    amt_sum[d] = amt_sum.get(d, 0.0) + float(amt[i])
+                    r = ret[i]
+                    if r == r:  # not nan
+                        ret_sum[d] = ret_sum.get(d, 0.0) + float(r)
+                        ret_cnt[d] = ret_cnt.get(d, 0) + 1
+
+            if not ret_sum:
+                continue
+
+            # 与旧逻辑一致：ret 与 vol/amt 按日期 inner（以有 ret 的日期为主，且需有 vol）
+            common = sorted(d for d in ret_sum if d in vol_sum)
+            if not common:
+                continue
+            rets = np.array(
+                [
+                    (ret_sum[d] / ret_cnt[d]) if ret_cnt.get(d) else 0.0
+                    for d in common
+                ],
+                dtype=float,
+            )
+            rets = np.nan_to_num(rets, nan=0.0)
+            closes = 100.0 * np.cumprod(1.0 + rets)
+            vols = np.array([vol_sum[d] for d in common], dtype=float)
+            amts = np.array([amt_sum[d] for d in common], dtype=float)
+            opens = np.empty_like(closes)
+            opens[0] = closes[0]
+            opens[1:] = closes[:-1]
+            ret_abs = np.abs(rets)
+            # 注意：high/low 为从收益率反推的近似值，非真实日内极值。
+            # 对板块 RPS 和布林计算影响可忽略，因为板块 OHLCV 仅用于比值类因子。
+            highs = np.maximum(closes, opens) * (1 + ret_abs * 0.5 + 0.001)
+            lows = np.minimum(closes, opens) / (1 + ret_abs * 0.5 + 0.001)
+            sector_ohlcv[sector_code] = pd.DataFrame(
+                {
+                    "trade_date": common,
+                    "close": closes,
+                    "volume": vols,
+                    "amount": amts,
+                    "open": opens,
+                    "high": highs,
+                    "low": lows,
                 }
+            )
+
+            main_sum = 0.0
+            total_amt = 0.0
+            for c in flow_members:
+                rows = (stock_flow_recent or {}).get(c) or []
+                if not rows:
+                    continue
+                today_doc = rows[-1]
+                try:
+                    main_sum += float(today_doc.get("main_net", 0.0) or 0.0) * WAN_TO_YUAN
+                    total_amt += float(today_doc.get("turnover", 0.0) or 0.0)
+                except (ValueError, TypeError):
+                    pass
+            sector_capital_flow[sector_code] = {
+                "main_flow": main_sum,
+                "retail_flow": 0.0,
+                "total_amount": total_amt,
+            }
 
         return sector_ohlcv, sector_capital_flow
 

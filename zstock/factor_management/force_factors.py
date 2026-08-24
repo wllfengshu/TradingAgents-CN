@@ -726,57 +726,33 @@ class ForceFactors:
             return 0.5
 
     @staticmethod
-    def _power_divergence_factor(ohlcv_df) -> float:
-        """【A级因子1】资金价格背离度 (Power Divergence)
-
-        预期性能：Rank_IC ≥ 0.12, ICIR ≥ 2.5, p < 0.0001, Score ≥ 85分
-
-        核心逻辑：
-          当主力资金进场（成交额↑）但价格滞后（价格未跟上）时，
-          说明存在压力盘或主力在吸筹，后续容易出现短期反转。
-
-        公式：
-          背离度 = 成交量突增强度 × (1 - 价格动量强度)
-
-        其中：
-          成交量突增强度 = sigmoid((amount - MA5_amount) / MA5_amount)
-          价格动量强度 = sigmoid((close - MA20_close) / MA20_close)
-
-        返回值：[0, 1]，越接近1表示背离越强
+    def _power_divergence_factor(ohlcv_df: Optional[pd.DataFrame]) -> float:
         """
-        if ohlcv_df is None or ohlcv_df.empty or len(ohlcv_df) < 20:
-            return float("nan")
+        【A级因子1】量价背离度：个股短期收盘价乖离率 / 成交量乖离率
+        如果价格在涨，但成交量在缩，可能是“强控盘无分歧”信号；
+        如果价格在涨，成交量爆量，可能是“筹码松动”即将反转信号。
+        """
+        if ohlcv_df is None or len(ohlcv_df) < 10:
+            return 0.0
 
         try:
-            close = ohlcv_df['close'].astype(float)
-            amount = ohlcv_df['amount'].astype(float)
+            close = pd.to_numeric(ohlcv_df["close"], errors='coerce').fillna(method='ffill')
+            vol = pd.to_numeric(ohlcv_df["volume"], errors='coerce').fillna(0)
 
-            # 价格动量强度
-            price_ma20 = close.rolling(window=20, min_periods=1).mean()
-            price_ma20_safe = price_ma20.replace(0, np.nan)
-            price_momentum_ratio = (close - price_ma20) / price_ma20_safe
+            # 使用指数移动平均线衡量短中趋势差异
+            ema5 = close.ewm(span=5, adjust=False).mean()
+            ema20 = close.ewm(span=20, adjust=False).mean()
 
-            # 用Sigmoid映射到[0,1]
-            price_strength_values = price_momentum_ratio.apply(
-                lambda x: ForceFactors._sigmoid(x, k=2.0) if np.isfinite(x) else 0.5
-            )
-            price_strength = price_strength_values.iloc[-1]
+            # 乖离率 = (当前值 - MA) / MA
+            close_divergence = (close - ema5) / ema5
+            vol_divergence = (vol - vol.ewm(span=20, adjust=False).mean()) / vol.ewm(span=20, adjust=False).mean()
 
-            # 成交量突增强度
-            amount_ma5 = amount.rolling(window=5, min_periods=1).mean()
-            amount_ma5_safe = amount_ma5.replace(0, np.nan)
-            vol_surge_ratio = (amount - amount_ma5) / amount_ma5_safe
+            # 计算量价背离度
+            divergence = close_divergence * vol_divergence
 
-            # 用Sigmoid映射到[0,1]
-            vol_strength_values = vol_surge_ratio.apply(
-                lambda x: ForceFactors._sigmoid(x, k=2.0) if np.isfinite(x) else 0.5
-            )
-            vol_strength = vol_strength_values.iloc[-1]
-
-            # 背离度 = 主力强 × 价格弱
-            divergence = vol_strength * (1 - price_strength)
-
-            return float(divergence) if np.isfinite(divergence) else 0.5
+            # 返回值映射到 [0, 100]
+            mapped_value = 50 * (divergence - divergence.min()) / (divergence.max() - divergence.min() + 1e-8)
+            return float(mapped_value)
         except Exception as e:
             logger.debug(f"power_divergence计算失败: {e}")
             return float("nan")

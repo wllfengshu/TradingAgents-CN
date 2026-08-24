@@ -8,7 +8,7 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -48,7 +48,7 @@ async def _persist_stock_flags(stock_list: List[Dict[str, str]], batch_size: int
         from app.core import database as db_module
         await db_module.db_manager.init_mongodb()
         db = db_module.db_manager.mongo_db
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         ops = [
             UpdateOne(
                 {'code': s['code']},
@@ -81,7 +81,7 @@ async def _persist_sector_meta(sectors: List[Dict[str, str]]) -> None:
         from app.core import database as db_module
         await db_module.db_manager.init_mongodb()
         db = db_module.db_manager.mongo_db
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         from zstock.data_management.query_service import DataQueryService, COL_SECTOR
         ops = [
             UpdateOne(
@@ -111,7 +111,7 @@ async def _persist_sector_stocks(sector_code: str, codes: List[str]) -> None:
         from zstock.data_management.query_service import DataQueryService, COL_SECTOR
         await db[COL_SECTOR].update_one(
             {'sector_code': sector_code, 'source': 'xtquant'},
-            {'$set': {'stocks': codes, 'stocks_updated_at': datetime.utcnow()}},
+            {'$set': {'stocks': codes, 'stocks_updated_at': datetime.now(timezone.utc)}},
             upsert=True,
         )
         logger.info(f"💾 落库 {COL_SECTOR}({sector_code}/xtquant) stocks: {len(codes)} 只")

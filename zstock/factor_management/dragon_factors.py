@@ -116,7 +116,7 @@ class DragonFactors:
         )
 
     @staticmethod
-    def scores_from_raw(raw: Dict[str, Dict[str, Any]], regime: str = "neutral", active_factors: list = None, scoring_method: str = "linear") -> Dict[str, float]:
+    def scores_from_raw(raw: Dict[str, Dict[str, Any]], regime: str = "neutral", active_factors: dict = None, scoring_method: str = "linear") -> Dict[str, float]:
         """从 raw 原始值打分（配置驱动 + 决策树）。
 
         配置驱动：从 active_factors.dragon 按 regime 动态提取配置中声明的所有因子。

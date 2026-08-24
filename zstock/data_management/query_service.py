@@ -75,8 +75,14 @@ def _iter_date_windows(
     """将日期区间切分为若干窗口，避免单次 MongoDB 查询过大。"""
     if chunk_days <= 0:
         return [(normalize_date(start_date), normalize_date(end_date))]
-    start_dt = datetime.strptime(normalize_date(start_date), "%Y-%m-%d")
-    end_dt = datetime.strptime(normalize_date(end_date), "%Y-%m-%d")
+
+    start_str = normalize_date(start_date)
+    end_str = normalize_date(end_date)
+    if start_str > end_str:
+        return []
+
+    start_dt = datetime.strptime(start_str, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_str, "%Y-%m-%d")
     windows: List[Tuple[str, str]] = []
     cur = start_dt
     while cur <= end_dt:
@@ -412,7 +418,7 @@ class DataQueryService:
         doc = await self.database_service.query_one(
             COL_STOCK_INFO, {"code": normalize_code(symbol)}
         )
-        if doc:
+        if doc is not None:
             doc.pop("_id", None)
             return doc, "mongodb"
 
@@ -718,7 +724,7 @@ class DataQueryService:
                 },
                 limit=10000,
             )
-            if docs:
+            if docs is not None:
                 return docs, "mongodb"
         except Exception as e:
             logger.error(f"从 MongoDB 获取板块列表失败: {e}")

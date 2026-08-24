@@ -132,7 +132,8 @@ def _parse_args() -> argparse.Namespace:
         default=datetime.now().strftime('%Y-%m-%d'),
         help='结束日期 YYYY-MM-DD，默认今天',
     )
-    return parser.parse_args()
+    args, _ = parser.parse_known_args()
+    return args
 
 
 async def main():

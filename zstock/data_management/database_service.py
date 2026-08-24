@@ -123,6 +123,12 @@ class DatabaseService:
 
     # ==================== 数据更新方法 ====================
 
+    def _prepare_update(self, update: Dict) -> Dict:
+        """检查更新文档是否已经包涵 Mongo 操作符。"""
+        if any(k.startswith('$') for k in update.keys()):
+            return update
+        return {"$set": update}
+
     async def update_one(self, collection: str, query: Dict, update: Dict) -> int:
         """
         更新单条数据
@@ -130,13 +136,14 @@ class DatabaseService:
         Args:
             collection: 集合名称
             query: 查询条件
-            update: 更新内容
+            update: 更新内容（如果不用操作符会自动包裹 $set）
 
         Returns:
             修改的文档数
         """
         try:
-            result = await self.db[collection].update_one(query, {"$set": update})
+            update_doc = self._prepare_update(update)
+            result = await self.db[collection].update_one(query, update_doc)
             logger.info(f"✅ 更新 {collection}: {result.modified_count} 条")
             return result.modified_count
         except Exception as e:
@@ -150,13 +157,14 @@ class DatabaseService:
         Args:
             collection: 集合名称
             query: 查询条件
-            update: 更新内容
+            update: 更新内容（如果不用操作符会自动包裹 $set）
 
         Returns:
             修改的文档数
         """
         try:
-            result = await self.db[collection].update_many(query, {"$set": update})
+            update_doc = self._prepare_update(update)
+            result = await self.db[collection].update_many(query, update_doc)
             logger.info(f"✅ 批量更新 {collection}: {result.modified_count} 条")
             return result.modified_count
         except Exception as e:

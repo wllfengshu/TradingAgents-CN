@@ -16,10 +16,8 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import numpy as np
-import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -149,7 +147,7 @@ async def main():
             if ann_date is None:
                 continue
             # 至少需要一个有效字段
-            doc = {"code": code, "ann_date": ann_date}
+            doc: dict = {"code": code, "ann_date": ann_date}
             has_any = False
             for xt_field, mongo_field in PERSHARE_FIELDS.items():
                 val = _safe_float(row.get(xt_field))

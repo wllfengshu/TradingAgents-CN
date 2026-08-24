@@ -127,7 +127,9 @@ async def main():
         await init_zstock_database()
         logger.info("✅ MongoDB 已初始化")
 
-        exporter = DataExporter(output_dir="")
+        # 使用基于项目根目录的输出目录，避免在不确定路径下运行
+        output_dir = str(PROJECT_ROOT / "zstock" / "data_management" / "script" / "exports" / "outputs")
+        exporter = DataExporter(output_dir=output_dir)
 
         # 测试股票代码列表
         symbols = ["600000", "000001", "000858", "SH600519"]

@@ -10,7 +10,7 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -37,11 +37,15 @@ async def _persist_capital_flow_bulk(df) -> int:
         await db_module.db_manager.init_mongodb()
         db = db_module.db_manager.mongo_db
         logger.info("MongoDB 已连接")
+        import pandas as pd
+        if not pd.api.types.is_numeric_dtype(df['code']):
+            df['code'] = df['code'].astype(str).str.zfill(6)
+
         ops = []
         for _, row in df.iterrows():
             ops.append(UpdateOne(
                 {'code': row['code'], 'trade_date': row['trade_date'], 'period': row.get('period', '')},
-                {'$set': {**row.to_dict(), 'updated_at': datetime.utcnow()}},
+                {'$set': {**row.to_dict(), 'updated_at': datetime.now(timezone.utc)}},
                 upsert=True,
             ))
         if ops:
@@ -59,7 +63,7 @@ async def sync_one_period(qs, period: str, max_retries: int = 100) -> int:
     for attempt in range(max_retries):
         try:
             loop = asyncio.get_running_loop()
-            df = await loop.run_in_executor(None, emu.fetch_money_flow_all, period)
+            df = await loop.run_in_executor(None, emu.fetch_money_flow_all, period) # type: ignore
             if df.empty:
                 logger.warning(f"  {period}: 返回空（可能非交易时段或被风控）")
                 return 0
