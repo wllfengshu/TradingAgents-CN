@@ -1,0 +1,177 @@
+
+====================================================================================================
+隔夜策略回测完整报告
+生成: 2026-08-24 00:42  数据截止: 2026-08-23
+总耗时: 02:13:49
+====================================================================================================
+
+strategy_params.json:
+  版本: 1.13.0
+  描述: 2024 样本内调参(v1.13): 修复 cash drag——原回测均仓位10%、45%日空仓；top_k=5 max_w=0.20 coop=0.01 reb=5 buffer=0.25 no_signal=hold
+  top_k: 5
+  rebalance: 5 天
+  max_weight: 0.2
+  coop: 0.01
+  yellow_scale: 0.6
+
+── 策略回测 ──
+实验                                   收益      毛收益      夏普       回撤     仓位     成本     状态
+────────────────────────────────────────────────────────────────────────────────────────────────────
+current_2024                     -9.92%   -5.66%  -0.233  -29.45%  72.9%  4.62%     OK
+current_2024_h1                 -14.77%  -12.68%  -0.937  -27.09%  74.8%  2.43%     OK
+current_2024_h2                   4.55%    6.83%   0.457  -10.40%  71.2%  2.15%     OK
+current_2024_q1                   9.40%   10.61%   1.374  -12.86%  72.7%  1.10%     OK
+current_2024_q2                 -25.05%  -24.08%  -3.708  -26.50%  76.7%  1.29%     OK
+current_2024_q3                  13.21%   14.19%   1.979   -6.93%  69.2%  0.85%     OK
+current_2024_q4                   1.87%    3.01%   0.387   -8.28%  78.5%  1.12%     OK
+current_2025                     18.41%   24.74%   1.005   -8.23%  78.8%  5.21%     OK
+current_2025_h1                   1.66%    3.74%   0.289   -7.27%  70.0%  2.03%     OK
+current_2025_h2                  24.60%   28.00%   2.660   -6.92%  77.3%  2.69%     OK
+current_2025_q1                  -4.17%   -3.12%  -0.987   -8.31%  69.1%  1.10%     OK
+current_2025_q2                  11.59%   12.77%   1.836   -8.21%  64.6%  1.05%     OK
+current_2025_q3                  15.16%   17.08%   3.118   -6.27%  88.6%  1.65%     OK
+current_2025_q4                  17.92%   19.29%   3.848   -6.87%  73.3%  1.16%     OK
+current_2026                      3.66%    6.37%   0.350  -12.63%  75.0%  2.59%     OK
+current_2026_h1                   2.87%    5.39%   0.345  -11.89%  78.3%  2.42%     OK
+current_2026_h2                   6.99%    7.23%   2.329   -3.67%  60.0%  0.23%     OK
+current_2026_q1                  -3.42%   -2.53%  -0.787  -11.56%  76.4%  0.92%     OK
+current_2026_q2                 -19.44%  -18.10%  -3.474  -25.15%  83.1%  1.65%     OK
+current_2026_q3                   6.99%    7.23%   2.329   -3.67%  60.0%  0.23%     OK
+Grid24 OOS 2024 Q4               -4.98%   -4.98%  -3.109   -5.29%   0.0%  0.48%     OK
+Grid24 Val 2025                   0.66%    0.66%   0.116   -5.83%   0.0%  2.71%     OK
+Grid24 Val 2026 YTD              -3.89%   -3.89%  -1.518   -5.91%   0.0%  1.01%     OK
+Grid25 OOS 2025 Q4                9.52%    9.52%   3.299   -2.28%   0.0%  0.31%     OK
+Grid25 Ref 2024                  -8.83%   -8.83%  -0.653  -11.72%   0.0%  0.68%     OK
+Grid25 Val 2026 YTD              -3.70%   -3.70%  -0.438  -15.35%   0.0%  0.67%     OK
+Grid26 Fwd 2026 H2                0.00%    0.00%   0.000    0.00%   0.0%  0.00%     OK
+Grid26 OOS 2025                  19.33%   19.33%   1.059  -11.20%   0.0%  2.22%     OK
+Grid26 Ref 2024                  49.80%   49.80%   1.691  -15.63%   0.0%  1.57%     OK
+Grid26 2026 YTD                   4.71%    4.71%   0.550  -11.35%   0.0%  0.61%     OK
+sens_2024_reb3                   23.78%   33.17%   0.834  -23.42%  72.9%  7.31%     OK
+sens_2024_reb5                   -9.92%   -5.66%  -0.233  -29.45%  72.9%  4.62%     OK
+sens_2024_reb8                    1.42%    4.35%   0.170  -19.52%  69.1%  2.85%     OK
+sens_2025_reb3                    0.91%    9.82%   0.139  -20.02%  78.5%  8.46%     OK
+sens_2025_reb5                   18.41%   24.74%   1.005   -8.23%  78.8%  5.21%     OK
+sens_2025_reb8                    4.85%    8.68%   0.374  -16.29%  77.0%  3.58%     OK
+sens_2026_reb3                  -21.63%  -18.41%  -1.961  -28.52%  70.2%  4.04%     OK
+sens_2026_reb5                    3.66%    6.37%   0.350  -12.63%  75.0%  2.59%     OK
+sens_2026_reb8                  -15.14%  -13.72%  -1.114  -23.09%  75.4%  1.67%     OK
+
+── 沪深300 基准 ──
+  HS300 2024-01-01~2024-12-31: 收益 16.20%  夏普 0.840  MDD -14.41%
+  HS300 2025-01-02~2025-12-31: 收益 21.19%  夏普 1.411  MDD -10.49%
+  HS300 2026-01-01~2026-08-23: 收益 0.17%  夏普 0.112  MDD -10.49%
+  2024 超额(Alpha): -26.12%  (策略 -9.92% vs 基准 16.20%)
+  2025 超额(Alpha): -2.78%  (策略 18.41% vs 基准 21.19%)
+  2026 超额(Alpha): +3.48%  (策略 3.66% vs 基准 0.17%)
+
+── 因子覆盖（按年）──
+  2024 (2024-01-01~2024-12-31): M1=242 M2=30734 M3=690515 M4=690515
+  2025 (2025-01-02~2025-12-31): M1=244 M2=30987 M3=696804 M4=696804
+  2026 (2026-01-01~2026-08-23): M1=137 M2=17397 M3=392740 M4=392740
+
+── 预计算 ──
+  market=0 sector=0 dragon=0 force=0
+
+── 因子测评 Top8 ──
+  [2024]
+    dragon.f33_consecutive_boards score=83.0 (A - 优秀因子)
+    sector.f30_sector_concentration score=66.0 (B - 良好因子)
+    dragon.f31_excess_return score=65.0 (B - 良好因子)
+    dragon.f31_excess_return_5d score=65.0 (B - 良好因子)
+    dragon.f31_excess_return_10d score=65.0 (B - 良好因子)
+    dragon.f31_excess_return_15d score=65.0 (B - 良好因子)
+    dragon.f31_excess_return_20d score=65.0 (B - 良好因子)
+    dragon.f32_amount score=65.0 (B - 良好因子)
+  [2025]
+    dragon.f33_consecutive_boards score=73.0 (B - 良好因子)
+    sector.f30_sector_concentration score=66.0 (B - 良好因子)
+    dragon.f38_turnover_anomaly score=66.0 (B - 良好因子)
+    force.f_mean_reversion_signal score=66.0 (B - 良好因子)
+    dragon.f31_excess_return score=65.0 (B - 良好因子)
+    dragon.f31_excess_return_5d score=65.0 (B - 良好因子)
+    dragon.f31_excess_return_10d score=65.0 (B - 良好因子)
+    dragon.f36_identity_premium score=65.0 (B - 良好因子)
+  [2026_YTD]
+    force.dragon_consistency_5d score=65.0 (B - 良好因子)
+    sector.f24_max_consecutive score=58.0 (C - 一般因子)
+    sector.f23_limit_up_density score=48.0 (C - 一般因子)
+    dragon.f34_resonance_pct score=48.0 (C - 一般因子)
+    dragon.f34_resonance_pct_3d score=48.0 (C - 一般因子)
+    dragon.f34_resonance_pct_5d score=48.0 (C - 一般因子)
+    dragon.f40_holder_change score=48.0 (C - 一般因子)
+    dragon.f33_consecutive_boards score=38.0 (D - 无效因子)
+
+── 过拟合诊断 2024 IS→Q4 ──
+  IS Sharpe=1.783  OOS Sharpe=-3.109  IS ret=9.60%  OOS ret=-4.98%
+
+── 过拟合诊断 2025 IS→Q4 ──
+  IS Sharpe=2.874  OOS Sharpe=3.299  IS ret=54.33%  OOS ret=9.52%
+
+── 过拟合诊断 2026 IS→2025 ──
+  IS Sharpe=0.499  OOS Sharpe=1.059  IS ret=2.57%  OOS ret=19.33%
+
+── 网格最优参数 2024 IS ──
+  top_sectors: 1
+  top_per_sector: 1
+  top_k: 7
+  coop_threshold: 0.08
+  weight_sector: 0.5
+  weight_dragon: 0.35
+  rebalance_freq: 1
+  buffer_threshold: 0.5
+  min_hold_days: 5
+  hard_stop_loss_pct: -0.04
+  max_weight_per_stock: 0.15
+  max_sector_exposure: 0.4
+  weight_coop: 0.15000000000000002
+
+── 网格最优参数 2025 IS ──
+  top_sectors: 2
+  top_per_sector: 1
+  top_k: 3
+  coop_threshold: 0.02
+  weight_sector: 0.5
+  weight_dragon: 0.2
+  rebalance_freq: 10
+  buffer_threshold: 0.2
+  min_hold_days: 1
+  hard_stop_loss_pct: -0.1
+  max_weight_per_stock: 0.08
+  max_sector_exposure: 0.4
+  weight_coop: 0.3
+
+── 网格最优参数 2026 IS ──
+  top_sectors: 3
+  top_per_sector: 1
+  top_k: 10
+  coop_threshold: 0.03
+  weight_sector: 0.4
+  weight_dragon: 0.5
+  rebalance_freq: 8
+  buffer_threshold: 0.3
+  min_hold_days: 1
+  hard_stop_loss_pct: -0.05
+  max_weight_per_stock: 0.15
+  max_sector_exposure: 0.2
+  weight_coop: 0.09999999999999998
+
+── 再平衡敏感性 (2024/2025/2026) ──
+  sens_2024_reb3: ret=23.78% sharpe=0.834
+  sens_2024_reb5: ret=-9.92% sharpe=-0.233
+  sens_2024_reb8: ret=1.42% sharpe=0.170
+  sens_2025_reb3: ret=0.91% sharpe=0.139
+  sens_2025_reb5: ret=18.41% sharpe=1.005
+  sens_2025_reb8: ret=4.85% sharpe=0.374
+  sens_2026_reb3: ret=-21.63% sharpe=-1.961
+  sens_2026_reb5: ret=3.66% sharpe=0.350
+  sens_2026_reb8: ret=-15.14% sharpe=-1.114
+
+── 输出目录说明 ──
+  segments/     各段净值图 + CSV + summary
+  factor_eval/  IC 测评 summary.csv
+  is_grid_2024/ is_grid_2025/ is_grid_2026/  网格搜索结果
+  config_backup/  运行前 strategy_params 快照
+  run.log         完整日志
+
+====================================================================================================

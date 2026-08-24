@@ -1,0 +1,275 @@
+{
+  "summaries": [
+    {
+      "segment": "2024_Q1",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "trade_days": 58,
+      "signal_ok_days": 58,
+      "error_days": 0,
+      "grade_green_pct": 44.827586206896555,
+      "grade_yellow_pct": 46.55172413793103,
+      "grade_red_pct": 8.620689655172415,
+      "avg_position_scale": 0.7275862068965517,
+      "avg_n_buy": 2.3275862068965516,
+      "zero_buy_days": 7,
+      "regime_counts": {
+        "momentum": 16,
+        "neutral": 13,
+        "reversal": 29
+      },
+      "avg_universe": 2.3448275862068964,
+      "top_sectors": [
+        [
+          "SW2专用设备",
+          16
+        ],
+        [
+          "SW2通用设备",
+          15
+        ],
+        [
+          "SW2化学制品",
+          12
+        ],
+        [
+          "SW2汽车零部件",
+          9
+        ],
+        [
+          "SW2电网设备",
+          7
+        ],
+        [
+          "SW2农化制品",
+          6
+        ],
+        [
+          "SW2包装印刷",
+          6
+        ],
+        [
+          "SW2化学原料",
+          5
+        ]
+      ]
+    },
+    {
+      "segment": "2024_Q2",
+      "start": "2024-04-01",
+      "end": "2024-06-30",
+      "trade_days": 59,
+      "signal_ok_days": 59,
+      "error_days": 0,
+      "grade_green_pct": 27.11864406779661,
+      "grade_yellow_pct": 55.932203389830505,
+      "grade_red_pct": 16.94915254237288,
+      "avg_position_scale": 0.6067796610169492,
+      "avg_n_buy": 1.8305084745762712,
+      "zero_buy_days": 12,
+      "regime_counts": {
+        "neutral": 18,
+        "reversal": 38,
+        "momentum": 3
+      },
+      "avg_universe": 1.9152542372881356,
+      "top_sectors": [
+        [
+          "SW2专用设备",
+          18
+        ],
+        [
+          "SW2通用设备",
+          15
+        ],
+        [
+          "SW2一般零售",
+          10
+        ],
+        [
+          "SW2物流",
+          6
+        ],
+        [
+          "SW2软件开发",
+          6
+        ],
+        [
+          "SW2家居用品",
+          5
+        ],
+        [
+          "SW2半导体",
+          4
+        ],
+        [
+          "SW2汽车零部件",
+          4
+        ]
+      ]
+    },
+    {
+      "segment": "2024_Q3",
+      "start": "2024-07-01",
+      "end": "2024-09-30",
+      "trade_days": 64,
+      "signal_ok_days": 64,
+      "error_days": 0,
+      "grade_green_pct": 12.5,
+      "grade_yellow_pct": 57.8125,
+      "grade_red_pct": 29.6875,
+      "avg_position_scale": 0.47187500000000004,
+      "avg_n_buy": 1.9375,
+      "zero_buy_days": 21,
+      "regime_counts": {
+        "reversal": 25,
+        "neutral": 28,
+        "momentum": 11
+      },
+      "avg_universe": 1.984375,
+      "top_sectors": [
+        [
+          "SW2专用设备",
+          15
+        ],
+        [
+          "SW2汽车零部件",
+          12
+        ],
+        [
+          "SW2化学制品",
+          10
+        ],
+        [
+          "SW2通用设备",
+          9
+        ],
+        [
+          "SW2家居用品",
+          8
+        ],
+        [
+          "SW2电网设备",
+          8
+        ],
+        [
+          "SW2军工电子",
+          6
+        ],
+        [
+          "SW2服装家纺",
+          5
+        ]
+      ]
+    },
+    {
+      "segment": "2025_Q2",
+      "start": "2025-04-01",
+      "end": "2025-06-30",
+      "trade_days": 61,
+      "signal_ok_days": 61,
+      "error_days": 0,
+      "grade_green_pct": 24.59016393442623,
+      "grade_yellow_pct": 63.934426229508205,
+      "grade_red_pct": 11.475409836065573,
+      "avg_position_scale": 0.6295081967213114,
+      "avg_n_buy": 2.0491803278688523,
+      "zero_buy_days": 11,
+      "regime_counts": {
+        "reversal": 11,
+        "neutral": 17,
+        "momentum": 33
+      },
+      "avg_universe": 2.0655737704918034,
+      "top_sectors": [
+        [
+          "SW2专用设备",
+          22
+        ],
+        [
+          "SW2汽车零部件",
+          16
+        ],
+        [
+          "SW2电网设备",
+          12
+        ],
+        [
+          "SW2通用设备",
+          11
+        ],
+        [
+          "SW2电力",
+          9
+        ],
+        [
+          "SW2光学光电子",
+          7
+        ],
+        [
+          "SW2环境治理",
+          5
+        ],
+        [
+          "SW2家居用品",
+          4
+        ]
+      ]
+    },
+    {
+      "segment": "2026_Q2",
+      "start": "2026-04-01",
+      "end": "2026-06-30",
+      "trade_days": 60,
+      "signal_ok_days": 60,
+      "error_days": 0,
+      "grade_green_pct": 58.333333333333336,
+      "grade_yellow_pct": 33.33333333333333,
+      "grade_red_pct": 8.333333333333332,
+      "avg_position_scale": 0.7833333333333333,
+      "avg_n_buy": 2.033333333333333,
+      "zero_buy_days": 9,
+      "regime_counts": {
+        "reversal": 40,
+        "neutral": 18,
+        "momentum": 2
+      },
+      "avg_universe": 2.033333333333333,
+      "top_sectors": [
+        [
+          "SW2汽车零部件",
+          23
+        ],
+        [
+          "SW2家居用品",
+          14
+        ],
+        [
+          "SW2电力",
+          9
+        ],
+        [
+          "SW2一般零售",
+          9
+        ],
+        [
+          "SW2环境治理",
+          9
+        ],
+        [
+          "SW2电网设备",
+          8
+        ],
+        [
+          "SW2服装家纺",
+          6
+        ],
+        [
+          "SW2化学原料",
+          6
+        ]
+      ]
+    }
+  ],
+  "backtest": {}
+}

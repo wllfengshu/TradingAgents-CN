@@ -1,0 +1,26 @@
+{
+  "factor_coverage": {
+    "market_days": 22,
+    "sector_docs": 2794,
+    "start": "2024-01-01",
+    "end": "2024-01-31"
+  },
+  "current_full": {
+    "status": "success",
+    "label": "current_full",
+    "start": "2024-01-01",
+    "end": "2024-12-31",
+    "total_return": -0.13375614750374154,
+    "total_return_gross": -0.09413344379895916,
+    "annualized_return": -0.12899567420954106,
+    "sharpe": -2.3579982204439194,
+    "calmar": -0.9509114622026434,
+    "max_drawdown": -0.13565476843737057,
+    "avg_turnover": 0.11202290076335879,
+    "total_cost": 0.044700000000000004,
+    "rebalance_count": 48,
+    "avg_exposure": 0.7354166666666666,
+    "final_equity": 0.8662438524962585,
+    "output_dir": "zstock\\strategy_management\\script\\output\\overnight_smoke_test\\segments\\current_full"
+  }
+}

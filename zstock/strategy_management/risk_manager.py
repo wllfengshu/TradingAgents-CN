@@ -44,15 +44,25 @@ def _load_risk_limits_from_config() -> Dict:
 
     top_k = params.get('final_score', {}).get('top_k', 5)
     top_sectors = params.get('sector_layer', {}).get('top_sectors', 3)
+    portfolio = params.get('portfolio', {})
 
     limits = {
         'top_k': top_k,
         'min_holdings': max(1, top_k - 2),
-        'max_holdings': top_k * 2,  # 允许 buffer 机制保留旧持仓，上限放宽
-        'max_weight_per_stock': round(1.0 / max(top_k, 1), 2),  # 与 optimizer cap 一致
+        'max_holdings': top_k * 2,  # 允许 buffer / 最短持有保留旧持仓
+        'max_weight_per_stock': float(
+            portfolio.get('max_weight_per_stock', round(1.0 / max(top_k, 1), 2))
+        ),
         'max_top5_concentration': 1.0,  # top_k=5 时不做 top5 集中度限制
-        'max_sector_exposure': round(1.0 / max(top_sectors, 1) + 0.15, 2),  # 3板块 → ~0.48
+        'max_sector_exposure': float(
+            portfolio.get(
+                'max_sector_exposure',
+                round(1.0 / max(top_sectors, 1) + 0.15, 2),
+            )
+        ),
         'weight_sum_tolerance': 1e-3,
+        # 允许黄灯缩仓后权重和 < 1（现金）
+        'allow_cash': True,
     }
     _load_risk_limits_from_config._cache = limits
     return limits
@@ -75,6 +85,7 @@ class RiskManager:
         self,
         holdings_df: pd.DataFrame,
         signals_df: Optional[pd.DataFrame] = None,
+        limits_override: Optional[Dict] = None,
     ) -> Dict:
         """
         Args:
@@ -89,7 +100,7 @@ class RiskManager:
                 'metrics': {...},
             }
         """
-        limits = self.risk_limits
+        limits = {**self.risk_limits, **(limits_override or {})}
         issues: List[str] = []
         metrics: Dict = {}
 
@@ -114,8 +125,13 @@ class RiskManager:
             issues.append(f"持仓数 {n} < min_holdings={limits['min_holdings']}")
         if n > limits['max_holdings']:
             issues.append(f"持仓数 {n} > max_holdings={limits['max_holdings']}")
-        if abs(metrics['weight_sum'] - 1.0) > limits['weight_sum_tolerance']:
-            issues.append(f"权重和={metrics['weight_sum']:.4f} 偏离 1.0 超出容忍")
+        wsum = metrics['weight_sum']
+        tol = limits['weight_sum_tolerance']
+        if limits.get('allow_cash', True):
+            if wsum > 1.0 + tol or wsum < -tol:
+                issues.append(f"权重和={wsum:.4f} 非法（允许现金时须 ∈ [0,1]）")
+        elif abs(wsum - 1.0) > tol:
+            issues.append(f"权重和={wsum:.4f} 偏离 1.0 超出容忍")
         if metrics['max_weight'] > limits['max_weight_per_stock'] + 1e-6:
             issues.append(f"单股权重 {metrics['max_weight']:.4f} > 上限 {limits['max_weight_per_stock']}")
         if top_n > limits['max_top5_concentration'] + 1e-6:
@@ -142,6 +158,7 @@ class RiskManager:
         self,
         holdings_df: pd.DataFrame,
         signals_df: Optional[pd.DataFrame] = None,
+        limits_override: Optional[Dict] = None,
     ) -> tuple:
         """
         检查风控，若存在可纠正的违规则自动修正持仓。
@@ -153,8 +170,10 @@ class RiskManager:
         Returns:
             (compliance_dict, corrected_holdings_df)
         """
-        limits = self.risk_limits
-        compliance = self.check_compliance(holdings_df, signals_df)
+        limits = {**self.risk_limits, **(limits_override or {})}
+        compliance = self.check_compliance(
+            holdings_df, signals_df, limits_override=limits_override
+        )
 
         if compliance['status'] == 'passed':
             return compliance, holdings_df
@@ -214,8 +233,13 @@ class RiskManager:
                         df.loc[other_mask, 'weight'] = other_w + sector_excess * (other_w / other_w.sum())
                     logger.info(f"🔧 风控纠正: 板块 {sector} 降权至 {max_sector:.2%}")
 
-        # 最终归一化
-        df['weight'] = df['weight'].astype(float) / df['weight'].astype(float).sum()
+        # 最终：若超配则缩放到 ≤1；不主动加仓填满（允许现金）
+        wsum = float(df['weight'].astype(float).sum())
+        if wsum > 1.0 + 1e-9:
+            df['weight'] = df['weight'].astype(float) / wsum
+        # 再次截断单股上限（缩放后可能仍略超）
+        cap = limits['max_weight_per_stock']
+        df.loc[df['weight'] > cap, 'weight'] = cap
 
         # 纠正后重新检查，确保指标和状态反映真实结果
         final_compliance = self.check_compliance(df, signals_df)

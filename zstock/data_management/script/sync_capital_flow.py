@@ -5,6 +5,7 @@
 支持拉取多个时间窗口（today/3day/5day/10day），一次跑完。
 
 建议 cron: 每个交易日 15:30 执行
+说明：这个脚本同步的资金流表中没有olhc数据，也不要用资金流表中olhc数据，这个数据没有复权。应该用zstock_ohlcv表的olhc
 """
 import asyncio
 import logging

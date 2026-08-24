@@ -18,6 +18,7 @@
     python import_l2_capital_flow.py --dry-run            # 仅打印，不写库
     python import_l2_capital_flow.py --start 20260101     # 只导入该日期及之后
     python import_l2_capital_flow.py --end   20260331     # 只导入该日期及之前
+注意：不要用资金流表中olhc数据，这个数据没有复权。应该用zstock_ohlcv表的olhc
 """
 import logging
 import re

@@ -1,0 +1,69 @@
+{
+  "strategy_name": "截面日频龙头策略",
+  "description": "主线→龙头→合力 P3：板块结构因子+龙头辨识度因子；top_sectors=4 top_per_sector=4 topK=7 coop_threshold=0.08 rebalance=1d",
+  "version": "1.7.0",
+  "backtest": {
+    "start_date": "2026-01-01",
+    "end_date": "2026-06-30",
+    "initial_capital": 10000000,
+    "benchmark": "沪深300",
+    "rebalance_freq": 1
+  },
+  "filters": {
+    "bollinger": {
+      "window": 20,
+      "std_dev": 2,
+      "slope_window": 5,
+      "slope_threshold": 0.0
+    },
+    "mainboard": true,
+    "exclude_st": true,
+    "exclude_new_listing_days": 60,
+    "min_daily_volume": 20000000
+  },
+  "sector_layer": {
+    "top_sectors": 4,
+    "factors": [
+      "f27_new_high_ratio",
+      "f29_sector_breadth",
+      "f30_sector_concentration"
+    ]
+  },
+  "dragon_layer": {
+    "top_per_sector": 4,
+    "factors": [
+      "f31b_rps_percentile",
+      "f36_identity_premium"
+    ]
+  },
+  "cooperative_force": {
+    "threshold_pct": 0.08
+  },
+  "final_score": {
+    "weights": {
+      "sector": 0.30,
+      "dragon": 0.35,
+      "cooperative": 0.35
+    },
+    "top_k": 7
+  },
+  "portfolio": {
+    "max_weight_per_stock": 0.15,
+    "max_sector_exposure": 0.3
+  },
+  "turnover_control": {
+    "buffer_threshold": 0.2,
+    "min_hold_days": 1
+  },
+  "exit_rules": {
+    "hard_stop_loss_pct": -0.06,
+    "rank_percentile_threshold": 0.8,
+    "consecutive_days_out_of_candidates": 2,
+    "flat_after_bad_days": 3,
+    "no_signal_action": "reduce_then_flat",
+    "no_signal_reduce_scale": 0.5
+  },
+  "no_mainline": {
+    "rps_std_threshold": 0.15
+  }
+}

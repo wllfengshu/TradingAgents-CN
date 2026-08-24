@@ -33,6 +33,14 @@ class OrderGenerator:
         self.database_service = get_database_service()
         logger.info("✅ OrderGenerator 初始化完成")
 
+    @staticmethod
+    def _position_code_column(df: pd.DataFrame) -> str:
+        if 'stock_code' in df.columns:
+            return 'stock_code'
+        if 'code' in df.columns:
+            return 'code'
+        raise KeyError("持仓 DataFrame 须包含 code 或 stock_code 列")
+
     def generate_orders(
         self,
         target_positions: pd.DataFrame,
@@ -72,14 +80,17 @@ class OrderGenerator:
             if current_positions is None or current_positions.empty:
                 current_positions = pd.DataFrame(columns=['stock_code', 'volume'])
 
+            current_code_col = self._position_code_column(current_positions)
+            target_code_col = self._position_code_column(target_positions)
+
             current_map: Dict[str, int] = {}
             for _, row in current_positions.iterrows():
-                stock_code = row.get('stock_code')
+                stock_code = row.get(current_code_col)
                 volume = int(row.get('volume', 0))
                 if stock_code is not None:
                     current_map[stock_code] = volume
 
-            target_codes = set(target_positions['stock_code'].values)
+            target_codes = set(target_positions[target_code_col].values)
             current_codes = set(current_map.keys())
 
             sell_codes = current_codes - target_codes
@@ -94,7 +105,7 @@ class OrderGenerator:
                     orders.append(self._create_order(stock_code, 'sell', vol, 'market'))
 
             for stock_code in adjust_codes:
-                target_row = target_positions[target_positions['stock_code'] == stock_code]
+                target_row = target_positions[target_positions[target_code_col] == stock_code]
                 if target_row.empty:
                     continue
                 target_vol = self._row_to_volume(target_row.iloc[0], price_map, total_capital)
@@ -103,7 +114,7 @@ class OrderGenerator:
                     orders.append(self._create_order(stock_code, 'sell', cur_vol - target_vol, 'market'))
 
             for stock_code in buy_codes:
-                target_row = target_positions[target_positions['stock_code'] == stock_code]
+                target_row = target_positions[target_positions[target_code_col] == stock_code]
                 if target_row.empty:
                     continue
                 target_vol = self._row_to_volume(target_row.iloc[0], price_map, total_capital)
@@ -111,7 +122,7 @@ class OrderGenerator:
                     orders.append(self._create_order(stock_code, 'buy', target_vol, 'market'))
 
             for stock_code in adjust_codes:
-                target_row = target_positions[target_positions['stock_code'] == stock_code]
+                target_row = target_positions[target_positions[target_code_col] == stock_code]
                 if target_row.empty:
                     continue
                 target_vol = self._row_to_volume(target_row.iloc[0], price_map, total_capital)

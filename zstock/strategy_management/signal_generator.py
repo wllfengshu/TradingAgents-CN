@@ -2,20 +2,20 @@
 信号生成模块（截面因子方案）
 
 直接复用 zstock.factor_management.pipeline.CrossSectionStrategyPipeline，
-不再走「机器学习模型预测」路径。
+输出 schema 与 score_signals() 完全一致，供 StrategyPipeline / 实时选股使用。
 
 流程：
-1. 通过 CrossSectionStrategyPipeline 拉真实数据并运行 M0~M5 流程；
-2. 把最终 top K 候选转成统一的 signals DataFrame；
-3. 字段对外保持稳定：trade_date, code, sector_code, final_score,
-   dragon_score, rank, signal_type。
+1. 优先 score_signals()（Mongo 预计算，极速）；
+2. 否则 score_signals_live()（现场 M0~M5，与预计算同 schema）；
+3. 字段：final_score, dragon_score, force_composite_score, rank, signal_type(buy/watch),
+   market_risk_level, position_scale_factor 及 df.attrs 元数据。
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import pandas as pd
 
@@ -36,58 +36,49 @@ class SignalGenerator:
         self,
         trade_date: Optional[str] = None,
         lookback_days: int = 60,
-        sectors: Optional[List[str]] = None,
+        sectors: Optional[list] = None,
         max_stocks: Optional[int] = None,
         prebuilt_data: Optional[Dict] = None,
+        prefer_precomputed: bool = True,
     ) -> pd.DataFrame:
         """
-        生成截面信号。
+        生成截面信号（与 score_signals 同 schema）。
 
         Args:
             trade_date: 交易日 'YYYY-MM-DD'，None 表示今天。
-            lookback_days: OHLCV 回看天数。
+            lookback_days: OHLCV 回看天数（实时路径）。
             sectors: 关心的板块；None 走默认。
             max_stocks: 限制处理的股票数（调试用）。
-            prebuilt_data: 已经预先构造好的 run_pipeline 入参，传入则直接使用，
-                不再调用 query_service（用于回测/单测离线数据注入）。
+            prebuilt_data: 已构造好的 run_pipeline 入参，跳过 load_real_data。
+            prefer_precomputed: True 时优先尝试 Mongo 预计算 score_signals。
         """
-        td = trade_date or datetime.now().strftime('%Y-%m-%d')
+        td = trade_date or datetime.now().strftime("%Y-%m-%d")
         logger.info(f"🎯 生成截面信号: trade_date={td}")
 
-        if prebuilt_data is not None:
-            data = prebuilt_data
-        else:
-            data = await self.factor_pipeline.load_real_data(
-                trade_date=td,
-                lookback_days=lookback_days,
-                sectors=sectors,
-                max_stocks=max_stocks,
-            )
+        df: pd.DataFrame
 
-        ranked = await self.factor_pipeline.run_pipeline(**data)
-        if not ranked:
-            logger.error("⚠️ 因子管道无信号输出")
-            df = pd.DataFrame(columns=[
-                'trade_date', 'code', 'sector_code', 'final_score',
-                'dragon_score', 'rank', 'signal_type', 'created_at',
-            ])
-            self.signals_history[td] = df
-            return df
+        if prebuilt_data is None and prefer_precomputed:
+            try:
+                df = await self.factor_pipeline.score_signals(td)
+                logger.info(
+                    f"✅ 预计算信号: universe={len(df)} "
+                    f"grade={df.attrs.get('market_grade', '?')}"
+                )
+                self.signals_history[td] = df
+                return df
+            except ValueError as e:
+                logger.info(f"预计算不可用，走实时计算: {e}")
 
-        rows = []
-        now_iso = datetime.now().astimezone().isoformat()
-        for i, sig in enumerate(ranked, start=1):
-            rows.append({
-                'trade_date': td,
-                'code': sig.get('code'),
-                'sector_code': sig.get('sector_code'),
-                'final_score': float(sig.get('final_score', 0.0)),
-                'dragon_score': float(sig.get('dragon_score', 0.0)),
-                'rank': i,
-                'signal_type': 'buy',
-                'created_at': now_iso,
-            })
-        df = pd.DataFrame(rows)
+        df = await self.factor_pipeline.score_signals_live(
+            trade_date=td,
+            lookback_days=lookback_days,
+            sectors=sectors,
+            max_stocks=max_stocks,
+            prebuilt_data=prebuilt_data,
+        )
         self.signals_history[td] = df
-        logger.info(f"✅ 信号生成完成: {len(df)} 条")
+        logger.info(
+            f"✅ 实时信号: universe={len(df)} "
+            f"grade={df.attrs.get('market_grade', '?')}"
+        )
         return df

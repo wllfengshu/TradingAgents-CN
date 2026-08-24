@@ -2,14 +2,15 @@
 预过滤模块
 
 黑盒设计：
-- 公开接口：apply_main_board_filter()、apply_bollinger_filter()、filter_sectors()、filter_stocks()
+- 公开接口：apply_technical_filters() / apply_blacklist_filters()
 - 所有实现细节都隐藏在私有方法中
-- 调用方只需提供数据，获得过滤结果
+- 职责1：技术过滤（主板、布林等）
+- 职责2：黑名单过滤（板块、个股）
 """
 
 import logging
 import pandas as pd
-from typing import List, Dict, Set, Optional
+from typing import Any, List, Dict, Set, Optional
 from datetime import datetime
 import json
 from pathlib import Path
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class PreFilters:
-    """预过滤器。黑盒设计，只暴露清晰的公开接口"""
+    """预过滤器。黑盒设计，只暴露 2 个清晰的公开接口"""
 
     def __init__(self, config_dir: str = None):
         """初始化预过滤器，加载黑名单"""
@@ -35,6 +36,7 @@ class PreFilters:
         self.config_dir = Path(config_dir)
         self.sector_blacklist: Set[str] = set()
         self.stock_blacklist: Dict[str, Dict] = {}
+        self._normalized_stock_blacklist: Set[str] = set()  # 预建 normalize 后的集合，O(1) 查找
         self._load_blacklists()
 
     def _load_blacklists(self):
@@ -66,46 +68,115 @@ class PreFilters:
                                 continue  # 已过期，不加入黑名单
                             self.stock_blacklist[code] = item
                     logger.info(f"✅ 加载个股黑名单: {len(self.stock_blacklist)} 个")
+            # 预建 normalize 后的集合，避免 O(n) 扫描
+            self._normalized_stock_blacklist = {
+                normalize_code(c) for c in self.stock_blacklist
+            }
+            logger.debug(f"  normalize 黑名单: {len(self._normalized_stock_blacklist)} 个唯一代码")
         except Exception as e:
             logger.error(f"❌ 加载黑名单失败: {e}")
             raise
 
-    def reload_blacklists(self):
-        """重新加载黑名单（支持盘中修改）"""
+    def _reload_blacklists(self):
+        """重新加载黑名单（支持盘中修改，仅供内部使用）"""
         self.sector_blacklist.clear()
         self.stock_blacklist.clear()
+        self._normalized_stock_blacklist.clear()
         self._load_blacklists()
         logger.info("✅ 黑名单已重新加载")
 
-    # ===================== 公开接口1：主板过滤 =====================
+    # ===================== 公开接口1：技术过滤 =====================
 
-    async def apply_main_board_filter(self, stocks: List[str], stock_infos: Optional[Dict[str, Dict]] = None) -> List[str]:
+    def apply_technical_filters(
+        self,
+        stocks: List[str],  # 股票代码列表
+        stock_data: Dict[str, pd.DataFrame],  # {code: DataFrame} OHLCV 数据
+        stock_infos: Optional[Dict[str, Dict]] = None,  # {code: info} 含 is_st 标志（可选）
+        apply_main_board: bool = True,  # 是否应用主板过滤
+        apply_bollinger: bool = False,  # 是否应用布林过滤
+        bollinger_slope_threshold: float = 0.0,  # 布林斜率阈值
+    ) -> List[str]:
         """
-        【公开接口1】主板过滤
+        【公开接口1】综合技术过滤（主板、布林等）
 
         入参：
           - stocks: 股票代码列表
-          - stock_infos: 股票信息字典（可选，用于检查ST标志）
+          - stock_data: {code: DataFrame} OHLCV 数据，用于布林计算
+          - stock_infos: 股票信息字典，含 is_st/name 字段，用于 ST 判断
+          - apply_main_board: 是否应用主板过滤
+          - apply_bollinger: 是否应用布林过滤
+          - bollinger_slope_threshold: 布林斜率阈值（默认0，代表中轨斜率 > 0）
 
         出参：
-          List[str]，通过主板过滤的股票代码列表
+          List[str]，通过技术过滤的股票代码列表
 
         过滤规则（内部自动处理）：
-        1. 代码前缀必须是 60 (沪) 或 00 (深)
-        2. 如果是 00 开头，第3位必须是 0/1/2/3
-        3. 排除 ST、*ST、退市股票
+        1. 主板过滤：60(沪) 或 00(深) + 非 ST
+        2. 布林过滤：close > mid AND slope_5 > threshold
         """
+        if apply_main_board:
+            stocks = self._apply_main_board_filter(stocks, stock_infos)
+
+        if apply_bollinger:
+            filtered_data = self._apply_bollinger_filter(
+                stock_data,
+                slope_threshold=bollinger_slope_threshold,
+            )
+            stocks = [c for c in stocks if c in filtered_data]
+            logger.info(f"✅ M3.3 布林过滤完成: {len(stock_data)} → {len(filtered_data)} 只")
+
+        return stocks
+
+    # ===================== 公开接口2：黑名单过滤 =====================
+
+    def apply_blacklist_filters(
+        self,
+        stocks: List[str],  # 股票代码列表
+        sectors: Optional[List[Dict]] = None,  # 板块列表（可选）
+    ) -> Dict[str, Any]:
+        """
+        【公开接口2】综合黑名单过滤（板块、个股）
+
+        入参：
+          - stocks: 股票代码列表
+          - sectors: 板块列表（可选），每个元素含 sector_name 字段
+
+        出参：
+          {
+              "stocks": 过滤后的股票代码列表,
+              "sectors": 过滤后的板块列表（如果输入了 sectors）
+          }
+
+        过滤规则（内部自动处理）：
+        1. 个股黑名单：排除已过期及黑名单中的股票
+        2. 板块黑名单：支持通配符（例如"*房地产*"）
+        """
+        filtered_stocks = self._filter_stocks(stocks)
+        result: Dict[str, Any] = {"stocks": filtered_stocks}
+
+        if sectors:
+            filtered_sectors = self._filter_sectors(sectors)
+            result["sectors"] = filtered_sectors
+
+        return result
+
+    # ===================== 私有方法（实现细节，对外隐藏）=====================
+
+    def _apply_main_board_filter(
+        self,
+        stocks: List[str],  # 股票代码列表
+        stock_infos: Optional[Dict[str, Dict]] = None,  # 股票信息字典（可选）
+    ) -> List[str]:
+        """【私有】主板过滤实现（改为同步方法）"""
         result = []
         for code in stocks:
             normalized = normalize_code(code)
-            # stock_infos 的 key 可能是原始代码或规范化代码，两种都尝试匹配
             name = ""
             flagged_st = False
             if stock_infos:
                 info = stock_infos.get(code) or stock_infos.get(normalized) or {}
                 name = info.get("name", "") or ""
                 flagged_st = bool(info.get("is_st", False))
-            # 主板且非 ST（优先 is_st 字段，名称兜底）且非退市
             if (
                 is_main_board(normalized)
                 and not flagged_st
@@ -113,87 +184,43 @@ class PreFilters:
                 and "退" not in name
             ):
                 result.append(code)
-        logger.info(f"✅ M2.2 主板过滤完成: {len(stocks)} → {len(result)} 只")
+        logger.info(f"✅ 主板过滤完成: {len(stocks)} → {len(result)} 只")
         return result
 
-    # ===================== 公开接口2：布林过滤 =====================
-
-    async def apply_bollinger_filter(self, stock_data: Dict[str, pd.DataFrame], slope_threshold: float = 0.0) -> Dict[str, pd.DataFrame]:
-        """
-        【公开接口2】布林上升滤
-
-        入参：
-          - stock_data: Dict[stock_code] → pd.DataFrame(OHLCV)，必须包含 close 列
-          - slope_threshold: 斜率阈值（默认0，可调整为0.002等）
-
-        出参：
-          Dict[stock_code] → pd.DataFrame，通过布林过滤的股票及其OHLCV数据
-
-        过滤规则（内部自动处理）：
-        1. 计算布林带（20日均线 ± 2倍标准差）
-        2. 计算布林中轨的5日斜率
-        3. 条件：close > mid AND slope_5 > slope_threshold
-        """
+    def _apply_bollinger_filter(
+        self,
+        stock_data: Dict[str, pd.DataFrame],  # {code: DataFrame} OHLCV
+        slope_threshold: float = 0.0,  # 斜率阈值
+    ) -> Dict[str, pd.DataFrame]:
+        """【私有】布林上升滤实现（改为同步方法）"""
         result = {}
         for code, df in stock_data.items():
             df = ensure_ohlcv_sorted(df)
-            if df is None or df.empty or len(df) < 25:  # window(20)+slope(5)
+            if df is None or df.empty or len(df) < 25:
                 continue
-            if self._apply_bollinger_filter_check(df, slope_threshold):
+            if self._check_bollinger_condition(df, slope_threshold):
                 result[code] = df
-                logger.debug(f"✅ {code} 通过 M3.3 布林过滤")
-        logger.info(f"✅ M3.3 布林过滤完成: {len(stock_data)} → {len(result)} 只")
+                logger.debug(f"✅ {code} 通过布林过滤")
         return result
 
-    # ===================== 公开接口3：板块黑名单过滤 =====================
-
-    def filter_sectors(self, sectors: List[Dict]) -> List[Dict]:
-        """
-        【公开接口3】板块黑名单过滤
-
-        入参：
-          - sectors: 板块列表，每个元素包含 sector_name 字段
-
-        出参：
-          List[Dict]，排除黑名单后的板块列表
-
-        过滤规则（内部自动处理）：
-        1. 逐个检查板块名称
-        2. 支持 * 通配符（例如"*房地产*"匹配"中国房地产"）
-        3. 排除匹配的板块
-        """
+    def _filter_sectors(self, sectors: List[Dict]) -> List[Dict]:
+        """【私有】板块黑名单过滤实现"""
         result = []
         for sector in sectors:
             sector_name = sector.get('sector_name', '')
             if not self._is_sector_blacklisted(sector_name):
                 result.append(sector)
-        logger.info(f"📊 M2.1板块黑名单过滤: {len(sectors)} → {len(result)}")
+        if len(sectors) > len(result):
+            logger.info(f"📊 板块黑名单过滤: {len(sectors)} → {len(result)}")
         return result
 
-    # ===================== 公开接口4：个股黑名单过滤 =====================
-
-    def filter_stocks(self, stocks: List[str]) -> List[str]:
-        """
-        【公开接口4b】个股黑名单批量过滤
-
-        入参：
-          - stocks: 股票代码列表
-
-        出参：
-          List[str]，排除黑名单后的股票代码列表
-
-        过滤规则（内部自动处理）：
-        1. 逐个检查股票代码是否在黑名单中
-        2. 已过期的黑名单条目（until < today）在加载时已自动剔除
-        """
+    def _filter_stocks(self, stocks: List[str]) -> List[str]:
+        """【私有】个股黑名单过滤实现"""
         result = [code for code in stocks if not self._is_stock_blacklisted(code)]
         filtered_count = len(stocks) - len(result)
         if filtered_count > 0:
             logger.info(f"📊 个股黑名单过滤: {len(stocks)} → {len(result)}（排除 {filtered_count} 只）")
         return result
-
-    # ===================== 私有方法（实现细节，对外隐藏）=====================
-
 
     def _is_sector_blacklisted(self, sector_name: str) -> bool:
         """【私有】判断板块是否在黑名单中（支持fnmatch通配）"""
@@ -203,19 +230,17 @@ class PreFilters:
         return False
 
     def _is_stock_blacklisted(self, code: str) -> bool:
-        """【私有】判断个股是否在黑名单中（兼容带后缀/不带后缀格式）"""
-        # 直接匹配
+        """【私有】判断个股是否在黑名单中（O(1) 预建集合查找，兼容带后缀/不带后缀格式）。"""
         if code in self.stock_blacklist:
             return True
-        # 归一化后匹配（黑名单可能是 000981.SZ，code 是 000981）
-        normalized = normalize_code(code)
-        for bl_code in self.stock_blacklist:
-            if normalize_code(bl_code) == normalized:
-                return True
-        return False
+        return normalize_code(code) in self._normalized_stock_blacklist
 
     @staticmethod
-    def _calculate_bollinger_bands(df: pd.DataFrame, window: int = 20, std_dev: int = 2) -> pd.DataFrame:
+    def _calculate_bollinger_bands(
+        df: pd.DataFrame,
+        window: int = 20,
+        std_dev: int = 2,
+    ) -> pd.DataFrame:
         """【私有】计算布林带"""
         if len(df) < window:
             return pd.DataFrame()
@@ -227,7 +252,10 @@ class PreFilters:
         return df[['mid', 'upper', 'lower']].copy()
 
     @staticmethod
-    def _calculate_bollinger_slope(df: pd.DataFrame, slope_window: int = 5) -> pd.Series:
+    def _calculate_bollinger_slope(
+        df: pd.DataFrame,
+        slope_window: int = 5,
+    ) -> pd.Series:
         """【私有】计算布林中轨斜率"""
         if len(df) < slope_window:
             return pd.Series(0, index=df.index)
@@ -235,7 +263,13 @@ class PreFilters:
         return slope
 
     @staticmethod
-    def _apply_bollinger_filter_check(df: pd.DataFrame, slope_threshold: float = 0.0, window: int = 20, std_dev: int = 2, slope_window: int = 5) -> bool:
+    def _check_bollinger_condition(
+        df: pd.DataFrame,
+        slope_threshold: float = 0.0,
+        window: int = 20,
+        std_dev: int = 2,
+        slope_window: int = 5,
+    ) -> bool:
         """
         【私有】检查单只股票是否通过布林上升滤
 
@@ -243,12 +277,9 @@ class PreFilters:
         1. close > mid（价在中轨上）
         2. slope_5 > slope_threshold（中轨斜率为正或超过阈值）
 
-        最少需要 window + slope_window 根 K 线：
-        rolling(window) 需要 window 根产生首个有效 mid，
-        shift(slope_window) 再需要 slope_window 根才能计算最后一根的斜率。
+        注意：调用方（_apply_bollinger_filter）已确保 df 排序，此处不重复排序。
         """
         min_bars = window + slope_window
-        df = ensure_ohlcv_sorted(df)
         if df is None or len(df) < min_bars:
             return False
         df = df.copy()
@@ -257,3 +288,4 @@ class PreFilters:
         df['slope'] = PreFilters._calculate_bollinger_slope(df, slope_window=slope_window)
         mask = (df['close'] > df['mid']) & (df['slope'] > slope_threshold)
         return bool(mask.iloc[-1]) if len(mask) > 0 else False
+

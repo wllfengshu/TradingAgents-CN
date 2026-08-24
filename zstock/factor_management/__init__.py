@@ -1,27 +1,15 @@
 """
 zstock 因子管理模块 (研究层)
 
-这是系统的第2层（研究层），负责：
-1. 因子计算：使用 Qlib Alpha158 + 自定义因子
-2. 因子预处理：去极值、标准化、中性化
-3. 因子存储：将计算结果保存到 MongoDB + Redis
-4. 模型训练：LightGBM、Linear、MLP 等模型
-5. 回测验证：使用 Qlib 回测框架进行性能评估
-
-模块结构：
-- factor_calculator: 因子计算核心
-- factor_preprocessor: 因子预处理
-- model_trainer: 模型训练
-- backtest_engine: 回测验证
+截面日频策略（MongoDB 预计算因子）与可选的 Qlib/LLM 研究路径并存。
+默认导入不依赖 Qlib；llm_strategy 相关类在首次访问时才加载。
 """
 
-# 核心类
-from zstock.factor_management.llm_strategy.factor_calculator import FactorCalculator
-from zstock.factor_management.llm_strategy.factor_preprocessor import FactorPreprocessor
-from zstock.factor_management.llm_strategy.model_trainer import ModelTrainer
-from zstock.factor_management.llm_strategy.backtest_engine import BacktestEngine
+from __future__ import annotations
 
-# 截面策略相关
+import importlib
+from typing import Any
+
 from .prefilters import PreFilters
 from .sector_factors import SectorFactors
 from .dragon_factors import DragonFactors
@@ -29,16 +17,43 @@ from .force_factors import ForceFactors
 from .market_factors import MarketFactors
 from .pipeline import CrossSectionStrategyPipeline
 
+_LAZY_IMPORTS = {
+    "FactorCalculator": (
+        "zstock.factor_management.llm_strategy.factor_calculator",
+        "FactorCalculator",
+    ),
+    "FactorPreprocessor": (
+        "zstock.factor_management.llm_strategy.factor_preprocessor",
+        "FactorPreprocessor",
+    ),
+    "ModelTrainer": (
+        "zstock.factor_management.llm_strategy.model_trainer",
+        "ModelTrainer",
+    ),
+    "BacktestEngine": (
+        "zstock.factor_management.llm_strategy.backtest_engine",
+        "BacktestEngine",
+    ),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _LAZY_IMPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_path, attr = _LAZY_IMPORTS[name]
+    module = importlib.import_module(module_path)
+    return getattr(module, attr)
+
+
 __all__ = [
-    'FactorCalculator',
-    'FactorPreprocessor',
-    'ModelTrainer',
-    'BacktestEngine',
-    # 截面策略
-    'PreFilters',
-    'SectorFactors',
-    'DragonFactors',
-    'ForceFactors',
-    'MarketFactors',
-    'CrossSectionStrategyPipeline',
+    "FactorCalculator",
+    "FactorPreprocessor",
+    "ModelTrainer",
+    "BacktestEngine",
+    "PreFilters",
+    "SectorFactors",
+    "DragonFactors",
+    "ForceFactors",
+    "MarketFactors",
+    "CrossSectionStrategyPipeline",
 ]

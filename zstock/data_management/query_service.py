@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections import defaultdict
@@ -25,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from zstock.common.utils.common_utils import normalize_code, normalize_date
+from zstock.common.utils.resource_budget import default_query_concurrency
 
 from .database_service import get_database_service
 
@@ -35,6 +37,7 @@ COL_STOCK_INFO = "zstock_stock_info"
 COL_OHLCV = "zstock_ohlcv"
 COL_CAPITAL_FLOW = "zstock_capital_flow"
 COL_SECTOR = "zstock_sector"
+COL_LHB = "zstock_lhb"
 
 COL_FACTOR_MARKET = "zstock_factor_market"
 COL_FACTOR_SECTOR = "zstock_factor_sector"
@@ -46,6 +49,41 @@ PERIOD_L2_DAILY = "L2_daily"
 
 # period 映射：公开 API 用 daily/weekly/monthly，落库用 D/W/M
 _PERIOD_MAP = {"daily": "D", "weekly": "W", "monthly": "M"}
+
+# OHLCV 批量查询默认字段（减少网络传输）
+_OHLCV_PROJECTION = {
+    "_id": 0,
+    "code": 1,
+    "trade_date": 1,
+    "open": 1,
+    "high": 1,
+    "low": 1,
+    "close": 1,
+    "volume": 1,
+    "amount": 1,
+    "pct_chg": 1,
+    "pre_close": 1,
+    "turnover_rate": 1,  # F3.8 / fcoop4 依赖，sync_ohlcv 已落库
+}
+
+
+def _iter_date_windows(
+    start_date: str,
+    end_date: str,
+    chunk_days: int,
+) -> List[Tuple[str, str]]:
+    """将日期区间切分为若干窗口，避免单次 MongoDB 查询过大。"""
+    if chunk_days <= 0:
+        return [(normalize_date(start_date), normalize_date(end_date))]
+    start_dt = datetime.strptime(normalize_date(start_date), "%Y-%m-%d")
+    end_dt = datetime.strptime(normalize_date(end_date), "%Y-%m-%d")
+    windows: List[Tuple[str, str]] = []
+    cur = start_dt
+    while cur <= end_dt:
+        chunk_end = min(cur + timedelta(days=chunk_days - 1), end_dt)
+        windows.append((cur.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
+        cur = chunk_end + timedelta(days=1)
+    return windows
 
 
 class DataQueryService:
@@ -63,7 +101,7 @@ class DataQueryService:
         - 交易日筛选：period + trade_date（无 code）
         - 因子：按日 delete/load、按 code/sector 回查
         """
-        from pymongo import ASCENDING, IndexModel
+        from pymongo import ASCENDING,DESCENDING, IndexModel
 
         db = self.database_service.db
         # zstock_ohlcv
@@ -148,6 +186,25 @@ class DataQueryService:
                 IndexModel(
                     [("source", ASCENDING), ("sector_code", ASCENDING)],
                     name="source_sector",
+                ),
+            ]
+        )
+        # zstock_lhb（龙虎榜）
+        # 兼容历史自动命名索引，避免 create_indexes 因同 key 不同 name 冲突（code 85）
+        for legacy_idx in ("code_1_trade_date_-1", "trade_date_-1"):
+            try:
+                await db[COL_LHB].drop_index(legacy_idx)
+            except Exception:
+                pass
+        await db[COL_LHB].create_indexes(
+            [
+                IndexModel(
+                    [("code", ASCENDING), ("trade_date", DESCENDING)],
+                    name="code_date_desc",
+                ),
+                IndexModel(
+                    [("trade_date", DESCENDING)],
+                    name="date_desc",
                 ),
             ]
         )
@@ -246,39 +303,107 @@ class DataQueryService:
         start_date: str,
         end_date: str,
         period: str = "daily",
+        batch_size: int = 50,
+        date_chunk_days: int = 90,
+        query_concurrency: Optional[int] = None,
     ) -> Dict[str, pd.DataFrame]:
-        """一次性查多只股票的 OHLCV，返回 {code: DataFrame}。无数据返回 {}。"""
+        """一次性查多只股票的 OHLCV，返回 {code: DataFrame}。无数据返回 {}。
+
+        内部按「股票批次 × 日期窗口」分批查询，子查询 asyncio 并发执行。
+        """
         if not codes:
             return {}
         pure_codes = [normalize_code(c) for c in codes]
         p = _PERIOD_MAP.get(period, "D")
         norm_start = normalize_date(start_date)
         norm_end = normalize_date(end_date)
-        try:
-            docs = await self.database_service.query(
-                COL_OHLCV,
-                {
-                    "code": {"$in": pure_codes},
-                    "period": p,
-                    "trade_date": {"$gte": norm_start, "$lte": norm_end},
-                },
-                sort=[("code", 1), ("trade_date", 1)],
-            )
-            if not docs:
-                return {}
-            df = pd.DataFrame(docs)
-            df.drop(
-                columns=[c for c in ("_id", "period") if c in df.columns],
-                inplace=True,
-            )
-            return {
-                str(code): g.reset_index(drop=True) for code, g in df.groupby("code")
-            }
-        except Exception as e:
-            logger.error(f"OHLCV batch 查询失败: {e}")
-            raise ValueError(
-                f"❌ get_ohlcv_batch无法获取数据: {codes} ({start_date} - {end_date})"
-            ) from e
+        date_windows = _iter_date_windows(norm_start, norm_end, date_chunk_days)
+
+        parts_by_code: Dict[str, List[pd.DataFrame]] = defaultdict(list)
+        chunks: List[Tuple[List[str], str, str]] = []
+        for win_start, win_end in date_windows:
+            for i in range(0, len(pure_codes), batch_size):
+                chunks.append((pure_codes[i : i + batch_size], win_start, win_end))
+
+        total_queries = len(chunks)
+        if total_queries == 0:
+            return {}
+
+        if query_concurrency is None:
+            query_concurrency = default_query_concurrency()
+        sem = asyncio.Semaphore(max(1, query_concurrency))
+        done_queries = 0
+        progress_lock = asyncio.Lock()
+
+        async def _fetch_chunk(
+            chunk: List[str], win_start: str, win_end: str
+        ) -> List[Tuple[str, pd.DataFrame]]:
+            nonlocal done_queries
+            async with sem:
+                try:
+                    docs = await self.database_service.query(
+                        COL_OHLCV,
+                        {
+                            "code": {"$in": chunk},
+                            "period": p,
+                            "trade_date": {"$gte": win_start, "$lte": win_end},
+                        },
+                        projection=_OHLCV_PROJECTION,
+                        sort=[("code", 1), ("trade_date", 1)],
+                    )
+                except Exception as e:
+                    logger.error(
+                        "OHLCV batch 查询失败 (codes=%d, %s~%s): %s",
+                        len(chunk),
+                        win_start,
+                        win_end,
+                        e,
+                    )
+                    raise ValueError(
+                        f"❌ get_ohlcv_batch无法获取数据: codes={len(chunk)} "
+                        f"({win_start} - {win_end})"
+                    ) from e
+
+                parts: List[Tuple[str, pd.DataFrame]] = []
+                if docs:
+                    df = pd.DataFrame(docs)
+                    for code, g in df.groupby("code"):
+                        parts.append((str(code), g))
+                async with progress_lock:
+                    done_queries += 1
+                    if (
+                        done_queries % 20 == 0
+                        or done_queries == total_queries
+                    ):
+                        logger.info(
+                            "  OHLCV 子查询进度 %d/%d (并发=%d, 窗口 %s~%s, 本批 %d 只)",
+                            done_queries,
+                            total_queries,
+                            query_concurrency,
+                            win_start,
+                            win_end,
+                            len(chunk),
+                        )
+                return parts
+
+        for parts in await asyncio.gather(
+            *[_fetch_chunk(chunk, ws, we) for chunk, ws, we in chunks]
+        ):
+            for code, g in parts:
+                parts_by_code[code].append(g)
+
+        if not parts_by_code:
+            return {}
+
+        out: Dict[str, pd.DataFrame] = {}
+        for code, parts in parts_by_code.items():
+            df = pd.concat(parts, ignore_index=True)
+            if "trade_date" in df.columns:
+                df = df.sort_values("trade_date").drop_duplicates(
+                    subset=["trade_date"], keep="last"
+                )
+            out[code] = df.reset_index(drop=True)
+        return out
 
     # =========================== 股票元数据 ===========================
 
@@ -397,38 +522,175 @@ class DataQueryService:
         start_date: str,
         end_date: str,
         period: str = PERIOD_L2_DAILY,
+        projection: Optional[Dict[str, int]] = None,
+        batch_size: int = 50,
+        date_chunk_days: int = 90,
+        query_concurrency: Optional[int] = None,
     ) -> Dict[str, List[Dict]]:
-        """查询多只股票在日期区间内的资金流，按 code 分组并按日期升序返回。"""
+        """查询多只股票在日期区间内的资金流，按 code 分组并按日期升序返回。
+
+        内部按股票批次 + 日期窗口分批并发查询。
+        """
         if not codes:
             return {}
 
         pure_codes = [normalize_code(c) for c in codes]
         start_norm = normalize_date(start_date)
         end_norm = normalize_date(end_date)
+        date_windows = _iter_date_windows(start_norm, end_norm, date_chunk_days)
+        grouped: Dict[str, List[Dict]] = defaultdict(list)
+
+        proj = projection or {
+            "_id": 0,
+            "code": 1,
+            "trade_date": 1,
+            "period": 1,
+            "main_net": 1,
+            "m_net": 1,
+            "s_net": 1,
+            "xl_net": 1,
+            "turnover": 1,
+        }
+
+        chunks: List[Tuple[List[str], str, str]] = []
+        for win_start, win_end in date_windows:
+            for i in range(0, len(pure_codes), batch_size):
+                chunks.append((pure_codes[i : i + batch_size], win_start, win_end))
+
+        if not chunks:
+            return {}
+
+        if query_concurrency is None:
+            query_concurrency = default_query_concurrency()
+        sem = asyncio.Semaphore(max(1, query_concurrency))
+
+        async def _fetch_chunk(
+            chunk: List[str], win_start: str, win_end: str
+        ) -> List[Dict]:
+            async with sem:
+                try:
+                    return await self.database_service.query(
+                        COL_CAPITAL_FLOW,
+                        {
+                            "code": {"$in": chunk},
+                            "period": period,
+                            "trade_date": {"$gte": win_start, "$lte": win_end},
+                        },
+                        projection=proj,
+                        sort=[("code", 1), ("trade_date", 1)],
+                    )
+                except Exception as e:
+                    logger.error(
+                        "capital_flow range 查询失败 (codes=%d, %s~%s): %s",
+                        len(chunk),
+                        win_start,
+                        win_end,
+                        e,
+                    )
+                    raise
+
+        for docs in await asyncio.gather(
+            *[_fetch_chunk(chunk, ws, we) for chunk, ws, we in chunks]
+        ):
+            for doc in docs or []:
+                code = doc.get("code")
+                if code:
+                    grouped[code].append(doc)
+
+        # 去重 + 升序
+        out: Dict[str, List[Dict]] = {}
+        for code, rows in grouped.items():
+            seen = set()
+            deduped = []
+            for row in sorted(rows, key=lambda x: x.get("trade_date", "")):
+                td = row.get("trade_date")
+                if td in seen:
+                    continue
+                seen.add(td)
+                deduped.append(row)
+            out[code] = deduped
+        return out
+
+    # =========================== 龙虎榜 ===========================
+
+    async def get_lhb(self, code: str, trade_date: str) -> Optional[Dict]:
+        """获取单只股票单日龙虎榜数据。无数据返回 None。"""
+        code_norm = normalize_code(code)
+        td_norm = normalize_date(trade_date)
+        try:
+            doc = await self.database_service.query_one(
+                COL_LHB,
+                {"code": code_norm, "trade_date": td_norm},
+                projection={"_id": 0},
+            )
+            return doc
+        except Exception as e:
+            logger.debug(f"get_lhb 查询失败: {code} ({trade_date}): {e}")
+            return None
+
+    async def get_lhb_recent(self, code: str, end_date: str, days: int = 10) -> List[Dict]:
+        """获取近 N 日龙虎榜数据（升序）。无数据返回 []。"""
+        code_norm = normalize_code(code)
+        td_norm = normalize_date(end_date)
+        if days <= 0:
+            return []
+
+        try:
+            end_dt = datetime.strptime(td_norm, "%Y-%m-%d")
+        except ValueError:
+            return []
+
+        # 日历窗口回看
+        lookback_calendar = max(days * 4, 21)
+        start_bound = (end_dt - timedelta(days=lookback_calendar)).strftime("%Y-%m-%d")
 
         try:
             docs = await self.database_service.query(
-                COL_CAPITAL_FLOW,
+                COL_LHB,
                 {
-                    "code": {"$in": pure_codes},
-                    "period": period,
-                    "trade_date": {"$gte": start_norm, "$lte": end_norm},
+                    "code": code_norm,
+                    "trade_date": {"$gte": start_bound, "$lte": td_norm},
                 },
-                sort=[("code", 1), ("trade_date", 1)],
+                sort=[("trade_date", -1)],
             )
         except Exception as e:
-            logger.error(f"capital_flow range 查询失败: {e}")
-            raise
+            logger.debug(f"get_lhb_recent 查询失败: {code}: {e}")
+            return []
 
-        grouped: Dict[str, List[Dict]] = defaultdict(list)
+        result = []
+        for doc in (docs or [])[:days]:
+            doc.pop("_id", None)
+            result.append(doc)
+        result.reverse()
+        return result
+
+    async def batch_get_lhb(self, codes: List[str], trade_date: str) -> Dict[str, Optional[Dict]]:
+        """批量查询多只股票单日龙虎榜。返回 {code: lhb_doc or None}。"""
+        if not codes:
+            return {}
+
+        codes_norm = [normalize_code(c) for c in codes]
+        td_norm = normalize_date(trade_date)
+
+        try:
+            docs = await self.database_service.query(
+                COL_LHB,
+                {
+                    "code": {"$in": codes_norm},
+                    "trade_date": td_norm,
+                },
+                projection={"_id": 0},
+            )
+        except Exception as e:
+            logger.debug(f"batch_get_lhb 查询失败: {e}")
+            return {c: None for c in codes_norm}
+
+        result: Dict[str, Optional[Dict]] = {c: None for c in codes_norm}
         for doc in docs or []:
             code = doc.get("code")
-            if not code:
-                continue
-            doc.pop("_id", None)
-            grouped[code].append(doc)
-
-        return dict(grouped)
+            if code:
+                result[code] = doc
+        return result
 
     # =========================== 板块 ===========================
 

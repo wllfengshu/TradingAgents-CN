@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     MONGODB_PASSWORD: str = Field(default="")
     MONGODB_DATABASE: str = Field(default="tradingagents")
     MONGODB_AUTH_SOURCE: str = Field(default="admin")
-    MONGO_MAX_CONNECTIONS: int = Field(default=100)
-    MONGO_MIN_CONNECTIONS: int = Field(default=10)
+    MONGO_MAX_CONNECTIONS: int = Field(default=60)
+    MONGO_MIN_CONNECTIONS: int = Field(default=5)
     # MongoDB超时参数（毫秒）- 用于处理大量历史数据
     MONGO_CONNECT_TIMEOUT_MS: int = Field(default=30000)  # 连接超时：30秒（原为10秒）
     MONGO_SOCKET_TIMEOUT_MS: int = Field(default=60000)   # 套接字超时：60秒（原为20秒）

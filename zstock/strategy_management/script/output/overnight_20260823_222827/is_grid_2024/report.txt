@@ -1,0 +1,43 @@
+
+========================================================================
+参数网格搜索报告（预计算 + 含成本回测）
+========================================================================
+组合数: 80
+成功: 80  失败/无效: 0
+
+最优（按 objective）:
+  objective     = 6.8339
+  total_return  = 9.60%
+  ann_return    = 12.51%
+  max_drawdown  = -2.01%
+  sharpe        = 1.783
+  calmar        = 6.236
+  avg_turnover  = 3.11%
+  total_cost    = 0.93%
+
+  参数:
+    top_sectors: 1
+    top_per_sector: 1
+    top_k: 7
+    coop_threshold: 0.08
+    weight_sector: 0.5
+    weight_dragon: 0.35
+    rebalance_freq: 1
+    buffer_threshold: 0.5
+    min_hold_days: 5
+    hard_stop_loss_pct: -0.04
+    max_weight_per_stock: 0.15
+    max_sector_exposure: 0.4
+    weight_coop: 0.15000000000000002
+
+Top 5:
+  1. objective=6.8339 | total_return=0.0960 | max_drawdown=-0.0201 | sharpe=1.7827 | calmar=6.2358 | rebalance_freq=1 | top_k=7 | hard_stop_loss_pct=-0.0400 | max_weight_per_stock=0.1500
+  2. objective=5.5183 | total_return=0.0775 | max_drawdown=-0.0199 | sharpe=1.4287 | calmar=5.0491 | rebalance_freq=1 | top_k=10 | hard_stop_loss_pct=-0.1000 | max_weight_per_stock=0.1200
+  3. objective=5.0259 | total_return=0.3310 | max_drawdown=-0.1143 | sharpe=1.6925 | calmar=3.8890 | rebalance_freq=8 | top_k=5 | hard_stop_loss_pct=-0.1000 | max_weight_per_stock=0.2000
+  4. objective=4.7409 | total_return=0.3837 | max_drawdown=-0.1434 | sharpe=1.5912 | calmar=3.6133 | rebalance_freq=3 | top_k=5 | hard_stop_loss_pct=-0.0800 | max_weight_per_stock=0.1500
+  5. objective=4.3778 | total_return=0.3000 | max_drawdown=-0.1234 | sharpe=1.5763 | calmar=3.2511 | rebalance_freq=3 | top_k=5 | hard_stop_loss_pct=-0.0800 | max_weight_per_stock=0.2000
+
+当前基线对照:
+  objective=-0.4502 ret=2.81% mdd=-19.44% sharpe=0.270
+
+========================================================================

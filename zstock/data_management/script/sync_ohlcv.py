@@ -78,21 +78,49 @@ def _enrich_turnover_rate(df: pd.DataFrame, codes: List[str]) -> pd.DataFrame:
 
     换手率 = 成交量(手) × 10000 / 流通股本(股)。xtquant 日线 volume 单位为"手"，
     FloatVolume 单位为"股"：×100 把手换算成股、再 ×100 化为百分数，合计 ×10000。
-    流通股本取 get_instrument_detail 当前快照，历史区间为近似值。
+
+    流通股本分母优先级：
+      1. 日线数据逐日 floatVolume 列（历史真实值，无前视偏差）——若 QMT 日线返回该字段
+      2. get_instrument_detail 当前快照（近似值，含前视偏差，仅作降级兜底）
+
     结果为百分数（如 2.0 表示换手 2%），与全系统/同花顺口径一致；
     force_factors._score_turnover_quality 的阈值（3.0/5.0/20.0/30.0）即按此口径。
     """
     if df is None or df.empty:
         return df
     df = df.copy()
-    from zstock.common.utils import xtquant_data_utils as xtu
-    float_map = xtu.fetch_float_shares_map(codes)
     df['turnover_rate'] = 0.0
-    if 'volume' in df.columns and float_map:
-        for code, fv in float_map.items():
-            mask = df['code'] == code
-            if mask.any():
-                df.loc[mask, 'turnover_rate'] = df.loc[mask, 'volume'].astype(float) * 10000.0 / fv
+
+    # 优先：日线自带逐日流通股本（floatVolume，单位股）
+    if 'floatVolume' in df.columns and 'volume' in df.columns:
+        fv = pd.to_numeric(df['floatVolume'], errors='coerce')
+        vol = pd.to_numeric(df['volume'], errors='coerce')
+        valid = (fv > 0) & (vol.notna())
+        if valid.any():
+            df.loc[valid, 'turnover_rate'] = vol[valid] * 10000.0 / fv[valid]
+            # 有 floatVolume 的股票不再走快照降级
+            covered_codes = set(df.loc[valid, 'code'].astype(str))
+            logger.info(f"  ✓ 换手率用逐日 floatVolume 计算: {len(covered_codes)} 只股票")
+        else:
+            covered_codes = set()
+    else:
+        covered_codes = set()
+
+    # 降级：floatVolume 缺失的股票，用当前快照流通股本近似
+    fallback_codes = [c for c in codes if c not in covered_codes]
+    if fallback_codes:
+        from zstock.common.utils import xtquant_data_utils as xtu
+        float_map = xtu.fetch_float_shares_map(fallback_codes)
+        if 'volume' in df.columns and float_map:
+            for code, fv in float_map.items():
+                mask = df['code'] == code
+                if mask.any():
+                    df.loc[mask, 'turnover_rate'] = df.loc[mask, 'volume'].astype(float) * 10000.0 / fv
+        if float_map:
+            logger.warning(
+                f"  ⚠️ {len(fallback_codes) - len(float_map)} 只股票无 floatVolume 且无快照股本，"
+                f"{len(float_map)} 只用当前快照近似（含前视偏差）"
+            )
     return df
 
 

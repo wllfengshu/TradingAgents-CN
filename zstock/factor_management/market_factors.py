@@ -2,20 +2,21 @@
 市场因子模块（M1）
 
 职责：通过大盘指数的多维特征评估当日市场情绪，
-      输出市场风险等级，决定策略是否允许开新仓/加仓。
+      输出市场风险等级，决定策略是否允许开新仓/加仓等。
 
 黑盒设计：
-- 公开接口：calculate_market_sentiment()
+- 公开接口：calculate_market_sentiment() 计算
+- 公开接口：score_from_raw() 打分
 - 所有实现细节都隐藏在私有方法中
 
 五个子因子（均以沪深300指数为主锚）：
-  MF1 趋势强度（30%）：20日均线斜率，衡量中期趋势方向
-  MF2 布林带位置（25%）：价格在布林带内的相对位置，衡量超买/超卖
-  MF3 量能状态（20%）：当日成交量相对20日均量，判断缩量/放量
-  MF4 近期动量（15%）：5日涨跌幅，快速反映短期趋势
-  MF5 波动率压制（10%）：ATR比率的倒数，低波动=市场稳定
+  market_trend_strength（30%）：市场趋势强度 - 20日均线斜率，衡量中期趋势方向
+  market_bollinger_position（25%）：市场布林位置 - 价格在布林带内的相对位置，衡量超买/超卖
+  market_volume_state（20%）：市场成交量状态 - 当日成交量相对20日均量，判断缩量/放量
+  market_5day_momentum（15%）：市场5日动量 - 5日涨跌幅，快速反映短期趋势
+  market_volatility_suppression（10%）：市场波动率抑制 - ATR比率的倒数，低波动=市场稳定
 
-风险等级（market_grade）：
+风险等级（market_risk_level）：
   green  [70, 100]：市场强势，正常开仓
   yellow [40,  70)：市场震荡，减仓系数 0.5（减半仓位）
   red    [ 0,  40)：市场弱势，不开新仓，不加仓
@@ -23,10 +24,10 @@
 使用示例：
     sentiment = MarketFactors.calculate_market_sentiment(index_ohlcv_df)
     # sentiment = {
-    #     'market_score': 72.5,
-    #     'market_grade': 'green',
-    #     'position_scale': 1.0,
-    #     'mf1_trend': 68.0, 'mf2_boll': 75.0, ...
+    #     'market_composite_score': 72.5,
+    #     'market_risk_level': 'green',
+    #     'position_scale_factor': 1.0,
+    #     'market_trend_strength': 68.0, 'market_bollinger_position': 75.0, ...
     # }
 """
 
@@ -41,11 +42,11 @@ from zstock.common.utils.common_utils import ensure_ohlcv_sorted, ohlcv_asof
 logger = logging.getLogger(__name__)
 
 # 子因子权重
-_W_MF1 = 0.30   # 趋势强度（均线斜率）
-_W_MF2 = 0.25   # 布林带位置
-_W_MF3 = 0.20   # 量能状态（成交量比率）
-_W_MF4 = 0.15   # 近期动量（5日涨跌幅）
-_W_MF5 = 0.10   # 波动率压制
+_W_TREND = 0.30        # market_trend_strength（市场趋势强度）
+_W_BOLLINGER = 0.25    # market_bollinger_position（市场布林位置）
+_W_VOLUME = 0.20       # market_volume_state（市场成交量状态）
+_W_MOMENTUM = 0.15     # market_5day_momentum（市场5日动量）
+_W_VOLATILITY = 0.10   # market_volatility_suppression（市场波动率抑制）
 
 # 风险等级阈值
 _GRADE_GREEN  = 70.0
@@ -53,24 +54,47 @@ _GRADE_YELLOW = 40.0
 
 # 各等级对应仓位缩放系数
 _SCALE_GREEN  = 1.0
-_SCALE_YELLOW = 0.5
+_SCALE_YELLOW = 0.4   # P1：黄灯更保守，压回撤
 _SCALE_RED    = 0.0
 
-# 技术参数
-_MA_WINDOW       = 20
-_BOLL_STD        = 2.0
-_SLOPE_WINDOW    = 5    # 用近 N 根均线估算斜率
-_MOMENTUM_WINDOW = 5
-_MOMENTUM_WINDOWS = (3, 5, 10)  # 预计算多窗口
-_ATR_WINDOW      = 20
-_VOL_MA_WINDOW   = 20
-_MIN_BARS        = 21   # 至少需要的 K 线根数（ATR/MA 需要20根 + 1根计算 True Range）
+# 技术参数 - 单窗口（默认用于最终打分）
+_MA_WINDOW           = 20
+_BOLL_STD            = 2.0
+_SLOPE_WINDOW        = 5    # 用近 N 根均线估算斜率
+_MOMENTUM_WINDOW     = 5
+_ATR_WINDOW          = 20
+_VOL_MA_WINDOW       = 20
+
+# Sigmoid 映射参数（用于 slope 和 momentum）
+# k=800: slope_pct 变化 0.1% 时从 ~25 分涨到 ~75 分（灵敏度适中）
+# k=30: momentum 变化 5% 时从 ~18 分涨到 ~82 分（快速反应）
+_SIGMOID_K_SLOPE     = 800.0
+_SIGMOID_K_MOMENTUM  = 30.0
+
+# ATR 折线映射分段点（wave volatility suppression）
+# 根据 backtest 结果优化，衡量市场波动率相对于中期均线的比例
+# 0.01: 极低波动（市场稳定）→ 90分
+# 0.03: 正常波动区间（50分）
+# 0.06: 高波动区间（10分）
+# >0.06: 极端波动（10分）
+_ATR_RATIO_SEGMENTS  = [0.01, 0.03, 0.06]
+_ATR_RATIO_SCORES    = [90.0, 50.0, 10.0, 10.0]
+
+# 多窗口配置（网格搜索用）- 每个因子独立窗口
+_TREND_MA_WINDOWS    = (5, 10, 20)           # MF1 趋势强度：MA窗口
+_BOLL_MA_WINDOWS     = (10, 20, 30)          # MF2 布林位置：MA窗口
+_VOL_MA_WINDOWS      = (5, 10, 20)           # MF3 成交量：MA窗口
+_MOMENTUM_WINDOWS    = (3, 5, 10)            # MF4 动量：日期窗口
+_ATR_WINDOWS         = (10, 20, 30)          # MF5 波动率：ATR窗口
+_MA_WINDOWS_FOR_ATR  = (10, 20, 30)          # MF5 波动率：MA窗口（与ATR配对）
+
+_MIN_BARS            = 31   # 至少需要的 K 线根数（最大MA30 + 1根计算 True Range）
 
 
 class MarketFactors:
     """市场因子计算器（M1）。黑盒设计，只负责市场情绪评估"""
 
-    # ===================== 公开接口（唯一入口）=====================
+    # ===================== 公开接口=====================
 
     @staticmethod
     def calculate_market_sentiment(
@@ -85,19 +109,20 @@ class MarketFactors:
             index_ohlcv: 指数日线 DataFrame，必须含列：
                          close, high, low, volume（按日期升序）
             index_name:  指数名称，仅用于日志标识
+            trade_date: 可选，指定交易日（YYYY-MM-DD），若不指定则使用最新日期
 
         Returns:
             {
-                'market_score':   float,   # 综合市场得分 0~100
-                'market_grade':   str,     # 'green' / 'yellow' / 'red'
-                'position_scale': float,   # 仓位缩放系数 0.0 / 0.5 / 1.0
-                'allow_new_open': bool,    # 是否允许开新仓
-                'mf1_trend':      float,   # MF1 趋势强度得分 0~100
-                'mf2_boll':       float,   # MF2 布林带位置得分 0~100
-                'mf3_volume':     float,   # MF3 量能状态得分 0~100
-                'mf4_momentum':   float,   # MF4 近期动量得分 0~100
-                'mf5_volatility': float,   # MF5 波动率压制得分 0~100
-                'detail':         dict,    # 各因子原始值，便于调试
+                'market_composite_score': float,        # 市场综合得分 0~100
+                'market_risk_level':      str,          # 'green'(强势) / 'yellow'(震荡) / 'red'(弱势)
+                'position_scale_factor':  float,        # 仓位缩放因子 0.0 / 0.5 / 1.0
+                'allow_new_open':         bool,         # 是否允许开新仓
+                'market_trend_strength':      float,    # 市场趋势强度得分 0~100
+                'market_bollinger_position':  float,    # 市场布林位置得分 0~100
+                'market_volume_state':       float,     # 市场成交量状态得分 0~100
+                'market_5day_momentum':      float,     # 市场5日动量得分 0~100
+                'market_volatility_suppression': float, # 市场波动率抑制得分 0~100
+                'detail':                 dict,         # 各因子原始值，便于调试
             }
 
         若数据不足（< _MIN_BARS 根），返回 grade='yellow'，score=50（中性），
@@ -139,11 +164,11 @@ class MarketFactors:
         mf5, mf5_raw = MarketFactors._score_volatility(df)
 
         score = (
-            _W_MF1 * mf1
-            + _W_MF2 * mf2
-            + _W_MF3 * mf3
-            + _W_MF4 * mf4
-            + _W_MF5 * mf5
+            _W_TREND * mf1
+            + _W_BOLLINGER * mf2
+            + _W_VOLUME * mf3
+            + _W_MOMENTUM * mf4
+            + _W_VOLATILITY * mf5
         )
         score = float(np.clip(score, 0.0, 100.0))
 
@@ -159,7 +184,7 @@ class MarketFactors:
 
         allow_new_open = grade != "red"
 
-        logger.info(
+        logger.debug(
             f"📊 [{index_name}] 市场得分={score:.1f} 等级={grade} "
             f"MF1={mf1:.0f} MF2={mf2:.0f} MF3={mf3:.0f} MF4={mf4:.0f} MF5={mf5:.0f}"
         )
@@ -178,25 +203,49 @@ class MarketFactors:
             "mf5_atr_ratio": mf5_raw,
             "mf5_atr_ratio_inv": atr_inv,
         }
-        # 多窗口动量原始值（网格搜索用）
+
+        # 多窗口原始值（网格搜索用）
+        # MF1 趋势强度多窗口
+        for w in _TREND_MA_WINDOWS:
+            if w != _MA_WINDOW:
+                _, raw_w = MarketFactors._score_trend_strength(df, ma_window=w)
+                detail[f"mf1_slope_pct_{w}d"] = raw_w
+
+        # MF2 布林位置多窗口
+        for w in _BOLL_MA_WINDOWS:
+            if w != _MA_WINDOW:
+                _, raw_w = MarketFactors._score_boll_position(df, ma_window=w)
+                detail[f"mf2_boll_pct_{w}d"] = raw_w
+
+        # MF3 成交量多窗口
+        for w in _VOL_MA_WINDOWS:
+            if w != _VOL_MA_WINDOW:
+                _, raw_w = MarketFactors._score_volume_state(df, vol_ma_window=w)
+                detail[f"mf3_vol_ratio_{w}d"] = raw_w
+
+        # MF4 动量多窗口（所有窗口，包括默认）
         for w in _MOMENTUM_WINDOWS:
             _, raw_w = MarketFactors._score_momentum(df, window=w)
             detail[f"mf4_momentum_{w}d"] = raw_w
 
+        # MF5 波动率多窗口（ATR 与 MA 同窗口配对，后续可扩展为交叉组合）
+        for atr_w, ma_w in zip(_ATR_WINDOWS, _MA_WINDOWS_FOR_ATR):
+            if atr_w != _ATR_WINDOW or ma_w != _MA_WINDOW:
+                _, raw_w = MarketFactors._score_volatility(df, atr_window=atr_w, ma_window=ma_w)
+                detail[f"mf5_atr_ratio_{atr_w}d_{ma_w}d"] = raw_w
+
         return {
-            "market_score": score,
-            "market_grade": grade,
-            "position_scale": scale,
+            "market_composite_score": score,
+            "market_risk_level": grade,
+            "position_scale_factor": scale,
             "allow_new_open": allow_new_open,
-            "mf1_trend": mf1,
-            "mf2_boll": mf2,
-            "mf3_volume": mf3,
-            "mf4_momentum": mf4,
-            "mf5_volatility": mf5,
+            "market_trend_strength": mf1,
+            "market_bollinger_position": mf2,
+            "market_volume_state": mf3,
+            "market_5day_momentum": mf4,
+            "market_volatility_suppression": mf5,
             "detail": detail,
         }
-
-    # ===================== 公开接口 =====================
 
     @staticmethod
     def score_from_raw(
@@ -207,17 +256,22 @@ class MarketFactors:
         mf5_atr_ratio: float,
     ) -> Dict:
         """
-        【公开接口】从 M1 5个子因子原始值直接打分，不需要 OHLCV DataFrame。
+        【公开接口】从 M1 5个子因子原始值直接打分。
 
         用于 pipeline.score_signals 从预计算原始值重建市场情绪结果。
         映射逻辑与 calculate_market_sentiment() 完全一致（Single Source of Truth）。
 
         Args:
-            mf1_slope_pct:   20MA 5日百分比斜率
-            mf2_boll_pct:    布林带位置 (0~1)
-            mf3_vol_ratio:   当日量/20日均量
-            mf4_momentum_5d: 5日涨跌幅
-            mf5_atr_ratio:   ATR(20)/MA(20) 原值
+            mf1_slope_pct:   20日MA 5日百分比斜率，范围 (-inf, +inf)，通常 [-0.01, 0.01]
+                             负值=下降趋势，正值=上升趋势
+            mf2_boll_pct:    布林带位置百分比，范围 [0.0, 1.0]
+                             0.0=下轨(超卖)，0.5=中轨，1.0=上轨(超买)
+            mf3_vol_ratio:   当日成交量 / 20日均量，范围 [0, +inf)，通常 [0.2, 3.0]
+                             <1=缩量，=1=平量，>1=放量
+            mf4_momentum_5d: 5日涨跌幅百分比，范围 (-inf, +inf)，通常 [-0.05, 0.05]
+                             负值=下跌，正值=上涨
+            mf5_atr_ratio:   ATR(20) / MA(20)，范围 [0, +inf)，通常 [0.005, 0.1]
+                             低=波动平稳，高=波动剧烈
 
         Returns:
             与 calculate_market_sentiment() 返回结构一致的 dict
@@ -229,7 +283,7 @@ class MarketFactors:
         mf5 = MarketFactors._map_atr_ratio_to_score(mf5_atr_ratio) if not np.isnan(mf5_atr_ratio) else 50.0
 
         score = float(np.clip(
-            _W_MF1 * mf1 + _W_MF2 * mf2 + _W_MF3 * mf3 + _W_MF4 * mf4 + _W_MF5 * mf5,
+            _W_TREND * mf1 + _W_BOLLINGER * mf2 + _W_VOLUME * mf3 + _W_MOMENTUM * mf4 + _W_VOLATILITY * mf5,
             0.0, 100.0,
         ))
 
@@ -241,15 +295,15 @@ class MarketFactors:
             grade, scale = 'red', _SCALE_RED
 
         return {
-            'market_score':   score,
-            'market_grade':   grade,
-            'position_scale': scale,
+            'market_composite_score':   score,
+            'market_risk_level':   grade,
+            'position_scale_factor': scale,
             'allow_new_open': grade != 'red',
-            'mf1_trend':      mf1,
-            'mf2_boll':       mf2,
-            'mf3_volume':     mf3,
-            'mf4_momentum':   mf4,
-            'mf5_volatility': mf5,
+            'market_trend_strength':      mf1,
+            'market_bollinger_position':       mf2,
+            'market_volume_state':     mf3,
+            'market_5day_momentum':   mf4,
+            'market_volatility_suppression': mf5,
             'detail': {
                 'mf1_slope_pct':      mf1_slope_pct,
                 'mf2_boll_pct':       mf2_boll_pct,
@@ -259,7 +313,7 @@ class MarketFactors:
                 'mf5_atr_ratio_inv':  (
                     (1.0 / mf5_atr_ratio)
                     if (mf5_atr_ratio is not None
-                        and mf5_atr_ratio == mf5_atr_ratio
+                        and not np.isnan(mf5_atr_ratio)
                         and mf5_atr_ratio > 0)
                     else float('nan')
                 ),
@@ -269,8 +323,10 @@ class MarketFactors:
     # ===================== 原始值映射函数（供 score_from_raw 和 _score_* 共用）=====================
 
     @staticmethod
-    def _map_slope_to_score(slope_pct: float, k: float = 800.0) -> float:
+    def _map_slope_to_score(slope_pct: float, k: float = None) -> float:
         """sigmoid 映射：百分比斜率 → 0~100 得分"""
+        if k is None:
+            k = _SIGMOID_K_SLOPE
         exp_arg = np.clip(-k * slope_pct, -709, 709)
         return float(np.clip(100.0 / (1.0 + np.exp(exp_arg)), 0.0, 100.0))
 
@@ -291,20 +347,22 @@ class MarketFactors:
         return float(np.clip(score, 0.0, 100.0))
 
     @staticmethod
-    def _map_momentum_to_score(momentum: float, k: float = 30.0) -> float:
+    def _map_momentum_to_score(momentum: float, k: float = None) -> float:
         """sigmoid 映射：5日涨跌幅 → 0~100 得分"""
+        if k is None:
+            k = _SIGMOID_K_MOMENTUM
         exp_arg = np.clip(-k * momentum, -709, 709)
         return float(np.clip(100.0 / (1.0 + np.exp(exp_arg)), 0.0, 100.0))
 
     @staticmethod
     def _map_atr_ratio_to_score(atr_ratio: float) -> float:
         """折线映射：ATR/MA 比率 → 0~100 得分（低波动=高分）"""
-        if atr_ratio <= 0.01:
+        if atr_ratio <= _ATR_RATIO_SEGMENTS[0]:      # 0.01
             score = 90.0
-        elif atr_ratio <= 0.03:
-            score = 90.0 - 40.0 * (atr_ratio - 0.01) / 0.02
-        elif atr_ratio <= 0.06:
-            score = 50.0 - 40.0 * (atr_ratio - 0.03) / 0.03
+        elif atr_ratio <= _ATR_RATIO_SEGMENTS[1]:    # 0.03
+            score = 90.0 - 40.0 * (atr_ratio - _ATR_RATIO_SEGMENTS[0]) / (_ATR_RATIO_SEGMENTS[1] - _ATR_RATIO_SEGMENTS[0])
+        elif atr_ratio <= _ATR_RATIO_SEGMENTS[2]:    # 0.06
+            score = 50.0 - 40.0 * (atr_ratio - _ATR_RATIO_SEGMENTS[1]) / (_ATR_RATIO_SEGMENTS[2] - _ATR_RATIO_SEGMENTS[1])
         else:
             score = 10.0
         return float(np.clip(score, 0.0, 100.0))
@@ -312,21 +370,21 @@ class MarketFactors:
     # ===================== 私有方法（实现细节，对外隐藏）=====================
 
     @staticmethod
-    def _score_trend_strength(df: pd.DataFrame) -> tuple:
+    def _score_trend_strength(df: pd.DataFrame, ma_window: int = None) -> tuple:
         """
-        【私有】MF1：20日均线趋势强度。
+        【私有】MF1：MA趋势强度（支持多窗口）。
 
         计算方式：
-          1. 计算 20日 MA
+          1. 计算 ma_window 日 MA（默认20）
           2. 用最近 _SLOPE_WINDOW 根均线做线性回归，得斜率
-          3. 将斜率除以最新均线值，得"日均涨跌幅"（百分比斜率），消除绝对点位影响
-          4. sigmoid 映射到 0~100（斜率=0 → 50，明显上升 → 接近100，明显下降 → 接近0）
-
-        Sigmoid 参数 k=800：日均 0.12% 涨幅 → 约60分，日均 -0.12% → 约40分，
-        覆盖正常指数波动区间，避免极端市场将得分压到边界。
+          3. 将斜率除以最新均线值，得"日均涨跌幅"（百分比斜率）
+          4. sigmoid 映射到 0~100
         """
+        if ma_window is None:
+            ma_window = _MA_WINDOW
+
         close = df['close'].values
-        ma = pd.Series(close).rolling(_MA_WINDOW, min_periods=_MA_WINDOW).mean().values
+        ma = pd.Series(close).rolling(ma_window, min_periods=ma_window).mean().values
 
         # 取最近 _SLOPE_WINDOW 根有效均线
         valid_ma = ma[~np.isnan(ma)][-_SLOPE_WINDOW:]
@@ -344,20 +402,18 @@ class MarketFactors:
         return score, slope_pct
 
     @staticmethod
-    def _score_boll_position(df: pd.DataFrame) -> tuple:
+    def _score_boll_position(df: pd.DataFrame, ma_window: int = None) -> tuple:
         """
-        【私有】MF2：布林带位置。
+        【私有】MF2：布林带位置（支持多窗口）。
 
-        计算当前收盘价在布林带 [lower, upper] 内的相对位置（0~1），
-        线性映射到 0~100。
-        - 价格在上轨附近 → 强势区域 → 接近100
-        - 价格在中轨 → 中性 → 约50
-        - 价格在下轨附近 → 弱势区域 → 接近0
-        超出布林带的情况用 clip 限制在 [0, 1]，避免超买超卖的极端情况反向加分。
+        计算当前收盘价在布林带内的相对位置（0~1），线性映射到 0~100。
         """
+        if ma_window is None:
+            ma_window = _MA_WINDOW
+
         close = df['close'].values
-        ma    = pd.Series(close).rolling(_MA_WINDOW, min_periods=_MA_WINDOW).mean()
-        std   = pd.Series(close).rolling(_MA_WINDOW, min_periods=_MA_WINDOW).std()
+        ma    = pd.Series(close).rolling(ma_window, min_periods=ma_window).mean()
+        std   = pd.Series(close).rolling(ma_window, min_periods=ma_window).std()
         upper = ma + _BOLL_STD * std
         lower = ma - _BOLL_STD * std
 
@@ -379,31 +435,21 @@ class MarketFactors:
         return score, boll_pct
 
     @staticmethod
-    def _score_volume_state(df: pd.DataFrame) -> tuple:
+    def _score_volume_state(df: pd.DataFrame, vol_ma_window: int = None) -> tuple:
         """
-        【私有】MF3：量能状态。
+        【私有】MF3：量能状态（支持多窗口）。
 
-        计算当日成交量与 20日均量的比值（vol_ratio）：
-        - vol_ratio ∈ [0.5, 1.5] 是健康区间（正常量能）
-        - < 0.5：严重缩量，市场冷淡，得分低
-        - [0.5, 1.0]：量能略偏低，线性过渡
-        - [1.0, 1.5]：量能正常偏高，得分高
-        - [1.5, 3.0]：放量过大，可能是恐慌抛售或顶部信号，得分回落
-        - > 3.0：极端放量（天量），恐慌/狂热信号，得分极低
-
-        折线函数：
-        ratio < 0.5  → 10
-        0.5~1.0      → 10 + 80 * (ratio-0.5)/0.5
-        1.0~1.5      → 90 + 10 * (ratio-1.0)/0.5
-        1.5~3.0      → 100 - 80 * (ratio-1.5)/1.5
-        > 3.0        → 20 - 10 * min((ratio-3.0)/2.0, 1.0)  → 最低10
+        计算当日成交量与 vol_ma_window 日均量的比值。
         """
+        if vol_ma_window is None:
+            vol_ma_window = _VOL_MA_WINDOW
+
         vol    = df['volume'].values
-        vol_ma = pd.Series(vol).rolling(_VOL_MA_WINDOW, min_periods=_VOL_MA_WINDOW).mean().values
+        vol_ma = pd.Series(vol).rolling(vol_ma_window, min_periods=vol_ma_window).mean().values
         last_vol    = float(vol[-1])
         last_vol_ma = float(vol_ma[-1]) if not np.isnan(vol_ma[-1]) else 0.0
 
-        if last_vol_ma <= 0:
+        if last_vol_ma <= 0 or np.isnan(last_vol):
             return 50.0, float('nan')
 
         ratio = last_vol / last_vol_ma
@@ -422,28 +468,32 @@ class MarketFactors:
         """
         w = _MOMENTUM_WINDOW if window is None else window
         close = df["close"].values
-        if len(close) <= w:
+        if len(close) < w + 1:
+            return 50.0, float("nan")
+
+        last_close = float(close[-1])
+        if last_close <= 0 or np.isnan(last_close):
             return 50.0, float("nan")
 
         ref_close = float(close[-w - 1])
-        if ref_close <= 0:
+        if ref_close <= 0 or np.isnan(ref_close):
             return 50.0, float("nan")
 
-        momentum = (float(close[-1]) - ref_close) / ref_close
+        momentum = (last_close - ref_close) / ref_close
         score = MarketFactors._map_momentum_to_score(momentum)
         return score, momentum
 
     @staticmethod
-    def _score_volatility(df: pd.DataFrame) -> tuple:
+    def _score_volatility(df: pd.DataFrame, atr_window: int = None, ma_window: int = None) -> tuple:
         """
-        【私有】MF5：波动率压制（True Range ATR 比率的倒数）。
+        【私有】MF5：波动率压制（True Range ATR 比率的倒数，支持多窗口）。
 
         核心逻辑：
         使用 True Range 而非简单 H-L，能正确捕捉跳空缺口带来的波动：
           TR = max(H-L, |H-prev_close|, |L-prev_close|)
         A股指数频繁出现跳空低开/高开，仅用 H-L 会系统性低估波动率。
 
-        ATR ratio = ATR(20) / MA(20)，衡量相对波动率：
+        ATR ratio = ATR(atr_window) / MA(ma_window)，衡量相对波动率：
         - 波动率低（市场稳定）→ ATR ratio 小 → 得分高
         - 波动率高（市场恐慌）→ ATR ratio 大 → 得分低
 
@@ -453,6 +503,11 @@ class MarketFactors:
         0.03~0.06          → 50 → 10（快速衰减，高波动区间）
         > 0.06             → 10（极端波动）
         """
+        if atr_window is None:
+            atr_window = _ATR_WINDOW
+        if ma_window is None:
+            ma_window = _MA_WINDOW
+
         high  = df['high'].values
         low   = df['low'].values
         close = df['close'].values
@@ -468,13 +523,13 @@ class MarketFactors:
             np.maximum(np.abs(high - prev_close), np.abs(low - prev_close))
         )
 
-        atr_series = pd.Series(tr).rolling(_ATR_WINDOW, min_periods=_ATR_WINDOW).mean()
-        ma_series = pd.Series(close).rolling(_MA_WINDOW, min_periods=_MA_WINDOW).mean()
+        atr_series = pd.Series(tr).rolling(atr_window, min_periods=atr_window).mean()
+        ma_series = pd.Series(close).rolling(ma_window, min_periods=ma_window).mean()
 
         atr = float(atr_series.iloc[-1])
         ma  = float(ma_series.iloc[-1])
 
-        if ma <= 0 or np.isnan(atr) or np.isnan(ma):
+        if np.isnan(atr) or np.isnan(ma) or ma <= 0 or atr < 0:
             return 50.0, float('nan')
 
         atr_ratio = atr / ma
@@ -487,14 +542,14 @@ class MarketFactors:
         """【私有】数据不足时返回黄色中性结果，允许开仓但缩半仓"""
         logger.warning(f"⚠️ [{index_name}] 市场数据缺失 reason={reason}，返回中性评估")
         return {
-            'market_score':   50.0,
-            'market_grade':   'yellow',
-            'position_scale': _SCALE_YELLOW,
+            'market_composite_score':   50.0,
+            'market_risk_level':   'yellow',
+            'position_scale_factor': _SCALE_YELLOW,
             'allow_new_open': True,
-            'mf1_trend':      50.0,
-            'mf2_boll':       50.0,
-            'mf3_volume':     50.0,
-            'mf4_momentum':   50.0,
-            'mf5_volatility': 50.0,
+            'market_trend_strength':      50.0,
+            'market_bollinger_position':       50.0,
+            'market_volume_state':     50.0,
+            'market_5day_momentum':   50.0,
+            'market_volatility_suppression': 50.0,
             'detail': {'reason': reason},
         }

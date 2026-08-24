@@ -1,15 +1,15 @@
 """
 MongoDB 的数据服务
 
-# 必须要先初始化数据库
-from app.core.database import init_database
-await init_database()
+# 必须先初始化数据库:
+# from zstock.common.utils.db_utils import init_zstock_database
+# await init_zstock_database()
 
 """
 
 import logging
 from typing import Optional, Dict, List
-from app.core.database import get_database, init_database
+from app.core.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +25,9 @@ class DatabaseService:
 
     def __init__(self):
         """初始化数据源管理器"""
-        # 不在这里调用 init_database()，因为它是异步函数
+        # 不在这里调用 init_zstock_database()，因为它是异步函数
         # 而构造函数必须是同步的
-        # 数据库需要在外部（如在 FastAPI 应用启动或测试 fixture 中）调用 init_database()
+        # 数据库需要在外部调用 init_zstock_database()
         # 这里只检查是否已初始化
         self.db = get_database()
         if self.db is None:
@@ -161,6 +161,24 @@ class DatabaseService:
             return result.modified_count
         except Exception as e:
             logger.error(f"❌ 批量更新失败 {collection}: {e}")
+            raise
+
+    async def replace_one(
+        self,
+        collection: str,
+        query: Dict,
+        document: Dict,
+        upsert: bool = False,
+    ) -> int:
+        """替换单条数据（可选 upsert），返回修改/插入条数。"""
+        try:
+            result = await self.db[collection].replace_one(query, document, upsert=upsert)
+            changed = int(result.modified_count or 0) + (1 if result.upserted_id is not None else 0)
+            # 逐条 upsert 在批量预计算场景会非常嘈杂，默认降为 debug。
+            logger.debug(f"✅ 替换 {collection}: {changed} 条")
+            return changed
+        except Exception as e:
+            logger.error(f"❌ 替换失败 {collection}: {e}")
             raise
 
     # ==================== 数据删除方法 ====================

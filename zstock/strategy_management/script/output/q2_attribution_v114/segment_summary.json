@@ -1,0 +1,100 @@
+{
+  "summaries": [
+    {
+      "segment": "2024_Q1",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "trade_days": 65,
+      "signal_ok_days": 7,
+      "error_days": 58,
+      "grade_green_pct": 14.285714285714285,
+      "grade_yellow_pct": 14.285714285714285,
+      "grade_red_pct": 71.42857142857143,
+      "avg_position_scale": 0.2285714285714286,
+      "avg_n_buy": 0.0,
+      "zero_buy_days": 7,
+      "regime_counts": {
+        "neutral": 7
+      },
+      "avg_universe": 0.0,
+      "top_sectors": []
+    },
+    {
+      "segment": "2024_Q2",
+      "start": "2024-04-01",
+      "end": "2024-06-30",
+      "trade_days": 65,
+      "signal_ok_days": 12,
+      "error_days": 53,
+      "grade_green_pct": 8.333333333333332,
+      "grade_yellow_pct": 8.333333333333332,
+      "grade_red_pct": 83.33333333333334,
+      "avg_position_scale": 0.13333333333333333,
+      "avg_n_buy": 0.0,
+      "zero_buy_days": 12,
+      "regime_counts": {
+        "neutral": 12
+      },
+      "avg_universe": 0.0,
+      "top_sectors": []
+    },
+    {
+      "segment": "2024_Q3",
+      "start": "2024-07-01",
+      "end": "2024-09-30",
+      "trade_days": 66,
+      "signal_ok_days": 21,
+      "error_days": 45,
+      "grade_green_pct": 0.0,
+      "grade_yellow_pct": 9.523809523809524,
+      "grade_red_pct": 90.47619047619048,
+      "avg_position_scale": 0.05714285714285714,
+      "avg_n_buy": 0.0,
+      "zero_buy_days": 21,
+      "regime_counts": {
+        "neutral": 21
+      },
+      "avg_universe": 0.0,
+      "top_sectors": []
+    },
+    {
+      "segment": "2025_Q2",
+      "start": "2025-04-01",
+      "end": "2025-06-30",
+      "trade_days": 65,
+      "signal_ok_days": 10,
+      "error_days": 55,
+      "grade_green_pct": 0.0,
+      "grade_yellow_pct": 30.0,
+      "grade_red_pct": 70.0,
+      "avg_position_scale": 0.18,
+      "avg_n_buy": 0.0,
+      "zero_buy_days": 10,
+      "regime_counts": {
+        "neutral": 10
+      },
+      "avg_universe": 0.0,
+      "top_sectors": []
+    },
+    {
+      "segment": "2026_Q2",
+      "start": "2026-04-01",
+      "end": "2026-06-30",
+      "trade_days": 65,
+      "signal_ok_days": 9,
+      "error_days": 56,
+      "grade_green_pct": 22.22222222222222,
+      "grade_yellow_pct": 22.22222222222222,
+      "grade_red_pct": 55.55555555555556,
+      "avg_position_scale": 0.35555555555555557,
+      "avg_n_buy": 0.0,
+      "zero_buy_days": 9,
+      "regime_counts": {
+        "neutral": 9
+      },
+      "avg_universe": 0.0,
+      "top_sectors": []
+    }
+  ],
+  "backtest": {}
+}

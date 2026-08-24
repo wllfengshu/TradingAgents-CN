@@ -108,7 +108,7 @@ def _build_ohlcv_df(xtdata, xt_code: str, symbol: str, raw_df: pd.DataFrame) -> 
     detail = xtdata.get_instrument_detail(xt_code, iscomplete=False)
     df['name'] = str(detail.get('InstrumentName') or '') if detail else ''
     cols = ['code', 'name', 'trade_date', 'open', 'high', 'low', 'close', 'volume', 'amount']
-    for opt in ('preClose', 'suspendFlag'):
+    for opt in ('preClose', 'suspendFlag', 'floatVolume'):
         if opt in df.columns:
             cols.append(opt)
     return df[[c for c in cols if c in df.columns]].reset_index(drop=True)
@@ -327,6 +327,173 @@ def fetch_sector_stocks(sector_code: str, trade_date: Optional[str] = None, sect
     else:
         stocks = xtdata.get_stock_list_in_sector(query_key) or []
     return [normalize_code(s) for s in stocks]
+
+
+# ============================== 龙虎榜接口（暂时用不了） ==============================
+
+def fetch_lhb(codes: List[str], start_date: str, end_date: str) -> List[Dict[str, Any]]:
+    """
+    从 QMT 获取龙虎榜数据，返回 MongoDB Schema 格式。
+
+    Args:
+        codes: 6 位股票代码列表
+        start_date: 开始日期 YYYY-MM-DD 或 YYYYMMDD
+        end_date: 结束日期 YYYY-MM-DD 或 YYYYMMDD
+
+    Returns:
+        List[{
+            "code": "600000",
+            "trade_date": "2026-08-07",
+            "reason": "...",
+            "close": 10.5,
+            "spread_rate": 0.099,
+            "turnover_amount": 1.2e9,
+            "buy_booths": [...],
+            "sell_booths": [...],
+            "inst_buy_amount": 0.0,
+            "inst_buy_ratio": 0.0,
+            "top1_buy_ratio": 0.0,
+            "net_buy_amount": 0.0,
+            "source": "xtquant",
+        }]
+    """
+    if not codes:
+        return []
+
+    xtdata = _get_xtdata()
+    xt_codes = [to_xt_code(c) for c in codes]
+    st = to_yyyymmdd(start_date)
+    et = to_yyyymmdd(end_date)
+
+    raw_lhb = None
+
+    # 方法1: 尝试 getlonghubang() 函数
+    try:
+        if hasattr(xtdata, 'getlonghubang'):
+            raw_lhb = xtdata.getlonghubang(xt_codes, st, et)
+            if raw_lhb is not None and not raw_lhb.empty:
+                logger.info(f"fetch_lhb: 成功使用 xtdata.getlonghubang() 获取龙虎榜")
+    except Exception as e:
+        logger.debug(f"fetch_lhb: xtdata.getlonghubang() 失败: {e}")
+
+    # 方法2: 尝试 ContextInfo.get_longhubang() 方法
+    if raw_lhb is None or (hasattr(raw_lhb, 'empty') and raw_lhb.empty):
+        try:
+            from xtquant.xtdata import ContextInfo
+            ctx = ContextInfo()
+            raw_lhb = ctx.get_longhubang(xt_codes, st, et)
+            if raw_lhb is not None and not raw_lhb.empty:
+                logger.info(f"fetch_lhb: 成功使用 ContextInfo.get_longhubang() 获取龙虎榜")
+        except Exception as e:
+            logger.debug(f"fetch_lhb: ContextInfo.get_longhubang() 失败: {e}")
+
+    # 方法3: 尝试其他可能的接口名
+    if raw_lhb is None or (hasattr(raw_lhb, 'empty') and raw_lhb.empty):
+        possible_methods = ["get_his_longhubang", "get_longhubang", "get_lhb"]
+        for method_name in possible_methods:
+            try:
+                if hasattr(xtdata, method_name):
+                    method = getattr(xtdata, method_name)
+                    raw_lhb = method(xt_codes, st, et)
+                    if raw_lhb is not None and not raw_lhb.empty:
+                        logger.info(f"fetch_lhb: 成功使用 xtdata.{method_name}() 获取龙虎榜")
+                        break
+            except Exception as e:
+                logger.debug(f"fetch_lhb: xtdata.{method_name}() 失败: {e}")
+                continue
+
+    if raw_lhb is None or (hasattr(raw_lhb, 'empty') and raw_lhb.empty):
+        logger.info(f"fetch_lhb: {len(xt_codes)} 只股票在 {st}~{et} 无龙虎榜数据")
+        return []
+
+    result: List[Dict[str, Any]] = []
+    for _, row in raw_lhb.iterrows():
+        try:
+            xt_code = row.get("stock")
+            code = normalize_code(xt_code)
+            trade_date_raw = row.get("trade_date")
+            if isinstance(trade_date_raw, str):
+                td = normalize_date(trade_date_raw)
+            else:
+                td = normalize_date(str(int(trade_date_raw)))
+
+            reason = str(row.get("reason", ""))
+            close = float(row.get("close", 0.0) or 0.0)
+            spread_rate = float(row.get("spreadRate", 0.0) or 0.0)
+            turnover_amount = float(row.get("Turnover_Amount", 0.0) or 0.0)
+
+            buy_booths = []
+            sell_booths = []
+            inst_buy_amount = 0.0
+            inst_buy_ratio = 0.0
+            top1_buy_ratio = 0.0
+            net_buy_amount = 0.0
+
+            # 解析买方席位
+            buy_traders = row.get("buyTraderBooth", []) or []
+            total_buy = 0.0
+            if buy_traders and isinstance(buy_traders, list):
+                for idx, bt in enumerate(buy_traders[:5], 1):  # 取 TOP5
+                    if not bt:
+                        continue
+                    tb = {
+                        "trader_name": str(bt.get("traderName", "") or ""),
+                        "buy_amount": float(bt.get("buyAmount", 0.0) or 0.0),
+                        "buy_pct": float(bt.get("buyAmount", 0.0) or 0.0) / max(turnover_amount, 1e-8),
+                        "rank": idx,
+                    }
+                    buy_booths.append(tb)
+                    total_buy += tb.get("buy_amount", 0.0)
+                    # 机构是否包含，需根据 traderName 判断（暂简单累计）
+                    if "机构" in tb.get("trader_name", ""):
+                        inst_buy_amount += tb.get("buy_amount", 0.0)
+                    # TOP1 占比
+                    if idx == 1:
+                        top1_buy_ratio = tb.get("buy_pct", 0.0)
+
+            # 解析卖方席位
+            sell_traders = row.get("sellTraderBooth", []) or []
+            total_sell = 0.0
+            if sell_traders and isinstance(sell_traders, list):
+                for idx, st_row in enumerate(sell_traders[:5], 1):
+                    if not st_row:
+                        continue
+                    sb = {
+                        "trader_name": str(st_row.get("traderName", "") or ""),
+                        "sell_amount": float(st_row.get("sellAmount", 0.0) or 0.0),
+                        "sell_pct": float(st_row.get("sellAmount", 0.0) or 0.0) / max(turnover_amount, 1e-8),
+                        "rank": idx,
+                    }
+                    sell_booths.append(sb)
+                    total_sell += sb.get("sell_amount", 0.0)
+
+            # 计算机构买入占比与净买额
+            if total_buy > 0:
+                inst_buy_ratio = inst_buy_amount / total_buy
+            net_buy_amount = total_buy - total_sell
+
+            rec = {
+                "code": code,
+                "trade_date": td,
+                "reason": reason,
+                "close": close,
+                "spread_rate": spread_rate,
+                "turnover_amount": turnover_amount,
+                "buy_booths": buy_booths,
+                "sell_booths": sell_booths,
+                "inst_buy_amount": inst_buy_amount,
+                "inst_buy_ratio": inst_buy_ratio,
+                "top1_buy_ratio": top1_buy_ratio,
+                "net_buy_amount": net_buy_amount,
+                "source": "xtquant",
+            }
+            result.append(rec)
+        except Exception as e:
+            logger.debug(f"fetch_lhb: 处理行数据异常: {e}")
+            continue
+
+    logger.info(f"fetch_lhb: 获取到 {len(result)} 条龙虎榜记录")
+    return result
 
 
 # ============================== 资金流接口 不支持 ==============================

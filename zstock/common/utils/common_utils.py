@@ -1,3 +1,9 @@
+# =========================== 通用常量 ===========================
+
+# 资金流单位换算：xtquant L2 净额字段(main_net/m_net/s_net)单位为"万元"，
+# 成交额字段(turnover)单位为"元"。统一换算到元，保证净值比量纲一致。
+WAN_TO_YUAN = 10000.0
+
 # =========================== 通用工具 ===========================
 
 from typing import Optional
@@ -155,3 +161,78 @@ _INDEX_CODES = frozenset({
 def is_index_code(code: str) -> bool:
     """判断是否为已知 A 股指数代码（白名单方式，避免误判个股）。"""
     return normalize_code(code) in _INDEX_CODES
+
+
+# =========================== 通用排序和过滤 ===========================
+
+def minmax_normalize(values_dict, default_val: float = 50.0) -> dict:
+    """min-max 归一化转 0-100（跳过 nan 和 inf，确保数据有效）。
+
+    所有因子模块统一使用此方法，避免多份重复实现。
+
+    Args:
+        values_dict: {key: float} 原始值字典
+        default_val: 当所有值相同时返回的默认值
+
+    Returns:
+        {key: float} 归一化后的分值字典（0~100 范围）
+    """
+    if not values_dict:
+        return {}
+    import math
+    clean = {
+        k: float(v)
+        for k, v in values_dict.items()
+        if v is not None and isinstance(v, (int, float)) and math.isfinite(v)
+    }
+    if not clean:
+        return {}
+    min_val = min(clean.values())
+    max_val = max(clean.values())
+    if max_val == min_val:
+        return {k: default_val for k in clean}
+    return {k: 100.0 * (v - min_val) / (max_val - min_val) for k, v in clean.items()}
+
+
+def select_top_k(scores_dict, k: int):
+    """按分数降序排序，取前 K 个。
+
+    Args:
+        scores_dict: {code: score} 字典
+        k: 数量限制
+
+    Returns:
+        [(code, score), ...] 列表，按分数降序排列
+    """
+    if not scores_dict:
+        return []
+    return sorted(scores_dict.items(), key=lambda x: x[1], reverse=True)[:k]
+
+
+def apply_blacklist_filter(scores_dict, blacklist_set):
+    """从分数字典中过滤掉黑名单。
+
+    Args:
+        scores_dict: {code: score} 字典
+        blacklist_set: {code, ...} 黑名单集合
+
+    Returns:
+        {code: score} 过滤后的字典
+    """
+    if not blacklist_set:
+        return scores_dict
+    return {k: v for k, v in scores_dict.items() if k not in blacklist_set}
+
+
+def get_index_code_from_ohlcv_dict(index_ohlcv_dict):
+    """从 {index_code: DataFrame} 字典中安全获取指数代码。
+
+    Args:
+        index_ohlcv_dict: {index_code: DataFrame} 字典
+
+    Returns:
+        str: 指数代码，若字典为空返回 ""
+    """
+    if not index_ohlcv_dict:
+        return ""
+    return list(index_ohlcv_dict.keys())[0]

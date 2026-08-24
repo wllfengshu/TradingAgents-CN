@@ -130,8 +130,11 @@ class OrderManagementPipeline:
             logger.info("="*60)
 
             account_info = self.xtquant_executor.get_account_info()
-            logger.info(f"   现金: {account_info['cash']:.0f}")
-            logger.info(f"   总资产: {account_info['total_value']:.0f}")
+            if account_info:
+                logger.info(f"   现金: {account_info['cash']:.0f}")
+                logger.info(f"   总资产: {account_info['total_value']:.0f}")
+            else:
+                logger.warning("   ⚠️ 账户信息不可用（QMT 未连接）")
 
             results['account_info'] = account_info
 

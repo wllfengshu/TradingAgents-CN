@@ -65,10 +65,10 @@ def test_fetch_sector_stocks():
 
 
 async def main():
-    from app.core.database import init_database, close_database
+    from zstock.common.utils.db_utils import init_zstock_database, close_zstock_database
     try:
         print("初始化 MongoDB 连接...")
-        await init_database()
+        await init_zstock_database()
         print("MongoDB 已连接\n")
 
         test_fetch_ohlcv()
@@ -83,7 +83,7 @@ async def main():
         return False
     finally:
         print("\n🔌 清理资源...")
-        await close_database()
+        await close_zstock_database()
         print("✅ 已断开数据库连接\n")
 
     return True

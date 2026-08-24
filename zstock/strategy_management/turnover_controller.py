@@ -2,13 +2,14 @@
 换手控制（截面因子方案）
 
 Buffer 机制：新候选必须显著优于当前持仓最弱票才换入。
+最短持有：未满 min_hold_days 的持仓禁止因调仓卖出（硬止损在回测层单独处理）。
 
 输入：
 - new_holdings: 待换入的目标持仓（含 code/weight/score）
-- current_holdings: 当前实际持仓（含 code/weight，可无 score）
+- current_holdings: 当前实际持仓（含 code/weight，可无 score；可选 entry_date）
 
 输出：
-- final_holdings：经 buffer 过滤后的目标持仓
+- final_holdings：经 buffer / 最短持有过滤后的目标持仓
 - trading_cost：估算换手成本
 """
 
@@ -24,35 +25,75 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-class TurnoverController:
-    """Buffer 机制 + 成本估算。"""
+def _trading_days_between(start: str, end: str) -> int:
+    """粗略按日历日差估算持有天数（回测交易日序列更准，此处作保护下限）。"""
+    try:
+        a = datetime.strptime(str(start)[:10], "%Y-%m-%d")
+        b = datetime.strptime(str(end)[:10], "%Y-%m-%d")
+        return max(0, (b - a).days)
+    except (TypeError, ValueError):
+        return 0
 
-    def __init__(self, buffer_threshold: float = 0.15, fee_rate: float = 0.0015):
+
+class TurnoverController:
+    """Buffer 机制 + 最短持有 + 成本估算。"""
+
+    def __init__(
+        self,
+        buffer_threshold: float = 0.40,
+        fee_rate: float = 0.0015,
+        min_hold_days: int = 3,
+    ):
         self.buffer_threshold = buffer_threshold
         self.fee_rate = fee_rate  # 双边费率上限（手续费+滑点+印花税近似）
-        logger.info(f"✅ TurnoverController 初始化完成: buffer={buffer_threshold} fee={fee_rate}")
+        self.min_hold_days = int(min_hold_days)
+        logger.info(
+            f"✅ TurnoverController 初始化完成: buffer={buffer_threshold} "
+            f"fee={fee_rate} min_hold={self.min_hold_days}"
+        )
 
     def apply_buffer_mechanism(
         self,
         new_holdings: pd.DataFrame,
         current_holdings: Optional[pd.DataFrame] = None,
         buffer_threshold: Optional[float] = None,
+        min_hold_days: Optional[int] = None,
+        trade_date: Optional[str] = None,
+        force_exit_codes: Optional[set] = None,
     ) -> pd.DataFrame:
         """
         Args:
             new_holdings: 候选目标持仓，需含 'code', 'weight', 可选 'score'。
-            current_holdings: 当前持仓，需含 'code', 'weight', 可选 'score'。
+            current_holdings: 当前持仓，需含 'code', 'weight', 可选 'score'/'entry_date'。
             buffer_threshold: 覆盖默认阈值。
+            min_hold_days: 最短持有日历日；未满则禁止调仓卖出。
+            trade_date: 当前交易日 YYYY-MM-DD。
+            force_exit_codes: 强制卖出代码（豁免最短持有保护）。
 
         Returns:
-            合并后的目标持仓：保留所有 current_holdings 中仍在 new_holdings
-            的票；对于 new_holdings 里"新增"的票，要求其 score 显著高于
-            current_holdings 最低分（× (1 + buffer)）才允许换入。
+            合并后的目标持仓。
         """
         if buffer_threshold is None:
             buffer_threshold = self.buffer_threshold
+        if min_hold_days is None:
+            min_hold_days = self.min_hold_days
+        force_exit_codes = set(force_exit_codes or set())
 
         if new_holdings is None or new_holdings.empty:
+            # 无新信号时：最短持有保护仍生效，但 force_exit 必须卖出
+            if (
+                current_holdings is not None
+                and not current_holdings.empty
+                and int(min_hold_days) > 0
+                and trade_date
+            ):
+                protected = self._protected_holds(
+                    current_holdings, set(), trade_date, int(min_hold_days)
+                )
+                if force_exit_codes and not protected.empty:
+                    protected = protected[~protected["code"].isin(force_exit_codes)]
+                if not protected.empty:
+                    return self._normalize(protected)
             return pd.DataFrame(columns=['code', 'weight', 'score'])
 
         # 没有当前持仓时直接采纳新持仓
@@ -76,32 +117,91 @@ class TurnoverController:
         if min_cur_score is None:
             threshold_score = -np.inf
         else:
-            threshold_score = min_cur_score * (1.0 + buffer_threshold) if min_cur_score > 0 else min_cur_score + abs(min_cur_score) * buffer_threshold
+            threshold_score = (
+                min_cur_score * (1.0 + buffer_threshold)
+                if min_cur_score > 0
+                else min_cur_score + abs(min_cur_score) * buffer_threshold
+            )
 
         additions = new_df[~new_df['code'].isin(kept_codes)].copy()
         if not additions.empty:
             if additions['score'].notna().any():
-                # 有评分数据时：新增候选必须显著优于当前持仓最弱票才允许换入
                 additions = additions[additions['score'] >= threshold_score]
             else:
-                # 所有新增候选均无评分：拒绝换入，防止无评分股票绕过 buffer 保护
                 logger.warning("⚠️ 新增候选全部无评分(score=NaN)，拒绝换入，仅保留已有持仓")
-                additions = additions.iloc[0:0]  # 清空
+                additions = additions.iloc[0:0]
+
+        # 最短持有：不在新目标中、但未满持有期的旧仓继续保留（强制退出除外）
+        protected = self._protected_holds(
+            cur_df, new_codes | force_exit_codes, trade_date, int(min_hold_days)
+        )
+        if force_exit_codes:
+            if not kept.empty:
+                kept = kept[~kept["code"].isin(force_exit_codes)]
+            if not additions.empty:
+                additions = additions[~additions["code"].isin(force_exit_codes)]
+            if not protected.empty:
+                protected = protected[~protected["code"].isin(force_exit_codes)]
 
         # 合并：kept 的权重用 new_holdings 里的最新权重
         if not kept.empty:
             new_w_map = new_df.set_index('code')['weight'].to_dict()
             kept['weight'] = kept['code'].map(new_w_map).fillna(kept['weight'])
 
-        final = pd.concat([kept[['code', 'weight', 'score']], additions[['code', 'weight', 'score']]], ignore_index=True)
+        parts = []
+        for part in (kept, additions, protected):
+            if part is not None and not part.empty:
+                cols = [c for c in ['code', 'weight', 'score', 'entry_date', 'entry_price', 'sector_code'] if c in part.columns]
+                parts.append(part[cols])
+        if not parts:
+            # 旧仓已清、Buffer 又拒绝全部新候选 → 不应误空仓，回退为新目标
+            if not new_df.empty:
+                logger.warning(
+                    "⚠️ Buffer 过滤后无持仓，回退为新目标持仓 "
+                    f"({len(new_df)} 只)"
+                )
+                return self._normalize(new_df.copy())
+            return pd.DataFrame(columns=['code', 'weight', 'score'])
+        final = pd.concat(parts, ignore_index=True)
+        final = final.drop_duplicates(subset=['code'], keep='first')
         return self._normalize(final)
+
+    def _protected_holds(
+        self,
+        cur_df: pd.DataFrame,
+        new_codes: set,
+        trade_date: Optional[str],
+        min_hold_days: int,
+    ) -> pd.DataFrame:
+        if min_hold_days <= 0 or not trade_date or cur_df is None or cur_df.empty:
+            return pd.DataFrame()
+        if 'entry_date' not in cur_df.columns:
+            return pd.DataFrame()
+        rows = []
+        for _, row in cur_df.iterrows():
+            code = row['code']
+            if code in new_codes:
+                continue
+            held = _trading_days_between(row.get('entry_date'), trade_date)
+            if held < min_hold_days:
+                rows.append(row)
+        if not rows:
+            return pd.DataFrame()
+        out = pd.DataFrame(rows)
+        logger.info(
+            f"🔒 最短持有保护 {len(out)} 只（min_hold_days={min_hold_days}）: "
+            f"{list(out['code'])}"
+        )
+        return out
 
     @staticmethod
     def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+        """只向下归一（权重和>1 时），保留组合优化留下的现金，避免满仓放大回撤。"""
         if df.empty:
             return df
+        df = df.copy()
         total = float(df['weight'].sum())
-        if total > 0:
+        if total > 1.0 + 1e-9:
             df['weight'] = df['weight'] / total
         return df.reset_index(drop=True)
 

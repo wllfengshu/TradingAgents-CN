@@ -120,10 +120,11 @@ async def main():
     """测试导出功能"""
     try:
         # 导入并初始化 MongoDB 客户端
-        from app.core.database import init_database, close_database, get_database
+        from zstock.common.utils.db_utils import init_zstock_database, close_zstock_database
+        from app.core.database import get_database
 
         # 初始化 MongoDB
-        await init_database()
+        await init_zstock_database()
         logger.info("✅ MongoDB 已初始化")
 
         exporter = DataExporter(output_dir="")
@@ -150,8 +151,8 @@ async def main():
     finally:
         # 关闭 MongoDB 连接
         try:
-            from app.core.database import close_database
-            await close_database()
+            from zstock.common.utils.db_utils import close_zstock_database
+            await close_zstock_database()
             logger.info("✅ MongoDB 连接已关闭")
         except:
             pass

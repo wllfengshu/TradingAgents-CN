@@ -31,7 +31,7 @@ class PortfolioOptimizer:
         signals_df: pd.DataFrame,
         min_holdings: int = 5,
         max_holdings: int = 20,
-        max_weight_per_stock: float = 0.20,
+        max_weight_per_stock: float = 0.12,
         weighting: str = 'score',  # 'equal' | 'score' | 'softmax'
         softmax_temperature: float = 1.0,
     ) -> Dict:
@@ -55,6 +55,8 @@ class PortfolioOptimizer:
             return {'status': 'failed', 'reason': 'empty signals', 'holdings_df': pd.DataFrame(), 'weights': np.array([])}
 
         df = signals_df.copy()
+        if 'final_score' not in df.columns and 'strategy_signal_score' in df.columns:
+            df['final_score'] = df['strategy_signal_score']
         if 'final_score' not in df.columns:
             df['final_score'] = 0.0
         df = df.sort_values('final_score', ascending=False).reset_index(drop=True)
@@ -83,28 +85,42 @@ class PortfolioOptimizer:
             w = shifted / shifted.sum()
 
         # 应用 per-stock 上限：超出的权重收回后再按比例分配给未上限的票。
+        # 若 n * cap < 1，剩余为现金（不再强行归一化到 1，避免抬破上限）。
         cap = max_weight_per_stock
         for _ in range(10):
-            over = w > cap
+            over = w > cap + 1e-12
             if not over.any():
                 break
             excess = (w[over] - cap).sum()
             w[over] = cap
-            if not (~over).any():
+            under = ~over
+            if not under.any() or w[under].sum() <= 0:
                 break
-            normal = ~over
-            w[normal] = w[normal] + excess * (w[normal] / w[normal].sum())
+            w[under] = w[under] + excess * (w[under] / w[under].sum())
 
-        w = w / w.sum()  # 最终归一化
+        w = np.clip(w, 0.0, cap)
         df['weight'] = w
 
         # 过滤掉权重为零或极小的股票（score-weighting 下末尾票可能接近零）
         df = df[df['weight'] > 1e-6].copy()
         if df.empty:
             return {'status': 'failed', 'reason': 'all weights zero after cap', 'holdings_df': pd.DataFrame(), 'weights': np.array([])}
-        # 重新归一化（移除零权重票后权重和可能不等于1）
-        df['weight'] = df['weight'] / df['weight'].sum()
         w = df['weight'].values
+        n_eff = len(df)
+        # 在单股 cap 约束下尽量用满可投资额度（避免 top_k=3,cap=0.12 仅投 36% 的 cash drag）
+        target_sum = min(1.0, n_eff * cap)
+        wsum = float(w.sum())
+        if wsum > 1e-9 and wsum < target_sum - 1e-9:
+            w = w / wsum * target_sum
+            df['weight'] = w
+        # 仅当未触顶现金约束时归一化；触顶则保留现金
+        if float(w.sum()) > 1.0 + 1e-9:
+            w = w / w.sum()
+            df['weight'] = w
+        # 若未满仓且无人触顶，归一化到满仓
+        elif float(w.max()) < cap - 1e-9 and float(w.sum()) > 0:
+            df['weight'] = w / w.sum()
+            w = df['weight'].values
 
         holdings_df = df[['code', 'final_score', 'weight']].rename(columns={'final_score': 'score'})
         return {
@@ -113,4 +129,5 @@ class PortfolioOptimizer:
             'weights': w,
             'n_holdings': len(df),
             'max_weight_actual': float(w.max()),
+            'invested_weight': float(w.sum()),
         }
