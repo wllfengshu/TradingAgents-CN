@@ -220,21 +220,21 @@ class TradeSettlement:
         target_positions: "pd.DataFrame",
         broker_positions: List[Dict],
         price_map: Optional[Dict[str, float]] = None,
-        total_capital: float = 1e7,
+        total_capital: Optional[float] = None,
     ) -> Dict:
         """
         对账：目标持仓 vs 券商实际持仓（执行层核心对账）。
 
         比较的是「应该持有多少股」与「实际持有多少股」，而非空本地账本。
         """
-        import pandas as pd
+        from zstock.common.utils.common_utils import normalize_code
         from zstock.order_management.order_generator import OrderGenerator
 
         logger.info("🔍 目标持仓 vs 券商对账")
 
         target_df = OrderGenerator.normalize_positions_df(target_positions)
         broker_map = {
-            p["code"]: int(p.get("volume", 0))
+            normalize_code(p["code"]): int(p.get("volume", 0))
             for p in broker_positions
             if p.get("code")
         }
@@ -244,13 +244,24 @@ class TradeSettlement:
 
         for _, row in target_df.iterrows():
             code = str(row["stock_code"])
+            broker_vol = broker_map.get(code, 0)
             if "target_shares" in row.index and not pd.isna(row.get("target_shares")):
                 target_vol = int(row["target_shares"])
             else:
                 target_vol = OrderGenerator._row_to_volume(
                     row, price_map or {}, total_capital
                 )
-            broker_vol = broker_map.get(code, 0)
+            if target_vol is None:
+                discrepancies.append(
+                    {
+                        "stock_code": code,
+                        "target_volume": None,
+                        "broker_volume": broker_vol,
+                        "difference": None,
+                        "status": "skipped_unpriced",
+                    }
+                )
+                continue
             if target_vol == broker_vol:
                 matched.append(
                     {"stock_code": code, "target_volume": target_vol, "broker_volume": broker_vol}

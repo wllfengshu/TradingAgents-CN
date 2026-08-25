@@ -77,9 +77,13 @@ class OrderGenerator:
         current_positions: Optional[pd.DataFrame] = None,
         trade_date: Optional[str] = None,
         price_map: Optional[Dict[str, float]] = None,
-        total_capital: float = 1e7,
+        total_capital: Optional[float] = None,
     ) -> List[Order]:
-        """根据目标/当前持仓生成订单列表。"""
+        """根据目标/当前持仓生成订单列表。
+
+        缺行情时跳过该标的、保留当前持仓，绝不把目标股数当成 0 去清仓。
+        用 weight 换算时必须传入有效 total_capital，不再默认 1000 万。
+        """
         from zstock.common.utils.common_utils import normalize_date
 
         logger.info("📋 开始生成订单")
@@ -96,11 +100,17 @@ class OrderGenerator:
             return orders
 
         current_positions = self.normalize_positions_df(current_positions)
-        price_map = {
-            normalize_code(k): float(v)
-            for k, v in (price_map or {}).items()
-            if v is not None
-        }
+        raw_price_map = price_map or {}
+        price_map = {}
+        for k, v in raw_price_map.items():
+            if v is None:
+                continue
+            try:
+                px = float(v)
+            except (TypeError, ValueError):
+                continue
+            if px > 0:
+                price_map[normalize_code(k)] = px
 
         try:
             current_map: Dict[str, int] = {}
@@ -126,6 +136,8 @@ class OrderGenerator:
                 if vol > 0:
                     orders.append(self._create_order(stock_code, "sell", vol, "market"))
 
+            skipped: List[str] = []
+
             for stock_code in adjust_codes:
                 target_row = target_positions[target_positions["stock_code"] == stock_code]
                 if target_row.empty:
@@ -133,6 +145,9 @@ class OrderGenerator:
                 target_vol = self._row_to_volume(
                     target_row.iloc[0], price_map, total_capital
                 )
+                if target_vol is None:
+                    skipped.append(stock_code)
+                    continue
                 cur_vol = current_map.get(stock_code, 0)
                 if target_vol < cur_vol:
                     orders.append(
@@ -146,21 +161,35 @@ class OrderGenerator:
                 target_vol = self._row_to_volume(
                     target_row.iloc[0], price_map, total_capital
                 )
+                if target_vol is None:
+                    skipped.append(stock_code)
+                    continue
                 if target_vol > 0:
                     orders.append(self._create_order(stock_code, "buy", target_vol, "market"))
 
             for stock_code in adjust_codes:
+                if stock_code in skipped:
+                    continue
                 target_row = target_positions[target_positions["stock_code"] == stock_code]
                 if target_row.empty:
                     continue
                 target_vol = self._row_to_volume(
                     target_row.iloc[0], price_map, total_capital
                 )
+                if target_vol is None:
+                    skipped.append(stock_code)
+                    continue
                 cur_vol = current_map.get(stock_code, 0)
                 if target_vol > cur_vol:
                     orders.append(
                         self._create_order(stock_code, "buy", target_vol - cur_vol, "market")
                     )
+
+            if skipped:
+                logger.error(
+                    "❌ 缺价或无法换算，已跳过（保留当前持仓，不清仓）: %s",
+                    skipped,
+                )
 
             for order in orders:
                 self.orders[order.order_id] = order
@@ -199,30 +228,55 @@ class OrderGenerator:
     def _row_to_volume(
         row: pd.Series,
         price_map: Dict[str, float],
-        total_capital: float,
-    ) -> int:
-        """从行数据中提取目标股数。优先 target_shares，否则 weight × 价格。"""
+        total_capital: Optional[float],
+    ) -> Optional[int]:
+        """从行数据中提取目标股数。优先 target_shares，否则 weight × 价格。
+
+        返回 None 表示无法确定（缺价、缺资金等）。调用方必须跳过该标的，
+        不得把 None 当成 0 股去生成卖单。
+        """
         if "target_shares" in row.index and not pd.isna(row["target_shares"]):
             try:
                 return max(int(row["target_shares"]), 0)
             except (TypeError, ValueError):
-                return 0
+                logger.error("target_shares 无法解析，跳过该标的")
+                return None
 
         if "weight" in row.index and not pd.isna(row["weight"]):
             try:
                 weight = float(row["weight"])
             except (TypeError, ValueError):
-                return 0
+                return None
             stock_code = OrderGenerator._extract_stock_code(row)
             if not stock_code:
+                return None
+            if weight <= 0:
                 return 0
+            if total_capital is None or total_capital <= 0:
+                logger.error(
+                    "缺少有效总资金，无法把 weight 换算成股数: %s", stock_code
+                )
+                return None
             price = float(price_map.get(stock_code, 0.0) or 0.0)
             if price <= 0:
-                logger.debug(f"   缺少最新价，无法把 weight 换算成股数: {stock_code}")
-                return 0
+                logger.error(
+                    "缺少最新价，无法把 weight 换算成股数（跳过，不清仓）: %s",
+                    stock_code,
+                )
+                return None
             shares = int((total_capital * weight) / price)
-            return (shares // 100) * 100
-        return 0
+            lot_shares = (shares // 100) * 100
+            if lot_shares <= 0:
+                logger.error(
+                    "正权重整手后不足 1 手，跳过（不清仓）: %s weight=%s price=%s",
+                    stock_code,
+                    weight,
+                    price,
+                )
+                return None
+            return lot_shares
+        logger.error("目标行既无 target_shares 也无 weight，跳过")
+        return None
 
     def get_orders(self, order_id: Optional[str] = None) -> List[Order]:
         if order_id:

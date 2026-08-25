@@ -92,7 +92,7 @@ async def verify_order_management():
         logger.info("\n【第三步】验证执行器模块")
         logger.info("-" * 80)
 
-        executor = XtQuantExecutor()
+        executor = XtQuantExecutor(allow_mock=True)
         logger.info("✅ XtQuantExecutor 初始化成功")
 
         # 检查 Mock 模式
@@ -100,12 +100,18 @@ async def verify_order_management():
 
         # 获取账户信息
         account_info = executor.get_account_info()
+        if not account_info:
+            logger.error("❌ 账户信息不可用")
+            return False
         logger.info(f"✅ 账户信息获取成功")
         logger.info(f"   - 现金: {account_info['cash']:.0f}")
         logger.info(f"   - 总资产: {account_info['total_value']:.0f}")
 
-        # 获取持仓
+        # 获取持仓（失败是 None，不是空列表）
         positions = executor.get_positions()
+        if positions is None:
+            logger.error("❌ 持仓查询失败")
+            return False
         logger.info(f"✅ 持仓查询成功: {len(positions)} 只")
 
         # 提交订单
@@ -173,14 +179,19 @@ async def verify_order_management():
         logger.info("-" * 80)
 
         pipeline = OrderManagementPipeline(
-            execution_strategy=ExecutionStrategy(twap_interval_seconds=0)
+            xtquant_executor=XtQuantExecutor(allow_mock=True),
+            execution_strategy=ExecutionStrategy(twap_interval_seconds=0),
+            allow_mock=True,
         )
         logger.info("✅ OrderManagementPipeline 初始化成功")
 
         # 执行完整流程
         logger.info("\n执行完整管道...")
 
-        result = await pipeline.execute_full_pipeline(target_positions)
+        result = await pipeline.execute_full_pipeline(
+            target_positions,
+            strategy="final",
+        )
 
         if result['status'] == 'success':
             logger.info("✅ 管道执行成功")

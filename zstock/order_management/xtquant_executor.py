@@ -22,18 +22,20 @@ _ORDERS_COLLECTION = "zstock_orders"
 class XtQuantExecutor:
     """XtQuant 执行器：提交/查询/撤单，代码统一转为 QMT 格式。"""
 
-    def __init__(self, qmt_util=None):
+    def __init__(self, qmt_util=None, allow_mock: bool = False):
         from .qmt_client_factory import create_qmt_util, is_mock_client
 
         self._db_service = None
+        self.allow_mock = allow_mock
 
         if qmt_util is None:
-            logger.warning("⚠️ qmt_util 未传入，自动创建客户端")
-            qmt_util = create_qmt_util(prefer_real=True)
+            qmt_util = create_qmt_util(prefer_real=True, allow_mock=allow_mock)
 
         self.qmt_util = qmt_util
         self.mock_mode = is_mock_client(qmt_util)
-        logger.info(f"✅ XtQuantExecutor 初始化完成 (Mock={self.mock_mode})")
+        if self.mock_mode:
+            logger.warning("XtQuantExecutor 处于 Mock 模式（allow_mock=%s）", allow_mock)
+        logger.info("XtQuantExecutor 初始化完成 (Mock=%s)", self.mock_mode)
 
     @property
     def db_service(self):
@@ -172,10 +174,13 @@ class XtQuantExecutor:
             logger.error(f"❌ 获取账户信息失败: {e}")
             return None
 
-    def get_positions(self) -> List[Dict]:
-        """返回 6 位 code 格式的持仓列表。"""
+    def get_positions(self) -> Optional[List[Dict]]:
+        """返回 6 位 code 格式的持仓列表。查询失败返回 None（不是空列表）。"""
         try:
             positions = self.qmt_util.get_positions()
+            if positions is None:
+                logger.error("券商持仓查询返回 None")
+                return None
             return [
                 {
                     "code": normalize_code(p.code),
@@ -188,7 +193,7 @@ class XtQuantExecutor:
             ]
         except Exception as e:
             logger.error(f"❌ 获取持仓失败: {e}")
-            return []
+            return None
 
     def get_price_map(self, codes: List[str]) -> Dict[str, float]:
         """批量获取最新价 {6位code: price}。"""
