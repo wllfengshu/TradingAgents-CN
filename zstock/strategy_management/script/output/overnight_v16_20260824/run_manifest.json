@@ -1,0 +1,31 @@
+{
+  "started": "2026-08-24T22:34:42.053306",
+  "finished": "2026-08-25T00:31:26.095390",
+  "elapsed": "01:56:44",
+  "output_dir": "E:\\TradingAgents-CN\\zstock\\strategy_management\\script\\output\\overnight_v16_20260824",
+  "args": {
+    "skip_precompute": true,
+    "skip_eval": false,
+    "skip_grid": false,
+    "skip_sensitivity": false,
+    "no_quarters": false,
+    "year": null,
+    "end_date": "2026-08-24",
+    "capital": 1000000.0,
+    "fee": 0.0015,
+    "rebalance": null,
+    "lookback": 120,
+    "resource_fraction": 0.5,
+    "workers": null,
+    "load_workers": null,
+    "query_workers": null,
+    "max_combinations": 80,
+    "space": "wide",
+    "grid_workers": 1,
+    "eval_period": 5,
+    "plot_eval": false,
+    "apply": false,
+    "output": "E:\\TradingAgents-CN\\zstock\\strategy_management\\script\\output\\overnight_v16_20260824",
+    "resume": false
+  }
+}

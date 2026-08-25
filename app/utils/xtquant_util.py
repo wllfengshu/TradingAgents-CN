@@ -219,20 +219,21 @@ class QMTUtil:
         amount: float,
         price: Optional[float] = None,
         remark: str = "AI量化买入",
+        volume: Optional[int] = None,
     ) -> Optional[int]:
         """
         买入股票。
         Args:
             code:   股票代码（含市场后缀，如 600000.SH）
-            amount: 买入金额（元）
+            amount: 买入金额（元）；volume 指定时仅作日志参考
             price:  限价价格，None=市价
+            volume: 指定股数（100 整数倍）时跳过 amount 折算
             remark: 备注
         Returns:
             订单 ID（失败返回 None）
         """
         self._require_connection()
 
-        # 获取当前价格以计算股数
         quote = self.get_realtime_quote([code])
         current_price = price
         if current_price is None:
@@ -242,8 +243,10 @@ class QMTUtil:
                 logger.error(f"无法获取 {code} 当前价格，取消买入")
                 return None
 
-        # 计算买入手数（100股为一手，向下取整）
-        volume = int(amount / current_price / 100) * 100
+        if volume is not None:
+            volume = (int(volume) // 100) * 100
+        else:
+            volume = int(amount / current_price / 100) * 100
         if volume <= 0:
             logger.warning(f"买入金额 {amount} 不足以购买 1 手 {code}（价格={current_price}），跳过")
             return None

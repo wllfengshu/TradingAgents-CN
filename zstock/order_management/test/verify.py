@@ -59,7 +59,7 @@ async def verify_order_management():
         # 1. 只初始化 MongoDB
         from app.core import database as db_module
         print("📌 步骤 1: 初始化 MongoDB...")
-        await db_module.db_manager.init_mongodb(),
+        await db_module.db_manager.init_mongodb()
         db_module.mongo_client = db_module.db_manager.mongo_client
         db_module.mongo_db = db_module.db_manager.mongo_db
         print("✅ MongoDB 已连接\n")
@@ -67,16 +67,20 @@ async def verify_order_management():
         generator = OrderGenerator()
         logger.info("✅ OrderGenerator 初始化成功")
 
-        # 准备目标持仓
+        # 策略层格式：code + weight（与 StrategyPipeline.final_holdings 一致）
         target_positions = pd.DataFrame({
-            'stock_code': ['SH600000', 'SH600001', 'SZ000001'],
-            'target_shares': [1000, 500, 2000],
+            'code': ['600000', '600001', '000001'],
+            'weight': [0.10, 0.05, 0.08],
         })
 
         logger.info(f"   目标持仓数: {len(target_positions)}")
 
-        # 生成订单
-        orders = generator.generate_orders(target_positions)
+        # 生成订单（Mock 行情价 10 元，总资金 100 万）
+        orders = generator.generate_orders(
+            target_positions,
+            price_map={'600000': 10.0, '600001': 10.0, '000001': 10.0},
+            total_capital=1_000_000,
+        )
         logger.info(f"✅ 生成订单数: {len(orders)}")
 
         for i, order in enumerate(orders[:3]):
@@ -134,7 +138,12 @@ async def verify_order_management():
 
         # 对账
         current_positions = executor.get_positions()
-        reconcile_result = settlement.reconcile_positions(current_positions)
+        reconcile_result = settlement.reconcile_target_vs_broker(
+            target_positions,
+            current_positions,
+            price_map={'600000': 10.0, '600001': 10.0, '000001': 10.0},
+            total_capital=1_000_000,
+        )
         logger.info(f"✅ 对账完成: {reconcile_result['status']}")
         logger.info(f"   - 匹配数: {reconcile_result['matched_count']}")
         logger.info(f"   - 异常数: {reconcile_result['discrepancy_count']}")

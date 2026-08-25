@@ -2,14 +2,17 @@
 XtQuant 执行接口模块
 
 通过注入 QMTUtil（真实）或 MockQMTUtil（模拟）执行订单操作。
-所有账户查询/下单操作完全委托给 qmt_util，不含任何内联 mock 逻辑。
 订单数据持久化到 MongoDB，通过 DatabaseService 读写。
 """
 
 import logging
 from typing import Dict, List, Optional
 from datetime import datetime
+
 from zstock.common.entity.order_entity import Order
+from zstock.common.utils.common_utils import normalize_code
+from zstock.common.utils.xtquant_data_utils import to_xt_code
+from zstock.data_management.database_service import get_database_service
 
 logger = logging.getLogger(__name__)
 
@@ -17,72 +20,46 @@ _ORDERS_COLLECTION = "zstock_orders"
 
 
 class XtQuantExecutor:
-    """
-    XtQuant 执行器
-
-    通过注入 QMTUtil（真实）或 MockQMTUtil（模拟）统一执行交易操作。
-    mock 与真实模式的区别完全由注入的 qmt_util 类型决定，本类不含任何内联 mock 逻辑。
-    订单数据全部持久化到 MongoDB（collection: zstock_orders）。
-
-    属性：
-        qmt_util:    QMTUtil 或 MockQMTUtil 实例
-        db_service:  DatabaseService 实例
-        mock_mode:   True 表示当前使用模拟客户端
-    """
+    """XtQuant 执行器：提交/查询/撤单，代码统一转为 QMT 格式。"""
 
     def __init__(self, qmt_util=None):
-        """
-        初始化 XtQuant 执行器
+        from .qmt_client_factory import create_qmt_util, is_mock_client
 
-        Args:
-            qmt_util:   已连接的 QMTUtil 或 MockQMTUtil 实例。
-                        未传入时自动创建并连接 MockQMTUtil。
-        """
-        from zstock.data_management.database_service import DatabaseService
-        db_service = DatabaseService()
-        self.db_service = db_service
+        self._db_service = None
 
         if qmt_util is None:
-            # 延迟导入：xtquant SDK 依赖运行时 sys.path 动态注入，顶层导入会导致 IDE 解析失败
-            from app.utils.xtquant_mock_util import get_xtquant_mock_client
-            logger.warning("⚠️ qmt_util 未传入，自动使用 MockQMTUtil")
-            qmt_util = get_xtquant_mock_client()
-            qmt_util.connect()
+            logger.warning("⚠️ qmt_util 未传入，自动创建客户端")
+            qmt_util = create_qmt_util(prefer_real=True)
 
         self.qmt_util = qmt_util
-        # 延迟导入 MockQMTUtil 用于 isinstance 检查
-        try:
-            from app.utils.xtquant_mock_util import MockQMTUtil
-            self.mock_mode = isinstance(qmt_util, MockQMTUtil)
-        except ImportError:
-            self.mock_mode = False
+        self.mock_mode = is_mock_client(qmt_util)
         logger.info(f"✅ XtQuantExecutor 初始化完成 (Mock={self.mock_mode})")
 
-    # ------------------------------------------------------------------ #
-    # 订单提交                                                              #
-    # ------------------------------------------------------------------ #
+    @property
+    def db_service(self):
+        if self._db_service is None:
+            self._db_service = get_database_service()
+        return self._db_service
+
+    @staticmethod
+    def to_broker_code(stock_code: str) -> str:
+        """6 位或任意格式 → QMT 代码（如 600000.SH）。"""
+        return to_xt_code(normalize_code(stock_code))
 
     async def submit_order(self, order: Order) -> Optional[int]:
-        """
-        提交订单到券商，并将订单记录写入 MongoDB。
-
-        Args:
-            order: Order 对象，需包含 order_id / stock_code / direction / volume / price
-
-        Returns:
-            int: XtQuant 订单ID（失败返回 None）
-        """
+        """提交订单到券商，并将订单记录写入 MongoDB。"""
         try:
+            broker_code = self.to_broker_code(order.stock_code)
             logger.info(
-                f"📤 提交订单: {order.order_id} {order.stock_code} "
+                f"📤 提交订单: {order.order_id} {broker_code} "
                 f"{order.direction} x{order.volume}"
             )
 
-            if order.direction == 'buy':
-                xt_order_id = self._buy(order)
-            elif order.direction == 'sell':
+            if order.direction == "buy":
+                xt_order_id = self._buy(order, broker_code)
+            elif order.direction == "sell":
                 xt_order_id = self.qmt_util.sell(
-                    code=order.stock_code,
+                    code=broker_code,
                     volume=order.volume,
                     price=order.price,
                     remark=f"Order:{order.order_id}",
@@ -92,17 +69,21 @@ class XtQuantExecutor:
                 return None
 
             if xt_order_id:
-                await self.db_service.insert_one(_ORDERS_COLLECTION, {
-                    'order_id':     order.order_id,
-                    'xt_order_id':  xt_order_id,
-                    'stock_code':   order.stock_code,
-                    'direction':    order.direction,
-                    'volume':       order.volume,
-                    'price':        order.price,
-                    'status':       'pending',
-                    'submitted_at': datetime.utcnow().isoformat(),
-                    'updated_at':   datetime.utcnow().isoformat(),
-                })
+                await self.db_service.insert_one(
+                    _ORDERS_COLLECTION,
+                    {
+                        "order_id": order.order_id,
+                        "xt_order_id": xt_order_id,
+                        "stock_code": normalize_code(order.stock_code),
+                        "broker_code": broker_code,
+                        "direction": order.direction,
+                        "volume": order.volume,
+                        "price": order.price,
+                        "status": "pending",
+                        "submitted_at": datetime.utcnow().isoformat(),
+                        "updated_at": datetime.utcnow().isoformat(),
+                    },
+                )
                 logger.info(f"✅ 订单提交成功: xt_order_id={xt_order_id}")
                 return xt_order_id
 
@@ -113,121 +94,95 @@ class XtQuantExecutor:
             logger.error(f"❌ 提交订单异常: {e}")
             return None
 
-    def _buy(self, order: Order) -> Optional[int]:
-        """
-        内部买入辅助：将 volume(股) 转换为 amount(元) 后调用 qmt_util.buy()。
-
-        qmt_util.buy() 接受 amount(元)，内部再按当前价折算手数。
-        price=None 时先通过 get_realtime_quote 获取当前价以计算 amount，
-        最终仍将 price=None 传入 buy()，由 qmt_util 以市价下单。
-        """
+    def _buy(self, order: Order, broker_code: str) -> Optional[int]:
+        """按股数下单；qmt_util.buy 支持 volume 参数时优先使用。"""
         price = order.price
-
         if price is None:
             try:
-                quote = self.qmt_util.get_realtime_quote([order.stock_code]) or {}
-                tick = quote.get(order.stock_code, {})
-                price = float(tick.get('lastPrice', 0.0) or 0.0)
+                quote = self.qmt_util.get_realtime_quote([broker_code]) or {}
+                tick = quote.get(broker_code, {})
+                price = float(tick.get("lastPrice", 0.0) or 0.0)
             except Exception as e:
-                logger.error(f"❌ 获取 {order.stock_code} 实时行情失败: {e}")
+                logger.error(f"❌ 获取 {broker_code} 实时行情失败: {e}")
 
         if not price or price <= 0:
-            logger.error(f"❌ {order.stock_code} 无法取得有效价格，跳过买入")
+            logger.error(f"❌ {broker_code} 无法取得有效价格，跳过买入")
             return None
 
-        estimated_amount = order.volume * price
-        return self.qmt_util.buy(
-            code=order.stock_code,
-            amount=estimated_amount,
-            price=order.price,
+        buy_fn = self.qmt_util.buy
+        if _accepts_volume(buy_fn):
+            return buy_fn(
+                code=broker_code,
+                amount=order.volume * price,
+                price=price,
+                remark=f"Order:{order.order_id}",
+                volume=order.volume,
+            )
+
+        return buy_fn(
+            code=broker_code,
+            amount=order.volume * price,
+            price=price,
             remark=f"Order:{order.order_id}",
         )
 
-    # ------------------------------------------------------------------ #
-    # 订单查询 / 撤单                                                       #
-    # ------------------------------------------------------------------ #
-
     async def query_order(self, order_id: str) -> Optional[Dict]:
-        """从 MongoDB 查询单条订单"""
         doc = await self.db_service.query_one(
-            _ORDERS_COLLECTION, {'order_id': order_id}
+            _ORDERS_COLLECTION, {"order_id": order_id}
         )
         if not doc:
             logger.error(f"❌ 订单不存在: {order_id}")
         return doc
 
     async def query_all_orders(self, status: Optional[str] = None) -> List[Dict]:
-        """
-        从 MongoDB 查询订单列表。
-
-        Args:
-            status: 按状态筛选（pending / filled / cancelled），None 表示不筛选
-        """
-        query = {'status': status} if status else {}
+        query = {"status": status} if status else {}
         return await self.db_service.query(_ORDERS_COLLECTION, query)
 
     async def cancel_order(self, order_id: str) -> bool:
-        """
-        撤单：向券商发送撤单请求，并将 MongoDB 中订单状态更新为 cancelled。
-        """
         logger.info(f"🚫 撤单: {order_id}")
 
         doc = await self.db_service.query_one(
-            _ORDERS_COLLECTION, {'order_id': order_id}
+            _ORDERS_COLLECTION, {"order_id": order_id}
         )
         if not doc:
             logger.error(f"❌ 订单不存在: {order_id}")
             return False
 
-        xt_order_id = doc.get('xt_order_id')
+        xt_order_id = doc.get("xt_order_id")
         if xt_order_id:
             self.qmt_util.cancel_order(xt_order_id)
 
         await self.db_service.update_one(
             _ORDERS_COLLECTION,
-            {'order_id': order_id},
-            {'status': 'cancelled', 'updated_at': datetime.utcnow().isoformat()},
+            {"order_id": order_id},
+            {"status": "cancelled", "updated_at": datetime.utcnow().isoformat()},
         )
         logger.info(f"✅ 订单已撤单: {order_id}")
         return True
 
-    # ------------------------------------------------------------------ #
-    # 账户 / 持仓查询                                                       #
-    # ------------------------------------------------------------------ #
-
     def get_account_info(self) -> Optional[Dict]:
-        """
-        获取账户信息。
-
-        Returns:
-            {'cash': float, 'total_value': float, 'frozen_cash': float}
-        """
         try:
             info = self.qmt_util.get_account_info()
             return {
-                'cash':        info.cash,
-                'total_value': info.total_value,
-                'frozen_cash': info.frozen_cash,
+                "cash": info.cash,
+                "total_value": info.total_value,
+                "frozen_cash": info.frozen_cash,
             }
         except Exception as e:
             logger.error(f"❌ 获取账户信息失败: {e}")
             return None
 
     def get_positions(self) -> List[Dict]:
-        """
-        获取当前持仓。
-
-        Returns:
-            [{'code', 'volume', 'cost_price', 'current_price'}, ...]
-        """
+        """返回 6 位 code 格式的持仓列表。"""
         try:
             positions = self.qmt_util.get_positions()
             return [
                 {
-                    'code':          p.code,
-                    'volume':        p.volume,
-                    'cost_price':    p.cost_price,
-                    'current_price': p.current_price,
+                    "code": normalize_code(p.code),
+                    "broker_code": self.to_broker_code(p.code),
+                    "volume": p.volume,
+                    "cost_price": p.cost_price,
+                    "current_price": p.current_price,
                 }
                 for p in positions
             ]
@@ -235,10 +190,33 @@ class XtQuantExecutor:
             logger.error(f"❌ 获取持仓失败: {e}")
             return []
 
-    # ------------------------------------------------------------------ #
-    # 连接状态                                                              #
-    # ------------------------------------------------------------------ #
+    def get_price_map(self, codes: List[str]) -> Dict[str, float]:
+        """批量获取最新价 {6位code: price}。"""
+        if not codes:
+            return {}
+        broker_codes = [self.to_broker_code(c) for c in codes]
+        try:
+            quotes = self.qmt_util.get_realtime_quote(broker_codes) or {}
+        except Exception as e:
+            logger.error(f"❌ 批量行情失败: {e}")
+            return {}
+
+        out: Dict[str, float] = {}
+        for pure, broker in zip(codes, broker_codes):
+            tick = quotes.get(broker, {})
+            px = float(tick.get("lastPrice", 0.0) or 0.0)
+            if px > 0:
+                out[normalize_code(pure)] = px
+        return out
 
     def is_connected(self) -> bool:
-        """检查 qmt_util 是否已连接"""
-        return bool(getattr(self.qmt_util, '_connected', False))
+        return bool(getattr(self.qmt_util, "_connected", False))
+
+
+def _accepts_volume(fn) -> bool:
+    import inspect
+
+    try:
+        return "volume" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False

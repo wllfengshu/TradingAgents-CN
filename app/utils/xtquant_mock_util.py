@@ -153,12 +153,16 @@ class MockQMTUtil:
         amount: float,
         price: Optional[float] = None,
         remark: str = "AI量化买入",
+        volume: Optional[int] = None,
     ) -> Optional[int]:
         """模拟买入操作"""
         self._require_connection()
         quote = self.get_realtime_quote([code])
         current_price = price or quote.get(code, {}).get("lastPrice", 10.0)
-        volume = int(amount / current_price / 100) * 100
+        if volume is None:
+            volume = int(amount / current_price / 100) * 100
+        else:
+            volume = (int(volume) // 100) * 100
         if volume <= 0:
             logger.warning(f"[Mock] 买入金额 {amount} 不足以购买 1 手 {code}，跳过")
             return None

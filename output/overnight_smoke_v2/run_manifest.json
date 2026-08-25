@@ -1,0 +1,31 @@
+{
+  "started": "2026-08-23T22:12:28.376336",
+  "finished": "2026-08-23T22:12:54.238721",
+  "elapsed": "00:00:25",
+  "output_dir": "output\\overnight_smoke_v2",
+  "args": {
+    "skip_precompute": true,
+    "skip_eval": true,
+    "skip_grid": true,
+    "skip_sensitivity": true,
+    "no_quarters": true,
+    "year": 2024,
+    "end_date": "2024-01-31",
+    "capital": 1000000.0,
+    "fee": 0.0015,
+    "rebalance": null,
+    "lookback": 120,
+    "resource_fraction": 0.5,
+    "workers": null,
+    "load_workers": null,
+    "query_workers": null,
+    "max_combinations": 80,
+    "space": "wide",
+    "grid_workers": 4,
+    "eval_period": 5,
+    "plot_eval": false,
+    "apply": false,
+    "output": "output/overnight_smoke_v2",
+    "resume": false
+  }
+}

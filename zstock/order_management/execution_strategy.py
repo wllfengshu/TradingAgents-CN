@@ -180,7 +180,9 @@ class ExecutionStrategy:
                 if batch_idx == TWAP_SLICES - 1:
                     batch_qty += remaining_volume
 
-                # 创建分批订单
+                if batch_qty <= 0:
+                    continue
+
                 batch_order = self._create_batch_order(
                     order, batch_idx, batch_qty
                 )

@@ -1,0 +1,67 @@
+{
+  "completed_steps": [
+    "preflight",
+    "factor_coverage",
+    "ohlcv",
+    "bt_current_full",
+    "bench_bench_2024"
+  ],
+  "results": {
+    "preflight": {
+      "ok": true,
+      "issues": [],
+      "mongo": "ok",
+      "stock_info_count": 5558,
+      "strategy_params_exists": true
+    },
+    "factor_coverage": {
+      "by_year": {
+        "2024": {
+          "start": "2024-01-01",
+          "end": "2024-01-31",
+          "market_days": 22,
+          "sector_docs": 2794,
+          "dragon_docs": 62585,
+          "force_docs": 62585
+        }
+      },
+      "start": "2024-01-01",
+      "end": "2024-01-31"
+    },
+    "ohlcv": {
+      "count": 2971
+    },
+    "bt_current_full": {
+      "status": "success",
+      "label": "current_full",
+      "start": "2024-01-01",
+      "end": "2024-01-31",
+      "total_return": -0.09779615509632689,
+      "total_return_gross": -0.09413344379895916,
+      "annualized_return": -0.6761866985360083,
+      "sharpe": -5.93028793076391,
+      "calmar": -6.777211090820964,
+      "max_drawdown": -0.09977359262895524,
+      "avg_turnover": 0.09782608695652174,
+      "total_cost": 0.00405,
+      "rebalance_count": 4,
+      "avg_exposure": 0.6,
+      "final_equity": 0.9022038449036731,
+      "chart": "output\\overnight_smoke_v3\\segments\\current_full\\equity.png",
+      "output_dir": "output\\overnight_smoke_v3\\segments\\current_full"
+    },
+    "bench_bench_2024": {
+      "status": "success",
+      "index": "399300",
+      "start": "2024-01-01",
+      "end": "2024-01-31",
+      "total_return": -0.05049711311759664,
+      "sharpe": -3.5712477862348413,
+      "max_drawdown": -0.05049711311759664,
+      "label": "HS300 2024-01-01~2024-01-31"
+    }
+  },
+  "output_dir": "output\\overnight_smoke_v3",
+  "updated_at": "2026-08-23T22:15:49.071046",
+  "ohlcv_count": 2971
+}

@@ -133,8 +133,14 @@ class TradeSettlement:
         """
         logger.info("🔍 开始对账")
 
-        # 创建 XtQuant 持仓字典
-        xtquant_map = {p['code']: p['volume'] for p in xtquant_positions}
+        # 创建 XtQuant 持仓字典（统一 6 位 code）
+        from zstock.common.utils.common_utils import normalize_code
+
+        xtquant_map = {
+            normalize_code(p["code"]): int(p.get("volume", 0))
+            for p in xtquant_positions
+            if p.get("code")
+        }
 
         matched = []
         discrepancies = []
@@ -196,6 +202,102 @@ class TradeSettlement:
         logger.info(f"✅ 对账完成: {result['matched_count']} 正常, "
                    f"{result['discrepancy_count']} 异常, 状态={status}")
 
+        return result
+
+    def sync_positions_from_broker(self, broker_positions: List[Dict]) -> None:
+        """用券商持仓初始化本地账本（对账前调用）。"""
+        from zstock.common.utils.common_utils import normalize_code
+
+        self.current_positions = {
+            normalize_code(p["code"]): int(p.get("volume", 0))
+            for p in broker_positions
+            if p.get("code")
+        }
+        logger.info("📒 本地账本已从券商同步: %d 只", len(self.current_positions))
+
+    def reconcile_target_vs_broker(
+        self,
+        target_positions: "pd.DataFrame",
+        broker_positions: List[Dict],
+        price_map: Optional[Dict[str, float]] = None,
+        total_capital: float = 1e7,
+    ) -> Dict:
+        """
+        对账：目标持仓 vs 券商实际持仓（执行层核心对账）。
+
+        比较的是「应该持有多少股」与「实际持有多少股」，而非空本地账本。
+        """
+        import pandas as pd
+        from zstock.order_management.order_generator import OrderGenerator
+
+        logger.info("🔍 目标持仓 vs 券商对账")
+
+        target_df = OrderGenerator.normalize_positions_df(target_positions)
+        broker_map = {
+            p["code"]: int(p.get("volume", 0))
+            for p in broker_positions
+            if p.get("code")
+        }
+
+        matched = []
+        discrepancies = []
+
+        for _, row in target_df.iterrows():
+            code = str(row["stock_code"])
+            if "target_shares" in row.index and not pd.isna(row.get("target_shares")):
+                target_vol = int(row["target_shares"])
+            else:
+                target_vol = OrderGenerator._row_to_volume(
+                    row, price_map or {}, total_capital
+                )
+            broker_vol = broker_map.get(code, 0)
+            if target_vol == broker_vol:
+                matched.append(
+                    {"stock_code": code, "target_volume": target_vol, "broker_volume": broker_vol}
+                )
+            else:
+                discrepancies.append(
+                    {
+                        "stock_code": code,
+                        "target_volume": target_vol,
+                        "broker_volume": broker_vol,
+                        "difference": broker_vol - target_vol,
+                    }
+                )
+
+        for code, broker_vol in broker_map.items():
+            if code not in set(target_df["stock_code"].astype(str)):
+                discrepancies.append(
+                    {
+                        "stock_code": code,
+                        "target_volume": 0,
+                        "broker_volume": broker_vol,
+                        "difference": broker_vol,
+                        "status": "extra_holding",
+                    }
+                )
+
+        if not discrepancies:
+            status = "ok"
+        elif len(discrepancies) <= len(matched):
+            status = "warning"
+        else:
+            status = "error"
+
+        result = {
+            "matched_count": len(matched),
+            "discrepancy_count": len(discrepancies),
+            "matched": matched,
+            "discrepancies": discrepancies,
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        logger.info(
+            "✅ 目标对账: %d 一致, %d 偏差, status=%s",
+            len(matched),
+            len(discrepancies),
+            status,
+        )
         return result
 
     def calculate_slippage(self, order_price: float, filled_price: float) -> float:
