@@ -18,7 +18,7 @@ M5 最终得分（权重见 strategy_params.json final_score.weights）：
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -260,6 +260,24 @@ class ForceFactors:
         logger.info(f"✅ M4+M5 合力+最终得分计算完成: {len(ranked)} 只候选")
         return ranked
 
+    @staticmethod
+    def passes_precomputed_m4_gate(doc: Dict[str, Any], threshold_pct: float) -> bool:
+        """预计算文档是否通过与 live 相同的 M4 门槛（fcoop1 + 有限的 fcoop3）。"""
+        try:
+            fcoop1 = float(doc.get("fcoop1_main_net_ratio", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return False
+        if fcoop1 < float(threshold_pct):
+            return False
+        raw = doc.get("fcoop3_sustained_days")
+        try:
+            sustained = float(raw) if raw is not None else float("nan")
+        except (TypeError, ValueError):
+            return False
+        if not np.isfinite(sustained) or sustained < _MIN_SUSTAINED_DAYS:
+            return False
+        return True
+
     # ===================== 私有方法 =====================
 
     @staticmethod
@@ -304,13 +322,19 @@ class ForceFactors:
         MongoDB 预计算文档）。factor_entries 为 _adjust_weights_by_style 的返回值。
         """
         composite: Dict[str, float] = {}
+        weighted_norms: List[Tuple[float, Dict[str, float]]] = []
         for fc in factor_entries:
             field = fc["field"]
             weight = float(fc["weight"])
             polarity = fc.get("polarity", "positive")
             raw: Dict[str, float] = {}
             for c in candidates:
-                val = float(c.get(field, 0.0) or 0.0)
+                if field not in c or c[field] is None:
+                    continue
+                try:
+                    val = float(c[field])
+                except (TypeError, ValueError):
+                    continue
                 if np.isfinite(val):
                     raw[c["code"]] = val
             if not raw:
@@ -323,8 +347,23 @@ class ForceFactors:
                 norm = {k: 100.0 * (v - vmin) / (vmax - vmin) for k, v in raw.items()}
             if polarity == "negative":
                 norm = {k: 100.0 - v for k, v in norm.items()}
-            for code, score in norm.items():
-                composite[code] = composite.get(code, 0.0) + weight * score
+            weighted_norms.append((weight, norm))
+
+        codes: Set[str] = set()
+        for _, norm in weighted_norms:
+            codes.update(norm)
+        for code in codes:
+            available = [
+                (norm[code], w) for w, norm in weighted_norms if code in norm
+            ]
+            if not available:
+                continue
+            total_w = sum(w for _, w in available)
+            composite[code] = (
+                sum(score * (w / total_w) for score, w in available)
+                if total_w > 0
+                else 50.0
+            )
         return composite
 
     @staticmethod
@@ -752,6 +791,8 @@ class ForceFactors:
 
             # 返回值映射到 [0, 100]
             mapped_value = 50 * (divergence - divergence.min()) / (divergence.max() - divergence.min() + 1e-8)
+            if hasattr(mapped_value, "iloc"):
+                return float(mapped_value.iloc[-1])
             return float(mapped_value)
         except Exception as e:
             logger.debug(f"power_divergence计算失败: {e}")

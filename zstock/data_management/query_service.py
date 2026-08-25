@@ -698,6 +698,49 @@ class DataQueryService:
                 result[code] = doc
         return result
 
+    async def batch_get_lhb_recent(
+        self,
+        codes: List[str],
+        end_date: str,
+        days: int = 10,
+    ) -> Dict[str, List[Dict]]:
+        """批量查询多只股票近 N 日龙虎榜。返回 {code: [docs 升序]}。"""
+        if not codes or days <= 0:
+            return {}
+
+        codes_norm = [normalize_code(c) for c in codes]
+        td_norm = normalize_date(end_date)
+        try:
+            end_dt = datetime.strptime(td_norm, "%Y-%m-%d")
+        except ValueError:
+            return {c: [] for c in codes_norm}
+
+        lookback_calendar = max(days * 4, 21)
+        start_bound = (end_dt - timedelta(days=lookback_calendar)).strftime("%Y-%m-%d")
+        empty = {c: [] for c in codes_norm}
+        try:
+            docs = await self.database_service.query(
+                COL_LHB,
+                {
+                    "code": {"$in": codes_norm},
+                    "trade_date": {"$gte": start_bound, "$lte": td_norm},
+                },
+                projection={"_id": 0},
+            )
+        except Exception as e:
+            logger.debug(f"batch_get_lhb_recent 查询失败: {e}")
+            return empty
+
+        by_code: Dict[str, List[Dict]] = {c: [] for c in codes_norm}
+        for doc in docs or []:
+            code = doc.get("code")
+            if code in by_code:
+                by_code[code].append(doc)
+        for code, rows in by_code.items():
+            rows.sort(key=lambda d: str(d.get("trade_date", "")), reverse=True)
+            by_code[code] = list(reversed(rows[:days]))
+        return by_code
+
     # =========================== 板块 ===========================
 
     async def get_sector_list(

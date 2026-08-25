@@ -127,6 +127,7 @@ class CrossSectionStrategyPipeline:
         self._query_service = get_data_query_service()
         self._precomputed_cache: Optional["PrecomputedFactorCache"] = None
         self._all_stocks_cache: Optional[List[Dict[str, Any]]] = None
+        self._sectors_cache: Optional[List[Dict[str, Any]]] = None
         logger.info("✅ 策略管道初始化完成")
 
     def _load_config(self, config_path: str) -> Dict:
@@ -172,6 +173,10 @@ class CrossSectionStrategyPipeline:
         if isinstance(sub, dict) and sub.get("top_k") is not None:
             return int(sub["top_k"])
         return int(fs.get("top_k", 5))
+
+    def _exit_universe_n(self, regime: str = "neutral") -> int:
+        """排名退出用的观察池大小；组合层仍按 top_k 买入。"""
+        return max(self._cfg_top_k(regime) * 4, 20)
 
     def _cfg_final_weights(self) -> Dict[str, float]:
         default = {"sector": 0.4, "dragon": 0.35, "cooperative": 0.25}
@@ -231,6 +236,12 @@ class CrossSectionStrategyPipeline:
             self._all_stocks_cache = docs
         return self._all_stocks_cache
 
+    async def _get_sectors_cached(self) -> List[Dict[str, Any]]:
+        if self._sectors_cache is None:
+            sector_list, _ = await self._query_service.get_sector_list()
+            self._sectors_cache = sector_list or []
+        return self._sectors_cache
+
     async def _detect_style(self, trade_date: str) -> Dict[str, object]:
         """检测当日市场风格（动量/反转/中性），带缓存。
 
@@ -282,6 +293,26 @@ class CrossSectionStrategyPipeline:
             'dragon_composite_score': dragon_score,
             **extra_fields,
         }
+
+    @staticmethod
+    def _dedupe_candidates_by_code(candidates: List[Dict]) -> List[Dict]:
+        """同一代码跨板块重复时保留龙头分更高的一条，避免占掉 top_k 名额。"""
+        best: Dict[str, Dict] = {}
+        order: List[str] = []
+        for c in candidates:
+            code = c.get("code")
+            if not code:
+                continue
+            score = float(c.get("dragon_composite_score", 0.0) or 0.0)
+            prev = best.get(code)
+            if prev is None:
+                best[code] = c
+                order.append(code)
+                continue
+            prev_score = float(prev.get("dragon_composite_score", 0.0) or 0.0)
+            if score > prev_score:
+                best[code] = c
+        return [best[code] for code in order]
 
     # ===================== 数据装载 =====================
 
@@ -524,6 +555,7 @@ class CrossSectionStrategyPipeline:
             for code, m3_score in candidates:
                 all_candidates.append(self._make_candidate(code, sector_code, m3_score))
 
+        all_candidates = self._dedupe_candidates_by_code(all_candidates)
         logger.info(f"✅ M3 龙头股筛选完成: {len(all_candidates)} 只候选")
 
         # M3 无候选 - 早期返回
@@ -669,9 +701,9 @@ class CrossSectionStrategyPipeline:
                 td, market_risk_level=grade, position_scale_factor=scale
             )
 
-        return self._ranked_to_signals_df(
-            ranked_all, td, grade, scale, regime=str(result.get("regime", "neutral"))
-        )
+        regime = str(result.get("regime", "neutral"))
+        signals = ranked_all[: self._exit_universe_n(regime)]
+        return self._ranked_to_signals_df(signals, td, grade, scale, regime=regime)
 
     # ===================== 预计算打分快路径 =====================
 
@@ -725,12 +757,35 @@ class CrossSectionStrategyPipeline:
             f"reversal_w={style_info['reversal_weight']:.2f}"
         )
 
+        all_stocks_docs = await self._get_all_stocks_cached()
+        all_stocks = [d["code"] for d in all_stocks_docs]
+        stock_infos = {d["code"]: d for d in all_stocks_docs}
+        sector_list = await self._get_sectors_cached()
+
+        tech_filtered = self.prefilters.apply_technical_filters(
+            all_stocks, {}, stock_infos, apply_main_board=True, apply_bollinger=False
+        )
+        blacklist_result = self.prefilters.apply_blacklist_filters(
+            tech_filtered, sectors=sector_list
+        )
+        non_blacklisted = blacklist_result["stocks"]
+        blacklisted_set = set(tech_filtered) - set(non_blacklisted)
+        allowed_sectors = {
+            s.get("sector_code")
+            for s in (blacklist_result.get("sectors") or [])
+            if s.get("sector_code")
+        }
+
         if cache is not None and cache.loaded:
             sector_docs = cache.get_factor_sectors(td)
         else:
             sector_docs = await qs.get_factor_sectors(td)
         if not sector_docs:
             raise ValueError(f"无预计算 M2 数据: {td}")
+        if allowed_sectors:
+            sector_docs = [
+                d for d in sector_docs if d.get("sector_code") in allowed_sectors
+            ]
 
         # 直接用规范字段名调用 scores_from_raw()，无需 _reconstruct_sector_scores()
         # P3 新因子 f27/f29/f30 必须传入，否则 scores_from_raw 降级到旧因子路径
@@ -756,18 +811,6 @@ class CrossSectionStrategyPipeline:
         top_sectors = sorted(m2_scores.items(), key=lambda x: x[1], reverse=True)[
             :top_k_sectors
         ]
-
-        all_stocks_docs = await self._get_all_stocks_cached()
-        all_stocks = [d["code"] for d in all_stocks_docs]
-        stock_infos = {d["code"]: d for d in all_stocks_docs}
-
-        # 【优化】统一调用 2 个公开接口（不需要sectors）
-        tech_filtered = self.prefilters.apply_technical_filters(
-            all_stocks, {}, stock_infos, apply_main_board=True, apply_bollinger=False
-        )
-        blacklist_result = self.prefilters.apply_blacklist_filters(tech_filtered)
-        non_blacklisted = blacklist_result["stocks"]
-        blacklisted_set = set(tech_filtered) - set(non_blacklisted)
 
         top_sector_codes = [sc for sc, _ in top_sectors]
         if cache is not None and cache.loaded:
@@ -795,7 +838,13 @@ class CrossSectionStrategyPipeline:
 
             # 直接用规范字段名调用 scores_from_raw()，无需 _reconstruct_dragon_scores()
             # P3 新因子 f36/f37 必须传入，否则 scores_from_raw 降级到旧因子路径（f32/f34）
-            dragon_map = {d["code"]: d for d in sector_dragons}  # O(n) 而非 O(n²)
+            dragon_map = {
+                d["code"]: d
+                for d in sector_dragons
+                if d.get("code") and d["code"] not in blacklisted_set
+            }
+            if not dragon_map:
+                continue
             m3_scores = DragonFactors.scores_from_raw({
                 code: {
                     "f31b_rps_percentile": d.get("f31b_rps_percentile", float("nan")),
@@ -820,15 +869,13 @@ class CrossSectionStrategyPipeline:
                 for code, d in dragon_map.items()
             }, regime=regime, active_factors=self._get_active_factors(regime), scoring_method=self.config.get("scoring_method", "linear"))
 
-            if blacklisted_set:
-                m3_scores = {
-                    k: v for k, v in m3_scores.items() if k not in blacklisted_set
-                }
             if not m3_scores:
                 continue
             candidates = self._top_by_score(m3_scores, top_per_sector)
             for code, m3_score in candidates:
                 all_candidates.append(self._make_candidate(code, sector_code, m3_score))
+
+        all_candidates = self._dedupe_candidates_by_code(all_candidates)
 
         if not all_candidates:
             logger.warning(f"{td} 无 M3 候选")
@@ -849,16 +896,14 @@ class CrossSectionStrategyPipeline:
             "threshold_pct", 0.03
         )
 
-        # M4 合力过滤：与 _apply_cooperative_force_filter 等价。
-        # 通过条件 total_volume>0 AND main_flow>0 AND main_net_ratio>=threshold
-        #   ⟺ fcoop1_main_net_ratio >= threshold（fcoop1 仅在 main_flow>0 时为正）
+        # M4 合力过滤：与 live `_apply_cooperative_force_filter` 对齐
+        # fcoop1 门槛 + fcoop3 必须有限（NaN 在 live 会被拒绝）
         filtered = []
         for c in all_candidates:
             fd = force_map.get(c["code"])
             if fd is None:
                 continue
-            fcoop1 = float(fd.get("fcoop1_main_net_ratio", 0.0) or 0.0)
-            if fcoop1 < m4_threshold:
+            if not ForceFactors.passes_precomputed_m4_gate(fd, m4_threshold):
                 continue
             merged = {
                 "code": fd["code"],
@@ -907,8 +952,7 @@ class CrossSectionStrategyPipeline:
         ranked = sorted(ranked, key=lambda x: x.get("strategy_signal_score", 0), reverse=True)
 
         top_k_final = self._cfg_top_k(regime)
-        # 多返回若干名供排名退出判定；组合层仍按 top_k 买入
-        exit_universe_n = max(top_k_final * 4, 20)
+        exit_universe_n = self._exit_universe_n(regime)
         signals = ranked[:exit_universe_n]
         return self._ranked_to_signals_df(signals, td, grade, position_scale_factor, regime=regime)
 
@@ -1047,7 +1091,6 @@ class CrossSectionStrategyPipeline:
                 sector_stocks,
                 stock_ohlcv,
                 stock_flow_recent or {},
-                ohlcv_only=True,
             )
             return market_sector_ohlcv
 
@@ -1080,16 +1123,19 @@ class CrossSectionStrategyPipeline:
         if not dragon_raw:
             return {}, {}
 
+        if blacklisted_codes:
+            dragon_raw = {
+                k: v for k, v in dragon_raw.items() if k not in blacklisted_codes
+            }
+            if not dragon_raw:
+                return {}, {}
+
         m3_scores = DragonFactors.scores_from_raw(
             dragon_raw,
             regime=regime,
             active_factors=self._get_active_factors(regime),
             scoring_method=self.config.get("scoring_method", "linear"),
         )
-
-        # 应用黑名单过滤
-        if blacklisted_codes:
-            m3_scores = {k: v for k, v in m3_scores.items() if k not in blacklisted_codes}
 
         return m3_scores, dragon_raw
 
@@ -1120,17 +1166,28 @@ class CrossSectionStrategyPipeline:
 
         # 风格检测
         style_info = await self._detect_style(trade_date)
+        regime = str(style_info.get("regime") or "neutral")
         logger.info(
-            f"🎨 市场风格: {style_info['regime']} | "
+            f"🎨 市场风格: {regime} | "
             f"momentum_weight={style_info['momentum_weight']:.2f} "
             f"reversal_weight={style_info['reversal_weight']:.2f}"
         )
 
         # M4：计算原始合力因子值（全部候选，不过滤）
+        codes = [c.get("code") for c in all_candidates if c.get("code")]
+        try:
+            stock_lhb_recent = await self._query_service.batch_get_lhb_recent(
+                codes, trade_date, days=10
+            )
+        except Exception as e:
+            logger.warning("龙虎榜加载失败（longhu_board_bonus 将为 0）: %s", e)
+            stock_lhb_recent = {}
+
         force_raw = ForceFactors.apply_cooperative_force_raw(
             all_candidates,
             stock_flow_recent=stock_flow_recent,
             stock_ohlcv=stock_ohlcv,
+            stock_lhb_recent=stock_lhb_recent,
             trade_date=trade_date,
         )
         logger.info(f"✅ M4 原始合力因子收集完成: {len(force_raw)} 只候选")
@@ -1145,6 +1202,7 @@ class CrossSectionStrategyPipeline:
             w_coop=weights['cooperative'],
             stock_flow_recent=stock_flow_recent,
             stock_ohlcv=stock_ohlcv,
+            stock_lhb_recent=stock_lhb_recent,
             trade_date=trade_date,
             style_info=style_info,
             active_factors=self._get_active_factors(regime),

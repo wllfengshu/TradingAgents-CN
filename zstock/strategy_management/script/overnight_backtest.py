@@ -513,7 +513,7 @@ async def run_factor_eval(start: str, end: str, output_dir: Path, label: str, *,
     logger.info("因子测评 [%s]: %s → %s", label, start, end)
     pipeline = FactorEvaluationPipeline(
         start_date=start, end_date=end, period=period, n_quantiles=5,
-        conditional=True, top_sectors=3, invert_negative=True, plot=plot,
+        conditional=True, top_sectors=None, invert_negative=True, plot=plot,
         output_dir=str(eval_dir), decay_max=0, layer=None, field=None,
     )
     await pipeline.run()

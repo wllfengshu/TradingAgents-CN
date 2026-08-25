@@ -143,6 +143,7 @@ def _compute_sliced_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         filtered_sectors=payload["filtered_sectors"],
         filtered_stocks_set=payload["filtered_stocks_set"],
         quiet=True,
+        fund_provider=payload.get("fund_provider"),
     )
 
 
@@ -162,6 +163,7 @@ def _compute_day_sync(
         filtered_sectors=preload["filtered_sectors"],
         filtered_stocks_set=preload["filtered_stocks_set"],
         quiet=quiet,
+        fund_provider=preload.get("fund_provider"),
     )
 
 
@@ -205,6 +207,7 @@ class FactorComputeEngine:
         filtered_stocks_set: Optional[Set[str]] = None,
         sector_ohlcv: Optional[Dict[str, pd.DataFrame]] = None,
         quiet: bool = False,
+        fund_provider: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         全市场因子原始值计算（供预计算入库，不做 topK 选股裁剪）。
@@ -228,6 +231,7 @@ class FactorComputeEngine:
             filtered_sectors: 预过滤的板块
             filtered_stocks_set: 预过滤的股票集合
             sector_ohlcv: 预聚合的板块 OHLCV
+            fund_provider: 基本面数据提供者；静态方法不能用 self.fund_provider
 
         Returns:
             {market_raw, sector_raw, dragon_raw_by_sector, force_raw, ...} 字典（仅原始因子值，无得分）
@@ -274,7 +278,6 @@ class FactorComputeEngine:
                 sector_stocks,
                 stock_ohlcv,
                 stock_flow_recent or {},
-                ohlcv_only=True,
             )
 
         sector_raw = SectorFactors.calculate_all_sector_factors_raw(
@@ -324,7 +327,7 @@ class FactorComputeEngine:
                 assume_sorted=True,
                 trade_date=trade_date,
                 features=m3_features,
-                fund_provider=self.fund_provider,
+                fund_provider=fund_provider,
             )
             if not dragon_raw:
                 continue
@@ -474,7 +477,10 @@ class FactorPrecomputeService:
         data["filtered_sectors"] = bl_result.get("sectors", data["sectors"])
         data["filtered_stocks_set"] = set(bl_result["stocks"])
         # 使用 FactorComputeEngine 计算原始因子值
-        raw_result = FactorComputeEngine.compute_all_factors_raw_sync(**data)
+        raw_result = FactorComputeEngine.compute_all_factors_raw_sync(
+            **data,
+            fund_provider=self.fund_provider,
+        )
         t2 = perf_counter()
         stock_infos = data.get("stock_infos", {})
         counts = await self._store_all(td, raw_result, stock_infos)
@@ -523,6 +529,7 @@ class FactorPrecomputeService:
                         ),
                         "filtered_sectors": preload["filtered_sectors"],
                         "filtered_stocks_set": preload["filtered_stocks_set"],
+                        "fund_provider": self.fund_provider,
                     }
                     raw_result = await loop.run_in_executor(
                         compute_executor,
@@ -789,7 +796,6 @@ class FactorPrecomputeService:
             sector_stocks_use,
             stock_ohlcv_full,
             {},
-            ohlcv_only=True,
         )
         for code, df in sector_ohlcv_full.items():
             if df is None or df.empty or "trade_date" not in df.columns:
@@ -835,6 +841,7 @@ class FactorPrecomputeService:
             "sector_dates_index": sector_dates_index,
             "flow_days": flow_days,
             "index_name": "沪深 300",
+            "fund_provider": self.fund_provider,
         }
 
     @staticmethod

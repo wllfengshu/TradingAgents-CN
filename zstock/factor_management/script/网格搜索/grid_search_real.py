@@ -8,13 +8,13 @@
 - 不写坏正式配置；每组用内存覆盖 + 临时 Risk/Turnover 实例
 - 目标函数：卡玛 + 夏普，并对过大回撤惩罚
 
-推荐流程（勿用 2024）：
-    1) 2026 调参：
-       python -m zstock.factor_management.script.grid_search_real \\
+参考：
+    1) 调参：
+       python -m zstock.factor_management.script.网格搜索.grid_search_real \\
            --start 2026-01-05 --end 2026-07-27 \\
            --max-combinations 40 --space wide --fee 0.0015
     2) 把 best_strategy_params.json 拷到 strategy_params.json（或 --apply）
-    3) 2025 样本外回测：
+    3) 样本外回测：
        python -m zstock.strategy_management.script.backtester \\
            --start 2025-01-02 --end 2025-12-31 --precomputed --fee 0.0015
 """
@@ -151,20 +151,33 @@ class RealGridSearchOptimizer:
 
     @staticmethod
     def baseline_params() -> Dict[str, Any]:
-        """当前正式配置（对照点，与 strategy_params.json v1.11.0 同步）。"""
+        """当前正式配置（对照点，运行时读 strategy_params.json）。"""
+        try:
+            with open(_BASE_PARAMS_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            cfg = {}
+        fs = cfg.get("final_score") or {}
+        weights = fs.get("weights") or {}
+        portfolio = cfg.get("portfolio") or {}
+        tov = cfg.get("turnover_control") or {}
+        exit_rules = cfg.get("exit_rules") or {}
+        backtest = cfg.get("backtest") or {}
         return {
-            "top_sectors": 4,
-            "top_per_sector": 2,
-            "top_k": 3,
-            "coop_threshold": 0.03,
-            "weight_sector": 0.40,
-            "weight_dragon": 0.35,
-            "rebalance_freq": 8,
-            "buffer_threshold": 0.40,
-            "min_hold_days": 3,
-            "hard_stop_loss_pct": -0.08,
-            "max_weight_per_stock": 0.12,
-            "max_sector_exposure": 0.25,
+            "top_sectors": int((cfg.get("sector_layer") or {}).get("top_sectors", 4)),
+            "top_per_sector": int((cfg.get("dragon_layer") or {}).get("top_per_sector", 2)),
+            "top_k": int(fs.get("top_k", 5)),
+            "coop_threshold": float(
+                (cfg.get("cooperative_force") or {}).get("threshold_pct", 0.01)
+            ),
+            "weight_sector": float(weights.get("sector", 0.40)),
+            "weight_dragon": float(weights.get("dragon", 0.35)),
+            "rebalance_freq": int(backtest.get("rebalance_freq", 5)),
+            "buffer_threshold": float(tov.get("buffer_threshold", 0.25)),
+            "min_hold_days": int(tov.get("min_hold_days", 3)),
+            "hard_stop_loss_pct": float(exit_rules.get("hard_stop_loss_pct", -0.08)),
+            "max_weight_per_stock": float(portfolio.get("max_weight_per_stock", 0.20)),
+            "max_sector_exposure": float(portfolio.get("max_sector_exposure", 0.40)),
         }
 
     @staticmethod
@@ -192,6 +205,11 @@ class RealGridSearchOptimizer:
         cfg["dragon_layer"]["top_per_sector"] = int(params["top_per_sector"])
         cfg["cooperative_force"]["threshold_pct"] = float(params["coop_threshold"])
         cfg["final_score"]["top_k"] = int(params["top_k"])
+        by_regime = cfg["final_score"].setdefault("by_regime", {})
+        if isinstance(by_regime, dict):
+            for sub in by_regime.values():
+                if isinstance(sub, dict) and "top_k" in sub:
+                    sub["top_k"] = int(params["top_k"])
         cfg["final_score"]["weights"] = {
             "sector": ws,
             "dragon": wd,
@@ -213,6 +231,14 @@ class RealGridSearchOptimizer:
     def _strategy_runtime_config(self, params: Dict[str, Any]) -> Dict[str, Dict]:
         top_k = int(params["top_k"])
         return {
+            "final_score": {
+                "top_k": top_k,
+                "by_regime": {
+                    "momentum": {"top_k": top_k},
+                    "reversal": {"top_k": top_k},
+                    "neutral": {"top_k": top_k},
+                },
+            },
             "portfolio_optimization": {
                 "min_holdings": max(1, top_k - 2),
                 "max_holdings": top_k,

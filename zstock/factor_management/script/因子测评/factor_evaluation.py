@@ -51,18 +51,29 @@ _STRATEGY_PARAMS_PATH = (
 )
 
 
+def _load_strategy_params() -> dict:
+    try:
+        with open(_STRATEGY_PARAMS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"⚠️ 加载 strategy_params.json 失败: {e}")
+        return {}
+
+
 def _load_active_factors() -> dict:
     """从 strategy_params.json 加载 active_factors（sector/dragon/force 层因子配置）。
 
     条件宇宙构建必须与生产策略的板块选择逻辑一致，故复用同一份配置。
     """
+    return _load_strategy_params().get("active_factors", {}) or {}
+
+
+def _default_top_sectors() -> int:
+    cfg = _load_strategy_params()
     try:
-        with open(_STRATEGY_PARAMS_PATH, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        return cfg.get("active_factors", {}) or {}
-    except Exception as e:
-        logger.warning(f"⚠️ 加载 strategy_params.json 失败，条件宇宙降级为空: {e}")
-        return {}
+        return int((cfg.get("sector_layer") or {}).get("top_sectors", 4))
+    except (TypeError, ValueError):
+        return 4
 
 # 全量因子字段（MongoDB dragon/force 集合全部数值因子，含策略未使用的因子）
 DEFAULT_STOCK_FACTORS: Dict[str, List[str]] = {
@@ -130,24 +141,45 @@ DEFAULT_SECTOR_FACTORS: List[str] = [
 ]
 
 INVERT_FIELDS_FOR_EVAL: Set[str] = {
-    # 以下字段极性为负（与 strategy_params.json active_factors 的 polarity: negative 一致）
+    # 窗口变体：配置里通常只写默认窗口
     "f34_resonance_pct_3d",
     "f34_resonance_pct_5d",
     "f34_resonance_pct_10d",
-    # f30 板块资金聚集度 IC 为负，取反后正向
     "f30_sector_concentration",
-    # f36 辨识度溢价 IC 为负，取反后正向
     "f36_identity_premium",
 }
 
+
+def _invert_fields_from_config() -> Set[str]:
+    fields = set(INVERT_FIELDS_FOR_EVAL)
+    af = _load_active_factors()
+    for layer_cfg in af.values():
+        if not isinstance(layer_cfg, dict):
+            continue
+        for items in layer_cfg.values():
+            if not isinstance(items, list):
+                continue
+            for fc in items:
+                if (
+                    isinstance(fc, dict)
+                    and fc.get("polarity") == "negative"
+                    and fc.get("field")
+                ):
+                    fields.add(str(fc["field"]))
+    return fields
+
+
+INVERT_FIELDS_FOR_EVAL = _invert_fields_from_config()
+
 _SECTOR_RAW_FIELD_MAP: Dict[str, str] = {
-    "f21_rps": "f21_rps_20d",
+    "f21_rps_20d": "f21_rps_20d",
     "f22_main_flow": "f22_main_flow",
     "f23_limit_up_density": "f23_limit_up_density",
     "f24_max_consecutive": "f24_max_consecutive",
-    "f25_volume_slope": "f25_volume_slope_5d",
-    "f26_volume_growth": "f26_volume_growth_5d",
+    "f25_volume_slope_5d": "f25_volume_slope_5d",
+    "f26_volume_growth_5d": "f26_volume_growth_5d",
     "f28_consistency": "f28_consistency",
+    "f30_sector_concentration": "f30_sector_concentration",
 }
 
 
@@ -161,7 +193,7 @@ class FactorEvaluationPipeline:
         period: int = 5,
         n_quantiles: int = 5,
         conditional: bool = True,
-        top_sectors: int = 3,
+        top_sectors: Optional[int] = None,
         invert_negative: bool = True,
         plot: bool = False,
         output_dir: Optional[str] = None,
@@ -175,7 +207,9 @@ class FactorEvaluationPipeline:
         self.period = period
         self.n_quantiles = n_quantiles
         self.conditional = conditional
-        self.top_sectors = top_sectors
+        self.top_sectors = (
+            int(top_sectors) if top_sectors is not None else _default_top_sectors()
+        )
         self.invert_negative = invert_negative
         self.plot = plot
         self.decay_max = decay_max
@@ -234,7 +268,7 @@ class FactorEvaluationPipeline:
         docs = await self.db.query(
             collection,
             {"trade_date": {"$gte": start, "$lte": end}},
-            projection={"_id": 0, "trade_date": 1, code_key: 1, field: 1},
+            projection={"_id": 0, "trade_date": 1, code_key: 1, field: 1, "sector_code": 1},
         )
         if not docs:
             logger.warning(f"{collection}.{field} 无数据")
@@ -245,12 +279,19 @@ class FactorEvaluationPipeline:
             return pd.DataFrame()
 
         df[field] = pd.to_numeric(df[field], errors="coerce")
-        panel = (
-            df.groupby(["trade_date", code_key], as_index=False)[field]
-            .mean()
-            .pivot(index="trade_date", columns=code_key, values=field)
-            .sort_index()
-        )
+        if "sector_code" in df.columns and code_key != "sector_code":
+            df = df.sort_values(["trade_date", code_key, "sector_code"])
+            df = df.drop_duplicates(["trade_date", code_key], keep="first")
+            panel = df.pivot(
+                index="trade_date", columns=code_key, values=field
+            ).sort_index()
+        else:
+            panel = (
+                df.groupby(["trade_date", code_key], as_index=False)[field]
+                .mean()
+                .pivot(index="trade_date", columns=code_key, values=field)
+                .sort_index()
+            )
         logger.info(
             f"加载因子 {collection}.{field}: "
             f"{panel.shape[0]} 日 × {panel.shape[1]} 标的"
@@ -356,7 +397,7 @@ class FactorEvaluationPipeline:
             if not all_codes:
                 return pd.DataFrame()
 
-            stock_panels = await self.load_price_panel(all_codes, extra_days=0)
+            stock_panels = await self.load_price_panel(all_codes, extra_days=extra_days)
             if not stock_panels or not stock_panels.get("open", pd.DataFrame()).size:
                 return {}
 
@@ -608,7 +649,8 @@ class FactorEvaluationPipeline:
     ) -> pd.DataFrame:
         # forward_return(T) = close(T+p) / open(T+1) - 1
         forward_returns = price_panels["close"].shift(-self.period) / price_panels["open"].shift(-1) - 1
-        buckets: Dict[int, List[float]] = {i: [] for i in range(1, self.n_quantiles + 1)}
+        rows: List[Dict[str, float]] = []
+        q_cols = [f"Q{q}" for q in range(1, self.n_quantiles + 1)]
 
         for date in factor_data.index:
             if date not in forward_returns.index:
@@ -628,19 +670,18 @@ class FactorEvaluationPipeline:
                 quantiles = pd.qcut(f, self.n_quantiles, labels=False, duplicates="drop") + 1
             except ValueError:
                 continue
+            unique_q = set(int(x) for x in quantiles.dropna().tolist())
+            if unique_q != set(range(1, self.n_quantiles + 1)):
+                continue
+            row = {}
             for q in range(1, self.n_quantiles + 1):
                 m = quantiles == q
-                if m.any():
-                    buckets[q].append(float(r[m].mean()))
+                row[f"Q{q}"] = float(r[m].mean()) if m.any() else np.nan
+            rows.append(row)
 
-        min_len = min((len(v) for v in buckets.values()), default=0)
-        if min_len == 0:
-            return pd.DataFrame(
-                columns=[f"Q{q}" for q in range(1, self.n_quantiles + 1)]
-            )
-        return pd.DataFrame(
-            {f"Q{q}": buckets[q][:min_len] for q in range(1, self.n_quantiles + 1)}
-        )
+        if not rows:
+            return pd.DataFrame(columns=q_cols)
+        return pd.DataFrame(rows)
 
     def _calc_long_short_return(self, quantile_returns_df: pd.DataFrame) -> Dict:
         if quantile_returns_df is None or quantile_returns_df.empty:
@@ -651,11 +692,12 @@ class FactorEvaluationPipeline:
         ls = quantile_returns_df[cols[-1]] - quantile_returns_df[cols[0]]
         std = float(ls.std()) if len(ls) > 1 else np.nan
         mean = float(ls.mean()) if len(ls) else np.nan
+        ann = np.sqrt(252.0 / max(int(self.period), 1))
         return {
             "LS_Mean_Return": mean,
             "LS_Std_Return": std,
             "LS_Sharpe": (
-                (mean / std * np.sqrt(252)) if std and std > 0 else np.nan
+                (mean / std * ann) if std and std > 0 else np.nan
             ),
             "LS_Win_Rate": float((ls > 0).mean()) if len(ls) else np.nan,
             "LS_Max_Drawdown": float(self._max_drawdown(ls.cumsum())),
@@ -1061,7 +1103,7 @@ async def run_batch_years(
     period: int = 5,
     n_quantiles: int = 5,
     conditional: bool = True,
-    top_sectors: int = 3,
+    top_sectors: Optional[int] = None,
     invert_negative: bool = True,
     plot: bool = False,
     output_root: Optional[str] = None,
@@ -1129,7 +1171,7 @@ async def async_main(args: argparse.Namespace) -> int:
             period=args.period,
             n_quantiles=args.quantiles,
             conditional=bool(args.conditional),
-            top_sectors=int(args.top_sectors),
+            top_sectors=args.top_sectors,
             invert_negative=bool(args.invert),
             plot=args.plot,
             output_root=args.output,
@@ -1151,7 +1193,7 @@ async def async_main(args: argparse.Namespace) -> int:
         period=args.period,
         n_quantiles=args.quantiles,
         conditional=bool(args.conditional),
-        top_sectors=int(args.top_sectors),
+        top_sectors=args.top_sectors,
         invert_negative=bool(args.invert),
         plot=args.plot,
         output_dir=args.output,
@@ -1218,8 +1260,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--top-sectors",
         type=int,
-        default=3,
-        help="条件宇宙 Top-N 板块，默认 3",
+        default=None,
+        help="条件宇宙 Top-N 板块，默认读 strategy_params.sector_layer.top_sectors",
     )
     p.add_argument(
         "--invert",

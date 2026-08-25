@@ -12,16 +12,16 @@
 用法：
     cd E:\\TradingAgents-CN
     .\\.venv\\Scripts\\Activate.ps1
-    python -m zstock.factor_management.script.网格搜索.overnight_validation
+    python -m zstock.factor_management.script.overnight_validation
 
     # 仅预计算 + 测评（跳过网格/回测）
-    python -m zstock.factor_management.script.网格搜索.overnight_validation --skip-grid
+    python -m zstock.factor_management.script.overnight_validation --skip-grid
 
     # 因子已预计算，只做测评 + 回测
-    python -m zstock.factor_management.script.网格搜索.overnight_validation --skip-precompute
+    python -m zstock.factor_management.script.overnight_validation --skip-precompute
 
     # 全部跳过预计算/测评，只跑回测验证
-    python -m zstock.factor_management.script.网格搜索.overnight_validation \\
+    python -m zstock.factor_management.script.overnight_validation \\
         --skip-precompute --skip-eval
 """
 
@@ -38,13 +38,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
-if str(_SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPT_DIR))
+_GRID_DIR = Path(__file__).resolve().parent / "网格搜索"
+if str(_GRID_DIR) not in sys.path:
+    sys.path.insert(0, str(_GRID_DIR))
 
 _STRATEGY_PARAMS_PATH = PROJECT_ROOT / "zstock" / "common" / "config" / "strategy_params.json"
 
@@ -253,7 +253,7 @@ async def run_factor_eval(
         period=period,
         n_quantiles=5,
         conditional=True,
-        top_sectors=3,
+        top_sectors=None,
         invert_negative=True,
         plot=plot,
         output_dir=str(eval_dir),

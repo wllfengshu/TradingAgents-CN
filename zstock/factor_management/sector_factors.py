@@ -323,8 +323,15 @@ class SectorFactors:
         normalized = {}  # field -> {sector_code: norm_value}
         for fc in factor_configs:
             field = fc["field"]
-            # 支持带后缀和不带后缀的字段名
             values = raw.get(field) or {}
+            if not values:
+                alias = {
+                    "f21_rps_20d": "f21_rps",
+                    "f25_volume_slope_5d": "f25_volume_slope",
+                    "f26_volume_growth_5d": "f26_volume_growth",
+                }.get(field)
+                if alias:
+                    values = raw.get(alias) or {}
             filtered = {k: v for k, v in values.items() if k in candidate_sectors and v is not None}
             if not filtered:
                 continue
