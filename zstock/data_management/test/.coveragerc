@@ -1,0 +1,10 @@
+[run]
+branch = True
+source = zstock.data_management
+omit =
+    */data_management/test/*
+    */data_management/script/tdx_capital_flow/*
+
+[report]
+show_missing = True
+skip_covered = False

@@ -1022,7 +1022,9 @@ class CrossSectionStrategyPipeline:
         if not index_ohlcv:
             return None
         index_code = list(index_ohlcv.keys())[0]
-        df = index_ohlcv.get(index_code) or index_ohlcv.get("399300")
+        df = index_ohlcv.get(index_code)
+        if df is None:
+            df = index_ohlcv.get("399300")
         return df
 
     async def _apply_universe_filters(

@@ -1,0 +1,11 @@
+[run]
+branch = True
+source = zstock.strategy_management
+omit =
+    */strategy_management/test/*
+    */strategy_management/script/output/*
+    */strategy_management/test/_dump_real_fixtures.py
+
+[report]
+show_missing = True
+skip_covered = False

@@ -1,0 +1,8 @@
+[run]
+branch = True
+source = zstock.order_management
+omit =
+    */order_management/test/*
+
+[report]
+show_missing = True

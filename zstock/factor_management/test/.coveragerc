@@ -1,0 +1,9 @@
+[run]
+branch = True
+source = zstock.factor_management
+omit =
+    */factor_management/test/*
+
+[report]
+show_missing = True
+skip_covered = False

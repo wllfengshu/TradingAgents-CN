@@ -39,7 +39,7 @@ def _load_risk_limits_from_config() -> Dict:
         with open(_STRATEGY_PARAMS_PATH, 'r', encoding='utf-8') as f:
             params = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        logger.warning(f"⚠️ 无法加载策略参数: {e}，使用内置保底值")
+        logger.error(f"⚠️ 无法加载策略参数: {e}，使用内置保底值")
         params = {}
 
     top_k = params.get('final_score', {}).get('top_k', 5)

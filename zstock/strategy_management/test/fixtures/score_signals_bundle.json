@@ -1,0 +1,228 @@
+{
+  "days": {
+    "2024-06-03": {
+      "trade_date": "2024-06-03",
+      "attrs": {
+        "market_risk_level": "yellow",
+        "market_grade": "yellow",
+        "position_scale_factor": 0.5,
+        "position_scale": 0.5,
+        "regime": "reversal",
+        "top_k": 3
+      },
+      "records": [
+        {
+          "trade_date": "2024-06-03",
+          "code": "601921",
+          "sector_code": "SW2出版",
+          "strategy_signal_score": 40.54053591183124,
+          "final_score": 40.54053591183124,
+          "dragon_composite_score": 80.1158168909464,
+          "dragon_score": 80.1158168909464,
+          "force_composite_score": 50.0,
+          "rank": 1,
+          "signal_type": "buy",
+          "market_risk_level": "yellow",
+          "market_grade": "yellow",
+          "position_scale_factor": 0.5,
+          "position_scale": 0.5,
+          "created_at": "2026-08-25T22:01:09.534919+08:00"
+        }
+      ],
+      "empty": false
+    },
+    "2024-06-04": {
+      "trade_date": "2024-06-04",
+      "attrs": {
+        "market_risk_level": "yellow",
+        "market_grade": "yellow",
+        "position_scale_factor": 0.5,
+        "position_scale": 0.5,
+        "regime": "neutral",
+        "top_k": 5
+      },
+      "records": [
+        {
+          "trade_date": "2024-06-04",
+          "code": "603180",
+          "sector_code": "SW2家居用品",
+          "strategy_signal_score": 71.7441340292931,
+          "final_score": 71.7441340292931,
+          "dragon_composite_score": 93.07847817893266,
+          "dragon_score": 93.07847817893266,
+          "force_composite_score": 50.0,
+          "rank": 1,
+          "signal_type": "buy",
+          "market_risk_level": "yellow",
+          "market_grade": "yellow",
+          "position_scale_factor": 0.5,
+          "position_scale": 0.5,
+          "created_at": "2026-08-25T22:01:09.601221+08:00"
+        }
+      ],
+      "empty": false
+    },
+    "2024-01-02": {
+      "trade_date": "2024-01-02",
+      "attrs": {
+        "market_risk_level": "yellow",
+        "market_grade": "yellow",
+        "position_scale_factor": 0.5,
+        "position_scale": 0.5,
+        "regime": "momentum",
+        "top_k": 5
+      },
+      "records": [
+        {
+          "trade_date": "2024-01-02",
+          "code": "603201",
+          "sector_code": "SW2汽车零部件",
+          "strategy_signal_score": 75.36112008859101,
+          "final_score": 75.36112008859101,
+          "dragon_composite_score": 90.60694746386534,
+          "dragon_score": 90.60694746386534,
+          "force_composite_score": 67.9280872382859,
+          "rank": 1,
+          "signal_type": "buy",
+          "market_risk_level": "yellow",
+          "market_grade": "yellow",
+          "position_scale_factor": 0.5,
+          "position_scale": 0.5,
+          "created_at": "2026-08-25T22:01:09.692575+08:00"
+        },
+        {
+          "trade_date": "2024-01-02",
+          "code": "601107",
+          "sector_code": "SW2铁路公路",
+          "strategy_signal_score": 53.876496430877886,
+          "final_score": 53.876496430877886,
+          "dragon_composite_score": 96.04076303280623,
+          "dragon_score": 96.04076303280623,
+          "force_composite_score": 27.715584144249505,
+          "rank": 2,
+          "signal_type": "buy",
+          "market_risk_level": "yellow",
+          "market_grade": "yellow",
+          "position_scale_factor": 0.5,
+          "position_scale": 0.5,
+          "created_at": "2026-08-25T22:01:09.692575+08:00"
+        },
+        {
+          "trade_date": "2024-01-02",
+          "code": "000060",
+          "sector_code": "SW2工业金属",
+          "strategy_signal_score": 40.24257201137221,
+          "final_score": 40.24257201137221,
+          "dragon_composite_score": 85.9997730826277,
+          "dragon_score": 85.9997730826277,
+          "force_composite_score": 40.57060572981006,
+          "rank": 3,
+          "signal_type": "buy",
+          "market_risk_level": "yellow",
+          "market_grade": "yellow",
+          "position_scale_factor": 0.5,
+          "position_scale": 0.5,
+          "created_at": "2026-08-25T22:01:09.692575+08:00"
+        }
+      ],
+      "empty": false
+    },
+    "2024-01-03": {
+      "trade_date": "2024-01-03",
+      "attrs": {
+        "market_risk_level": "yellow",
+        "market_grade": "yellow",
+        "position_scale_factor": 0.5,
+        "position_scale": 0.5,
+        "regime": "momentum",
+        "top_k": 5
+      },
+      "records": [
+        {
+          "trade_date": "2024-01-03",
+          "code": "600812",
+          "sector_code": "SW2化学制药",
+          "strategy_signal_score": 86.55822569772339,
+          "final_score": 86.55822569772339,
+          "dragon_composite_score": 96.84754088817868,
+          "dragon_score": 96.84754088817868,
+          "force_composite_score": 50.6463455474434,
+          "rank": 1,
+          "signal_type": "buy",
+          "market_risk_level": "yellow",
+          "market_grade": "yellow",
+          "position_scale_factor": 0.5,
+          "position_scale": 0.5,
+          "created_at": "2026-08-25T22:01:09.772035+08:00"
+        },
+        {
+          "trade_date": "2024-01-03",
+          "code": "000590",
+          "sector_code": "SW2中药",
+          "strategy_signal_score": 70.1007279581249,
+          "final_score": 70.1007279581249,
+          "dragon_composite_score": 90.11596221487045,
+          "dragon_score": 90.11596221487045,
+          "force_composite_score": 47.5738980650143,
+          "rank": 2,
+          "signal_type": "buy",
+          "market_risk_level": "yellow",
+          "market_grade": "yellow",
+          "position_scale_factor": 0.5,
+          "position_scale": 0.5,
+          "created_at": "2026-08-25T22:01:09.772035+08:00"
+        },
+        {
+          "trade_date": "2024-01-03",
+          "code": "600757",
+          "sector_code": "SW2出版",
+          "strategy_signal_score": 40.219698639967326,
+          "final_score": 40.219698639967326,
+          "dragon_composite_score": 96.74570866973988,
+          "dragon_score": 96.74570866973988,
+          "force_composite_score": 25.434802422233485,
+          "rank": 3,
+          "signal_type": "buy",
+          "market_risk_level": "yellow",
+          "market_grade": "yellow",
+          "position_scale_factor": 0.5,
+          "position_scale": 0.5,
+          "created_at": "2026-08-25T22:01:09.772035+08:00"
+        }
+      ],
+      "empty": false
+    },
+    "2024-03-01": {
+      "trade_date": "2024-03-01",
+      "attrs": {
+        "market_risk_level": "green",
+        "market_grade": "green",
+        "position_scale_factor": 1.0,
+        "position_scale": 1.0,
+        "regime": "neutral",
+        "top_k": 5
+      },
+      "records": [
+        {
+          "trade_date": "2024-03-01",
+          "code": "003018",
+          "sector_code": "SW2包装印刷",
+          "strategy_signal_score": 57.43025642579609,
+          "final_score": 57.43025642579609,
+          "dragon_composite_score": 90.27692312132216,
+          "dragon_score": 90.27692312132216,
+          "force_composite_score": 50.0,
+          "rank": 1,
+          "signal_type": "buy",
+          "market_risk_level": "green",
+          "market_grade": "green",
+          "position_scale_factor": 1.0,
+          "position_scale": 1.0,
+          "created_at": "2026-08-25T22:01:09.850238+08:00"
+        }
+      ],
+      "empty": false
+    }
+  },
+  "primary_date": "2024-01-02"
+}
