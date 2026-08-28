@@ -1,0 +1,60 @@
+季度回测对比报告（v1.16.0 定版，precomputed，fee=0.15%，capital=1M）
+生成时间: 2026-08-27 22:37:54
+
+═══ 一、季度累计收益（%）═══
+year       2024   2025   2026
+quarter                      
+Q1       +13.60  -0.75  +4.07
+Q2       -17.03  +9.41  -6.95
+Q3        +7.48  -6.43  +0.00
+Q4        +7.72  +1.18      —
+
+═══ 二、季度 Sharpe ═══
+year      2024   2025   2026
+quarter                     
+Q1        2.34  -0.09   1.34
+Q2       -4.31   2.03  -0.87
+Q3        1.87  -0.85   0.00
+Q4        1.37   0.40      —
+
+═══ 三、季度最大回撤（%）═══
+year       2024    2025    2026
+quarter                        
+Q1        -7.40   -9.26   -6.21
+Q2       -17.91   -3.86  -15.80
+Q3        -4.35  -14.97    0.00
+Q4        -6.96   -4.93       —
+
+═══ 四、明细 ═══
+  2024_Q1   2024-01-01~2024-03-29  ret=+13.60%  sharpe=2.34  mdd=-7.40%  reb=13  days=65
+  2024_Q2   2024-04-01~2024-06-28  ret=-17.03%  sharpe=-4.31  mdd=-17.91%  reb=15  days=65
+  2024_Q3   2024-07-01~2024-09-30  ret=+7.48%  sharpe=1.87  mdd=-4.35%  reb=15  days=66
+  2024_Q4   2024-10-01~2024-12-31  ret=+7.72%  sharpe=1.37  mdd=-6.96%  reb=15  days=66
+  2025_Q1   2025-01-02~2025-03-31  ret=-0.75%  sharpe=-0.09  mdd=-9.26%  reb=15  days=63
+  2025_Q2   2025-04-01~2025-06-30  ret=+9.41%  sharpe=2.03  mdd=-3.86%  reb=13  days=65
+  2025_Q3   2025-07-01~2025-09-30  ret=-6.43%  sharpe=-0.85  mdd=-14.97%  reb=15  days=66
+  2025_Q4   2025-10-01~2025-12-31  ret=+1.18%  sharpe=0.40  mdd=-4.93%  reb=14  days=66
+  2026_Q1   2026-01-01~2026-03-31  ret=+4.07%  sharpe=1.34  mdd=-6.21%  reb=13  days=64
+  2026_Q2   2026-04-01~2026-06-30  ret=-6.95%  sharpe=-0.87  mdd=-15.80%  reb=15  days=65
+  2026_Q3   2026-07-01~2026-08-26  ret=+0.00%  sharpe=0.00  mdd=0.00%  reb=5  days=41
+
+═══ 五、2026 亏损归因（诊断性，不改参）═══
+  - 2026 Q1 为正 (+4.1%)，亏损集中在 Q2 及以后。
+  - 最弱月份 2026-06 (-17.9%)。
+  - 最大单日亏损 2026-06-04 (-5.7%)。
+  - 2026 Q2 多次再平衡日零持仓，策略在弱环境下未能建立有效仓位。
+
+同季度横向对比（累计收益）:
+  Q1: 2024=+13.6%  2025=-0.8%  2026=+4.1%
+  Q2: 2024=-17.0%  2025=+9.4%  2026=-7.0%
+  Q3: 2024=+7.5%  2025=-6.4%  2026=+0.0%
+
+2026 各季环境/持仓统计（再平衡日）:
+  2026_Q1: {"rebalance_events": 13, "flat_no_position": 4, "hold_no_signals": 1, "zero_holdings_rebalance": 9, "grade_red_rebalances": 3, "grade_yellow_rebalances": 2, "avg_position_scale": 0.423}
+  2026_Q2: {"rebalance_events": 15, "flat_no_position": 2, "hold_no_signals": 0, "zero_holdings_rebalance": 7, "grade_red_rebalances": 1, "grade_yellow_rebalances": 1, "avg_position_scale": 0.7}
+  2026_Q3: {"rebalance_events": 5, "flat_no_position": 2, "hold_no_signals": 0, "zero_holdings_rebalance": 5, "grade_red_rebalances": 2, "grade_yellow_rebalances": 0, "avg_position_scale": 0.3}
+
+2026 YTD 月度收益:
+  2026-04: +6.14%
+  2026-05: -10.09%
+  2026-06: -17.86%

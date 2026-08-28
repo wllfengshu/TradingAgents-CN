@@ -1,0 +1,92 @@
+{
+  "ytd_compound_return_approx": -0.03166675381104789,
+  "quarterly_returns_2026": {
+    "2026_Q1": 0.04069695163751197,
+    "2026_Q2": -0.06953388816475081,
+    "2026_Q3": 0.0
+  },
+  "same_quarter_comparison": {
+    "Q1": {
+      "2024": 0.13595979018479332,
+      "2025": -0.00752317353720211,
+      "2026": 0.04069695163751197
+    },
+    "Q2": {
+      "2024": -0.17031088634368396,
+      "2025": 0.0941272707294949,
+      "2026": -0.06953388816475081
+    },
+    "Q3": {
+      "2024": 0.07476089413056819,
+      "2025": -0.06425446262736201,
+      "2026": 0.0
+    }
+  },
+  "worst_quarter_2026": "2026_Q2",
+  "worst_quarter_return": -0.06953388816475081,
+  "q2_2026_vs_prior": {
+    "2026_Q2": -0.06953388816475081,
+    "2024_Q2": -0.17031088634368396,
+    "2025_Q2": 0.0941272707294949
+  },
+  "env_stats_by_quarter": {
+    "2026_Q1": {
+      "rebalance_events": 13,
+      "flat_no_position": 4,
+      "hold_no_signals": 1,
+      "zero_holdings_rebalance": 9,
+      "grade_red_rebalances": 3,
+      "grade_yellow_rebalances": 2,
+      "avg_position_scale": 0.423
+    },
+    "2026_Q2": {
+      "rebalance_events": 15,
+      "flat_no_position": 2,
+      "hold_no_signals": 0,
+      "zero_holdings_rebalance": 7,
+      "grade_red_rebalances": 1,
+      "grade_yellow_rebalances": 1,
+      "avg_position_scale": 0.7
+    },
+    "2026_Q3": {
+      "rebalance_events": 5,
+      "flat_no_position": 2,
+      "hold_no_signals": 0,
+      "zero_holdings_rebalance": 5,
+      "grade_red_rebalances": 2,
+      "grade_yellow_rebalances": 0,
+      "avg_position_scale": 0.3
+    }
+  },
+  "curve_analysis": {
+    "monthly_returns": {
+      "2026-04": 0.06141809191884717,
+      "2026-05": -0.10089935630013946,
+      "2026-06": -0.1786452785009004
+    },
+    "worst_month": "2026-06",
+    "worst_month_return": -0.1786452785009004,
+    "worst_day": {
+      "date": "2026-06-04",
+      "daily_return": -0.0566182096403978,
+      "equity": 0.9051002409363814
+    },
+    "zero_return_days_pct": 0.16923076923076924,
+    "max_drawdown": -0.2566977489347807
+  },
+  "log_stats": {
+    "reduce_only_events": 0,
+    "regime_reversal_mentions": 0,
+    "grade_yellow_mentions": 0,
+    "grade_red_mentions": 0,
+    "drawdown_throttle_mentions": 0,
+    "hard_stop_mentions": 0,
+    "no_signal_flat_mentions": 0
+  },
+  "diagnosis": [
+    "2026 Q1 为正 (+4.1%)，亏损集中在 Q2 及以后。",
+    "最弱月份 2026-06 (-17.9%)。",
+    "最大单日亏损 2026-06-04 (-5.7%)。",
+    "2026 Q2 多次再平衡日零持仓，策略在弱环境下未能建立有效仓位。"
+  ]
+}
