@@ -308,7 +308,16 @@ class FundamentalDataProvider:
         return entries[idx][1]
 
     def compute_pb(self, code: str, close: float, asof_date: str) -> Optional[float]:
-        """PB = close / BPS"""
+        """PB = close / BPS
+
+        **重要口径约定**：
+        - BPS 来自定期报告披露的"每股净资产"，是绝对金额，不随除权除息调整。
+        - 因此 `close` 必须是**未复权价（raw close）**——如果传入前复权价，
+          除权除息日之后价格会被等比缩小而 BPS 不变，PB 将被系统性低估，
+          导致 f39 因子方向反向。
+        - 上游若只有前复权价，请先按累计除权因子还原为 raw close 再传入；
+          `sync_ohlcv` 已在 MongoDB 中保留原始价，务必从"未复权"字段取值。
+        """
         bps = self.get_bps(code, asof_date)
         if bps is None or bps == 0:
             return None

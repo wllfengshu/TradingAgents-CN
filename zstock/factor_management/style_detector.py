@@ -34,14 +34,32 @@ import pandas as pd
 from scipy import stats
 
 from zstock.data_management.query_service import get_data_query_service
+from zstock.common.config.strategy_config import load_strategy_params
 
 logger = logging.getLogger(__name__)
 
-# 风格分类阈值
+# 风格分类阈值（模块内置保底值；运行时以 strategy_params.json → style_detector 为准）
 _MOMENTUM_THRESHOLD = 0.05    # 自相关 > 0.05 → 动量
 _REVERSAL_THRESHOLD = -0.05   # 自相关 < -0.05 → 反转
 _MIN_OBSERVATIONS = 15         # 最少需要 15 个交易日数据
 _LOOKBACK = 20                 # 默认回顾窗口
+
+
+def _style_detector_config() -> Dict:
+    """从 strategy_params.json → style_detector 读取风格阈值（缓存）。"""
+    if _style_detector_config._cache is not None:
+        return _style_detector_config._cache
+    cfg = (load_strategy_params() or {}).get("style_detector") or {}
+    _style_detector_config._cache = {
+        "momentum_threshold": float(cfg.get("momentum_threshold", _MOMENTUM_THRESHOLD)),
+        "reversal_threshold": float(cfg.get("reversal_threshold", _REVERSAL_THRESHOLD)),
+        "min_observations": int(cfg.get("min_observations", _MIN_OBSERVATIONS)),
+        "lookback": int(cfg.get("lookback", _LOOKBACK)),
+    }
+    return _style_detector_config._cache
+
+
+_style_detector_config._cache = None
 
 
 class StyleDetector:
@@ -49,13 +67,28 @@ class StyleDetector:
 
     def __init__(
         self,
-        lookback: int = _LOOKBACK,
-        momentum_threshold: float = _MOMENTUM_THRESHOLD,
-        reversal_threshold: float = _REVERSAL_THRESHOLD,
+        lookback: Optional[int] = None,
+        momentum_threshold: Optional[float] = None,
+        reversal_threshold: Optional[float] = None,
+        min_observations: Optional[int] = None,
     ):
-        self.lookback = lookback
-        self.momentum_threshold = momentum_threshold
-        self.reversal_threshold = reversal_threshold
+        cfg = _style_detector_config()
+        self.lookback = lookback if lookback is not None else cfg["lookback"]
+        self.momentum_threshold = (
+            momentum_threshold
+            if momentum_threshold is not None
+            else cfg["momentum_threshold"]
+        )
+        self.reversal_threshold = (
+            reversal_threshold
+            if reversal_threshold is not None
+            else cfg["reversal_threshold"]
+        )
+        self.min_observations = (
+            min_observations
+            if min_observations is not None
+            else cfg["min_observations"]
+        )
 
     def compute_rank_autocorr(
         self,
@@ -77,17 +110,17 @@ class StyleDetector:
         Returns:
             排名自相关系数 [-1, 1]
         """
-        if close_prices is None or len(close_prices) < _MIN_OBSERVATIONS:
+        if close_prices is None or len(close_prices) < self.min_observations:
             return float("nan")
 
         # 取最近 lookback 个交易日
         tail = close_prices.iloc[-self.lookback:]
-        if len(tail) < _MIN_OBSERVATIONS:
+        if len(tail) < self.min_observations:
             return float("nan")
 
         # 计算每日收益率
         returns = tail.pct_change(fill_method=None).dropna()
-        if len(returns) < _MIN_OBSERVATIONS:
+        if len(returns) < self.min_observations:
             return float("nan")
 
         # 对收益率排名

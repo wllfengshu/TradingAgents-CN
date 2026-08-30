@@ -8,10 +8,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -21,11 +19,9 @@ from .signal_generator import SignalGenerator
 from .portfolio_optimizer import PortfolioOptimizer
 from .risk_manager import RiskManager
 from .turnover_controller import TurnoverController
+from zstock.common.config.strategy_config import build_runtime_config
 
 logger = logging.getLogger(__name__)
-
-# 策略参数配置文件路径
-_STRATEGY_PARAMS_PATH = Path(__file__).parent.parent / "common" / "config" / "strategy_params.json"
 
 
 class StrategyPipeline:
@@ -48,6 +44,7 @@ class StrategyPipeline:
             turnover_controller = TurnoverController(
                 buffer_threshold=float(tov.get("buffer_threshold", 0.25)),
                 min_hold_days=int(tov.get("min_hold_days", 3)),
+                fee_rate=float(tov.get("fee_rate", 0.0015)),
             )
         self.turnover_controller = turnover_controller
         self.pipeline_result: Dict[str, Any] = {}
@@ -221,19 +218,30 @@ class StrategyPipeline:
             trading_costs = {'turnover': 0.0, 'cost_pct': 0.0, 'cost_amount': 0.0, 'fee_rate': 0.0}
 
         # 6. 市场仓位缩放（黄灯缩仓；红灯上游已空信号）
-        # 先归一化到满仓（在 cap 允许范围内），再乘 position_scale
+        # 归一化目标 = min(1, n * cap)：
+        #   optimizer/risk 都遵循 "allow_cash" 语义——n*cap<1 时保留现金，不强行拉满仓。
+        #   若这里无条件归一化到 1，会突破 optimizer 已经设置的 per-stock cap
+        #   （例如 n=3, cap=0.12 → wsum=0.36，若归一化到 1，每只 0.333，破 cap 3 倍）。
+        #   因此把上限收敛到 n*cap 之内，仅在权重被换手/风控意外压低到"应当满仓
+        #   却只有 wsum<n*cap"的场景才补回来。
         if (
             not final_holdings.empty
             and 'weight' in final_holdings.columns
         ):
+            n_eff = int(len(final_holdings))
             wsum = float(final_holdings['weight'].astype(float).sum())
-            if wsum > 1e-9 and wsum < 1.0 - 1e-9:
+            cap = float(
+                (cfg.get('portfolio_optimization') or {}).get('max_weight_per_stock', 1.0)
+            )
+            target_sum = min(1.0, n_eff * cap) if cap > 0 else 1.0
+            if wsum > 1e-9 and wsum < target_sum - 1e-9:
                 final_holdings = final_holdings.copy()
                 final_holdings['weight'] = (
-                    final_holdings['weight'].astype(float) / wsum
+                    final_holdings['weight'].astype(float) * (target_sum / wsum)
                 )
                 logger.info(
-                    f"📈 权重归一化至满仓: {wsum:.2%} → 100%（随后按 position_scale 缩放）"
+                    f"📈 权重归一化: {wsum:.2%} → {target_sum:.2%}"
+                    f"（n={n_eff}, cap={cap:.2%}, 保留现金以尊重 per-stock cap）"
                 )
 
         position_scale = 1.0
@@ -301,11 +309,6 @@ class StrategyPipeline:
         )
         return summary
 
-    def get_target_positions(self) -> pd.DataFrame:
-        if not self.pipeline_result:
-            return pd.DataFrame()
-        return self.pipeline_result.get('results', {}).get('final_holdings', pd.DataFrame())
-
     @staticmethod
     def _extract_market_grade(signals_df: Optional[pd.DataFrame]) -> str:
         if signals_df is None:
@@ -336,7 +339,7 @@ class StrategyPipeline:
             return set()
         if "rank" not in signals_df.columns or "code" not in signals_df.columns:
             return set()
-        thr = float(exit_rules.get("rank_percentile_threshold", 0.8))
+        thr = float(exit_rules.get("rank_percentile_threshold", 0.85))
         n = len(signals_df)
         if n <= 1:
             return set()
@@ -362,79 +365,14 @@ class StrategyPipeline:
         从 strategy_params.json 加载策略参数，转换为 pipeline 各阶段所需的配置结构。
         配置文件是策略参数的唯一数据源（Single Source of Truth）。
         结果缓存于类变量，进程生命周期内只读一次磁盘。
+        派生逻辑统一委托给 zstock.common.config.strategy_config.build_runtime_config()。
         """
         if StrategyPipeline._config_cache is not None:
             return StrategyPipeline._config_cache
 
-        params = {}
-        try:
-            with open(_STRATEGY_PARAMS_PATH, 'r', encoding='utf-8') as f:
-                params = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logger.error(f"❌ 加载策略参数失败: {_STRATEGY_PARAMS_PATH}, {e}")
-
-        final_score = params.get('final_score', {})
-        top_k = final_score.get('top_k', 5)
-        portfolio = params.get('portfolio', {})
-        tov = params.get('turnover_control', {})
-        exit_rules = params.get('exit_rules', {})
-
-        cfg = {
-            'portfolio_optimization': {
-                'min_holdings': max(1, top_k - 2),        # 允许比 top_k 少2只（容忍信号不足）
-                'max_holdings': top_k,
-                'max_weight_per_stock': float(
-                    portfolio.get('max_weight_per_stock', round(1.0 / max(top_k, 1), 2))
-                ),
-                'weighting': 'score',
-            },
-            'risk_management': {
-                'hard_stop_loss_pct': exit_rules.get('hard_stop_loss_pct', -0.08),
-                'max_sector_exposure': float(portfolio.get('max_sector_exposure', 0.35)),
-            },
-            'turnover_control': {
-                'buffer_threshold': float(tov.get('buffer_threshold', 0.25)),
-                'min_hold_days': int(tov.get('min_hold_days', 3)),
-            },
-            'exit_rules': {
-                'hard_stop_loss_pct': float(
-                    exit_rules.get('hard_stop_loss_pct', -0.08)
-                ),
-                'rank_percentile_threshold': float(
-                    exit_rules.get('rank_percentile_threshold', 0.8)
-                ),
-                # 兼容旧字段名 consecutive_days_out_of_top3
-                'consecutive_days_out_of_candidates': int(
-                    exit_rules.get(
-                        'consecutive_days_out_of_candidates',
-                        exit_rules.get('consecutive_days_out_of_top3', 2),
-                    )
-                ),
-                'flat_after_bad_days': int(exit_rules.get('flat_after_bad_days', 3)),
-                'no_signal_action': str(
-                    exit_rules.get('no_signal_action', 'reduce_then_flat')
-                ),
-                'no_signal_reduce_scale': float(
-                    exit_rules.get('no_signal_reduce_scale', 0.5)
-                ),
-            },
-        }
+        cfg = build_runtime_config()
         StrategyPipeline._config_cache = cfg
         return cfg
-
-    @classmethod
-    def load_runtime_config(cls, override: Optional[Dict] = None) -> Dict[str, Dict]:
-        """加载 strategy_params.json 并与 pipeline 阶段配置合并（含 adaptive_rebalance 等）。"""
-        cls._config_cache = None
-        params = override
-        if params is None:
-            try:
-                with open(_STRATEGY_PARAMS_PATH, "r", encoding="utf-8") as f:
-                    params = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError) as e:
-                logger.error("加载 strategy_params 失败: %s", e)
-                params = {}
-        return cls._merge_config(params)
 
     @classmethod
     def _merge_config(cls, override: Optional[Dict]) -> Dict[str, Dict]:

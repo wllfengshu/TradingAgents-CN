@@ -429,22 +429,23 @@ class ForceFactors:
             if total_volume == 0.0 and ohlcv_df is not None:
                 if not ohlcv_df.empty and "amount" in ohlcv_df.columns:
                     total_volume = float(ohlcv_df["amount"].iloc[-1])
-                    # 单位检验：正常中国A股日成交额应在千万以上
-                    if 0.0 < total_volume < 1000000.0:
+                    # 单位一致性守卫：上游 OHLCV.amount 契约为"元"。若数值明显偏小
+                    # （中国 A 股正常个股当日成交额至少在千万级），说明上游数据源
+                    # 单位不一致——此时**不做任何自动换算**（错误换算 3 个数量级
+                    # 会直接污染 fcoop1 与 M4 门槛，比 total_volume=0 危害更大），
+                    # 而是丢弃该值让下游走"无成交额"分支，并打 warning 定位上游。
+                    if 0.0 < total_volume < 1_000_000.0:
                         logger.warning(
-                            f"  M4单位风险 {code}: 成交额 {total_volume:.0f} 可能非元单位"
+                            f"  M4单位异常 {code}: 成交额 {total_volume:.0f} 明显偏小，"
+                            f"疑似上游 OHLCV.amount 单位不是元；已丢弃该值。"
+                            f"请上游修复单位契约，禁止在此层做启发式换算。"
                         )
-                        # 尝试单位转换：若太小，可能是万元或千元
-                        if total_volume < 100000.0:
-                            total_volume *= 10000.0  # 假设万元 → 元
-                            logger.warning(f"    自动转换为万元: {total_volume:.0f} 元")
-                        else:
-                            total_volume *= 1000.0  # 假设千元 → 元
-                            logger.warning(f"    自动转换为千元: {total_volume:.0f} 元")
-                    logger.debug(
-                        f"  M4数据警告 {code}: 资金流无成交额，fallback至"
-                        f"OHLCV={total_volume:.0f}，可能跨日失真"
-                    )
+                        total_volume = 0.0
+                    else:
+                        logger.debug(
+                            f"  M4数据警告 {code}: 资金流无成交额，fallback至"
+                            f"OHLCV={total_volume:.0f}，可能跨日失真"
+                        )
 
         injected_tr = candidate.get("turnover_rate")
         if injected_tr is not None:

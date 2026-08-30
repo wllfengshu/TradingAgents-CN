@@ -13,57 +13,27 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from zstock.common.config.strategy_config import build_risk_limits
 
-# 策略参数配置文件路径（与 pipeline.py 同源）
-_STRATEGY_PARAMS_PATH = Path(__file__).parent.parent / "common" / "config" / "strategy_params.json"
+logger = logging.getLogger(__name__)
 
 
 def _load_risk_limits_from_config() -> Dict:
     """
     从 strategy_params.json 读取风控相关参数，构建 risk_limits。
+    派生逻辑统一委托给 zstock.common.config.strategy_config.build_risk_limits()。
     结果缓存于函数属性，进程生命周期内只读一次磁盘。
     """
     if _load_risk_limits_from_config._cache is not None:
         return _load_risk_limits_from_config._cache
 
-    try:
-        with open(_STRATEGY_PARAMS_PATH, 'r', encoding='utf-8') as f:
-            params = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        logger.error(f"⚠️ 无法加载策略参数: {e}，使用内置保底值")
-        params = {}
-
-    top_k = params.get('final_score', {}).get('top_k', 5)
-    top_sectors = params.get('sector_layer', {}).get('top_sectors', 3)
-    portfolio = params.get('portfolio', {})
-
-    limits = {
-        'top_k': top_k,
-        'min_holdings': max(1, top_k - 2),
-        'max_holdings': top_k * 2,  # 允许 buffer / 最短持有保留旧持仓
-        'max_weight_per_stock': float(
-            portfolio.get('max_weight_per_stock', round(1.0 / max(top_k, 1), 2))
-        ),
-        'max_top5_concentration': 1.0,  # top_k=5 时不做 top5 集中度限制
-        'max_sector_exposure': float(
-            portfolio.get(
-                'max_sector_exposure',
-                round(1.0 / max(top_sectors, 1) + 0.15, 2),
-            )
-        ),
-        'weight_sum_tolerance': 1e-3,
-        # 允许黄灯缩仓后权重和 < 1（现金）
-        'allow_cash': True,
-    }
+    limits = build_risk_limits()
     _load_risk_limits_from_config._cache = limits
     return limits
 
@@ -241,8 +211,13 @@ class RiskManager:
         cap = limits['max_weight_per_stock']
         df.loc[df['weight'] > cap, 'weight'] = cap
 
-        # 纠正后重新检查，确保指标和状态反映真实结果
-        final_compliance = self.check_compliance(df, signals_df)
+        # 纠正后重新检查，确保指标和状态反映真实结果。
+        # 必须把同一份 limits_override 透传给复检——否则第一次用 override（例如
+        # regime=aggressive 下 top_k=8），第二次退回 self.risk_limits 静态默认，
+        # 会得到与 pipeline 期望不一致的 status/metrics。
+        final_compliance = self.check_compliance(
+            df, signals_df, limits_override=limits_override
+        )
         corrected_compliance = {
             'status': final_compliance['status'],
             'issues': final_compliance['issues'],

@@ -151,16 +151,65 @@ def determine_market(code: str) -> str:
     return 'sz'
 
 
-_INDEX_CODES = frozenset({
-    '000001', '000016', '000300', '000852', '000905',  # 上证系列
-    '399001', '399006', '399300', '399905',            # 深证系列
-    '000688',                                           # 科创50
+# 000xxx 段沪深指数与深市个股完全同码（例：000001 上证指数 vs 深市平安银行、
+# 000300 沪深300 vs 深市宜华木业、000905 中证500 vs 深市金城股份 …），
+# 因此按"6 位纯数字"是无法判定该 code 到底是指数还是股票的。
+# 这里把指数专用段拆成两类：
+#   - _UNAMBIGUOUS_INDEX_CODES：仅在指数命名空间存在的代码（399xxx/000688）
+#   - _AMBIGUOUS_INDEX_CODES：与深市 000xxx 股票同码，必须带 SH 前缀才可判定为指数
+_UNAMBIGUOUS_INDEX_CODES = frozenset({
+    '399001', '399006', '399300', '399905',  # 深证系列指数
+    '000688',                                 # 科创50（深市 000xxx 不含此码）
+})
+_AMBIGUOUS_INDEX_CODES = frozenset({
+    '000001', '000016', '000300', '000852', '000905',  # 上证系列指数
 })
 
 
+def _extract_market_prefix(symbol: str) -> str:
+    """提取显式市场前缀（SH/SZ/BJ）。无前缀返回空字符串。
+
+    支持以下形态：
+    - "SH000001" / "000001.SH" / "sh000001"
+    - "000001"（无前缀）返回 ""
+    """
+    if not symbol:
+        return ''
+    s = str(symbol).strip().upper()
+    for pref in ('SH', 'SZ', 'BJ'):
+        if s.startswith(pref):
+            return pref
+    if '.' in s:
+        suf = s.rsplit('.', 1)[1]
+        if suf in ('SH', 'SZ', 'BJ'):
+            return suf
+    return ''
+
+
 def is_index_code(code: str) -> bool:
-    """判断是否为已知 A 股指数代码（白名单方式，避免误判个股）。"""
-    return normalize_code(code) in _INDEX_CODES
+    """判断是否为 A 股指数代码。
+
+    规则（避免与深市 000xxx 段股票误判）：
+    - 若 symbol 显式带 SH 前缀（如 "SH000001" / "000001.SH"）：属于任一指数集即 True
+    - 若显式带 SZ/BJ 前缀：不属于指数集，一律 False
+    - 若无市场前缀：只有 399xxx / 000688 这类"无歧义"指数段返回 True；
+      000xxx 段（与深市股票同码）默认视为股票并返回 False。
+      调用方若确实要按指数处理，请传入带 SH 前缀的完整 symbol。
+    """
+    if code is None:
+        return False
+    prefix = _extract_market_prefix(str(code))
+    c = normalize_code(str(code))
+    if not c:
+        return False
+    if prefix == 'SH':
+        return c in _AMBIGUOUS_INDEX_CODES or c in _UNAMBIGUOUS_INDEX_CODES
+    if prefix in ('SZ', 'BJ'):
+        # 深/北市场不存在与 000xxx 指数冲突的指数命名空间；只有 399xxx 例外，
+        # 但 399xxx 归深交所指数，不属于个股，此处一并按无前缀分支处理。
+        return c in _UNAMBIGUOUS_INDEX_CODES
+    # 无显式前缀：只承认无歧义段
+    return c in _UNAMBIGUOUS_INDEX_CODES
 
 
 # =========================== 通用排序和过滤 ===========================

@@ -38,10 +38,11 @@ import numpy as np
 import pandas as pd
 
 from zstock.common.utils.common_utils import ensure_ohlcv_sorted, ohlcv_asof
+from zstock.common.config.strategy_config import load_strategy_params
 
 logger = logging.getLogger(__name__)
 
-# 子因子权重
+# 子因子权重（模块内置保底值；运行时以 strategy_params.json → market_factors 为准）
 _W_TREND = 0.30        # market_trend_strength（市场趋势强度）
 _W_BOLLINGER = 0.25    # market_bollinger_position（市场布林位置）
 _W_VOLUME = 0.20       # market_volume_state（市场成交量状态）
@@ -89,6 +90,34 @@ _ATR_WINDOWS         = (10, 20, 30)          # MF5 波动率：ATR窗口
 _MA_WINDOWS_FOR_ATR  = (10, 20, 30)          # MF5 波动率：MA窗口（与ATR配对）
 
 _MIN_BARS            = 31   # 至少需要的 K 线根数（最大MA30 + 1根计算 True Range）
+
+
+def _market_factors_config() -> Dict:
+    """从 strategy_params.json → market_factors 读取 M1 参数（缓存）。
+
+    缺失字段回退到模块内置保底值，保证与 JSON 一致（Single Source of Truth）。
+    """
+    if _market_factors_config._cache is not None:
+        return _market_factors_config._cache
+
+    cfg = (load_strategy_params() or {}).get("market_factors") or {}
+    weights = cfg.get("weights") or {}
+    _market_factors_config._cache = {
+        "w_trend": float(weights.get("trend_strength", _W_TREND)),
+        "w_bollinger": float(weights.get("bollinger_position", _W_BOLLINGER)),
+        "w_volume": float(weights.get("volume_state", _W_VOLUME)),
+        "w_momentum": float(weights.get("momentum_5day", _W_MOMENTUM)),
+        "w_volatility": float(weights.get("volatility_suppression", _W_VOLATILITY)),
+        "grade_green": float(cfg.get("grade_green", _GRADE_GREEN)),
+        "grade_yellow": float(cfg.get("grade_yellow", _GRADE_YELLOW)),
+        "scale_green": float(cfg.get("scale_green", _SCALE_GREEN)),
+        "scale_yellow": float(cfg.get("scale_yellow", _SCALE_YELLOW)),
+        "scale_red": float(cfg.get("scale_red", _SCALE_RED)),
+    }
+    return _market_factors_config._cache
+
+
+_market_factors_config._cache = None
 
 
 class MarketFactors:
@@ -163,24 +192,25 @@ class MarketFactors:
         mf4, mf4_raw = MarketFactors._score_momentum(df)
         mf5, mf5_raw = MarketFactors._score_volatility(df)
 
+        mc = _market_factors_config()
         score = (
-            _W_TREND * mf1
-            + _W_BOLLINGER * mf2
-            + _W_VOLUME * mf3
-            + _W_MOMENTUM * mf4
-            + _W_VOLATILITY * mf5
+            mc["w_trend"] * mf1
+            + mc["w_bollinger"] * mf2
+            + mc["w_volume"] * mf3
+            + mc["w_momentum"] * mf4
+            + mc["w_volatility"] * mf5
         )
         score = float(np.clip(score, 0.0, 100.0))
 
-        if score >= _GRADE_GREEN:
+        if score >= mc["grade_green"]:
             grade = "green"
-            scale = _SCALE_GREEN
-        elif score >= _GRADE_YELLOW:
+            scale = mc["scale_green"]
+        elif score >= mc["grade_yellow"]:
             grade = "yellow"
-            scale = _SCALE_YELLOW
+            scale = mc["scale_yellow"]
         else:
             grade = "red"
-            scale = _SCALE_RED
+            scale = mc["scale_red"]
 
         allow_new_open = grade != "red"
 
@@ -282,17 +312,19 @@ class MarketFactors:
         mf4 = MarketFactors._map_momentum_to_score(mf4_momentum_5d) if not np.isnan(mf4_momentum_5d) else 50.0
         mf5 = MarketFactors._map_atr_ratio_to_score(mf5_atr_ratio) if not np.isnan(mf5_atr_ratio) else 50.0
 
+        mc = _market_factors_config()
         score = float(np.clip(
-            _W_TREND * mf1 + _W_BOLLINGER * mf2 + _W_VOLUME * mf3 + _W_MOMENTUM * mf4 + _W_VOLATILITY * mf5,
+            mc["w_trend"] * mf1 + mc["w_bollinger"] * mf2 + mc["w_volume"] * mf3
+            + mc["w_momentum"] * mf4 + mc["w_volatility"] * mf5,
             0.0, 100.0,
         ))
 
-        if score >= _GRADE_GREEN:
-            grade, scale = 'green', _SCALE_GREEN
-        elif score >= _GRADE_YELLOW:
-            grade, scale = 'yellow', _SCALE_YELLOW
+        if score >= mc["grade_green"]:
+            grade, scale = 'green', mc["scale_green"]
+        elif score >= mc["grade_yellow"]:
+            grade, scale = 'yellow', mc["scale_yellow"]
         else:
-            grade, scale = 'red', _SCALE_RED
+            grade, scale = 'red', mc["scale_red"]
 
         return {
             'market_composite_score':   score,
@@ -544,7 +576,7 @@ class MarketFactors:
         return {
             'market_composite_score':   50.0,
             'market_risk_level':   'yellow',
-            'position_scale_factor': _SCALE_YELLOW,
+            'position_scale_factor': _market_factors_config()["scale_yellow"],
             'allow_new_open': True,
             'market_trend_strength':      50.0,
             'market_bollinger_position':       50.0,

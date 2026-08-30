@@ -74,7 +74,6 @@ async def test_twap_happy_path_from_empty_broker(target_holdings, real_price_map
     assert out["status"] in {"success", "failed"}
     assert out["statistics"]["orders_generated"] >= 1
     assert out["statistics"]["orders_submitted"] >= 1
-    assert pipe.get_execution_summary()["status"] == out["status"]
 
 
 @pytest.mark.asyncio
@@ -120,10 +119,6 @@ async def test_auction_partial_when_buys_deferred(target_holdings, real_price_ma
     assert out["status"] in {"partial", "no_orders", "success"}
     if out["status"] == "partial":
         assert out["statistics"]["orders_deferred"] >= 1
-
-
-def test_summary_before_run_is_empty(real_price_map, fake_db):
-    assert _pipe(real_price_map, fake_db).get_execution_summary() == {}
 
 
 @pytest.mark.asyncio

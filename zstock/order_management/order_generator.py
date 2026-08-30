@@ -214,7 +214,13 @@ class OrderGenerator:
         price: Optional[float] = None,
     ) -> Order:
         self.order_sequence += 1
-        order_id = f"{self.trade_date.replace('-', '')}{self.order_sequence:04d}"
+        # order_id 需要跨进程/跨实例保证唯一：
+        # 单纯 "{trade_date}{sequence:04d}" 在"同一天重跑 pipeline / 崩溃重启 /
+        # 多账户多进程"场景下会与另一 OrderGenerator 实例产出同 id，
+        # 与 DB 唯一索引冲突或数据覆盖。加短 uuid 后缀彻底解决。
+        import uuid
+        suffix = uuid.uuid4().hex[:6]
+        order_id = f"{self.trade_date.replace('-', '')}{self.order_sequence:04d}{suffix}"
         return Order(
             order_id=order_id,
             stock_code=normalize_code(stock_code),
@@ -315,12 +321,32 @@ class OrderGenerator:
         return None
 
     async def save_orders_to_db(self, orders: List[Order]) -> bool:
+        """把订单落库为"created"状态（幂等：仅在首次插入时写入初始字段）。
+
+        订单生命周期由两个模块协作维护，共用 zstock_orders 集合按 order_id 幂等：
+          created  (order_generator.save_orders_to_db)
+              → pending  (xtquant_executor.submit_order 成功后写 xt_order_id/status)
+              → filled / partial / cancelled / rejected  (由 broker 回报驱动)
+
+        用 update_one(upsert=True) + $setOnInsert，而不是 insert_many：
+          - insert_many 与 executor 端的 upsert 会因同 order_id 造成 DuplicateKey
+            或数据重复（历史 bug：账本损坏）；
+          - $setOnInsert 保证"文档已存在则不覆盖"，即使 executor 已先写入
+            pending + xt_order_id，此处也不会把 status 退回 created。
+        """
         if not orders:
             return True
         try:
-            await self.database_service.insert_many(
-                ORDER_COLLECTION_NAME, [o.to_dict() for o in orders]
-            )
+            for o in orders:
+                doc = o.to_dict()
+                if not doc.get("status"):
+                    doc["status"] = "created"
+                await self.database_service.update_one(
+                    ORDER_COLLECTION_NAME,
+                    {"order_id": doc["order_id"]},
+                    {"$setOnInsert": doc},
+                    upsert=True,
+                )
             return True
         except Exception as e:
             logger.error(f"❌ 订单落库失败: {e}")

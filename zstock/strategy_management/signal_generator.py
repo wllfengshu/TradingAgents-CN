@@ -42,43 +42,26 @@ class SignalGenerator:
         prefer_precomputed: bool = True,
     ) -> pd.DataFrame:
         """
-        生成截面信号（与 score_signals 同 schema）。
+        生成截面信号。
 
-        Args:
-            trade_date: 交易日 'YYYY-MM-DD'，None 表示今天。
-            lookback_days: OHLCV 回看天数（实时路径）。
-            sectors: 关心的板块；None 走默认。
-            max_stocks: 限制处理的股票数（调试用）。
-            prebuilt_data: 已构造好的 run_pipeline 入参，跳过 load_real_data。
-            prefer_precomputed: True 时优先尝试 Mongo 预计算 score_signals。
+        通过因子层的唯一入口 compute_signals() 获取信号。
         """
         td = trade_date or datetime.now().strftime("%Y-%m-%d")
         logger.info(f"🎯 生成截面信号: trade_date={td}")
 
-        df: pd.DataFrame
-
-        if prebuilt_data is None and prefer_precomputed:
-            try:
-                df = await self.factor_pipeline.score_signals(td)
-                logger.info(
-                    f"✅ 预计算信号: universe={len(df)} "
-                    f"grade={df.attrs.get('market_grade', '?')}"
-                )
-                self.signals_history[td] = df
-                return df
-            except ValueError as e:
-                logger.info(f"预计算不可用，走实时计算: {e}")
-
-        df = await self.factor_pipeline.score_signals_live(
+        # 使用因子层的唯一入口
+        df = await self.factor_pipeline.compute_signals(
             trade_date=td,
             lookback_days=lookback_days,
             sectors=sectors,
             max_stocks=max_stocks,
             prebuilt_data=prebuilt_data,
+            prefer_precomputed=prefer_precomputed,
         )
+
         self.signals_history[td] = df
         logger.info(
-            f"✅ 实时信号: universe={len(df)} "
+            f"✅ 信号生成完成: universe={len(df)} "
             f"grade={df.attrs.get('market_grade', '?')}"
         )
         return df

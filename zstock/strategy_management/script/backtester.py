@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import argparse
-import json
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -50,6 +49,45 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from zstock.strategy_management.pipeline import StrategyPipeline
 from zstock.strategy_management.adaptive_rebalance import resolve_rebalance_freq
+from zstock.common.config.strategy_config import (
+    build_runtime_config,
+    load_strategy_params,
+)
+
+
+# ─────────────────────────────────────────────────────────────────
+# 配置加载（从 StrategyPipeline 中提出的脚本实用函数）
+# ─────────────────────────────────────────────────────────────────
+
+_CONFIG_CACHE: Optional[Dict[str, Dict]] = None
+
+
+def _get_default_config() -> Dict[str, Dict]:
+    """从 strategy_params.json 加载策略参数，转换为 pipeline 各阶段所需的配置结构。
+
+    派生逻辑统一委托给 zstock.common.config.strategy_config.build_runtime_config()。
+    """
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is not None:
+        return _CONFIG_CACHE
+
+    cfg = build_runtime_config()
+    _CONFIG_CACHE = cfg
+    return cfg
+
+
+def load_runtime_config(override: Optional[Dict] = None) -> Dict[str, Dict]:
+    """加载策略配置（backtester 脚本专用）。"""
+    import copy
+    base = copy.deepcopy(_get_default_config())
+    if not override:
+        return base
+    for k, v in override.items():
+        if k in base and isinstance(v, dict) and isinstance(base[k], dict):
+            base[k] = {**base[k], **v}
+        else:
+            base[k] = v
+    return base
 
 
 @dataclass
@@ -262,11 +300,19 @@ class Backtester:
     def __init__(
         self,
         strategy_pipeline: Optional[StrategyPipeline] = None,
-        fee_rate: float = 0.0015,
-        initial_capital: float = 1e7,
+        fee_rate: Optional[float] = None,
+        initial_capital: Optional[float] = None,
         factor_pipeline: Optional["CrossSectionStrategyPipeline"] = None,
     ):
         self.strategy = strategy_pipeline or StrategyPipeline()
+        if fee_rate is None or initial_capital is None:
+            bt_cfg = (load_strategy_params() or {}).get("backtest") or {}
+            fee_rate = fee_rate if fee_rate is not None else float(bt_cfg.get("fee_rate", 0.0015))
+            initial_capital = (
+                initial_capital
+                if initial_capital is not None
+                else float(bt_cfg.get("initial_capital", 1e7))
+            )
         self.fee_rate = fee_rate
         self.initial_capital = initial_capital
         self.factor_pipeline = factor_pipeline
@@ -278,16 +324,12 @@ class Backtester:
 
     @staticmethod
     def _default_rebalance_freq() -> int:
-        """CLI > strategy_params.json backtest.rebalance_freq > 3。"""
+        """CLI > strategy_params.json backtest.rebalance_freq > 5。"""
         try:
-            params_path = (
-                PROJECT_ROOT / "zstock" / "common" / "config" / "strategy_params.json"
-            )
-            with open(params_path, "r", encoding="utf-8") as f:
-                params = json.load(f)
-            return int(params.get("backtest", {}).get("rebalance_freq", 3))
+            params = load_strategy_params()
+            return int(params.get("backtest", {}).get("rebalance_freq", 5))
         except Exception:
-            return 3
+            return 5
 
     @staticmethod
     def _configure_cli_logging() -> None:
@@ -301,12 +343,23 @@ class Backtester:
 
     @classmethod
     def build_arg_parser(cls) -> argparse.ArgumentParser:
+        bt_cfg = (load_strategy_params() or {}).get("backtest") or {}
         parser = argparse.ArgumentParser(description="真实数据回测")
         parser.add_argument("--start", required=True, help="开始日期 YYYY-MM-DD")
         parser.add_argument("--end", required=True, help="结束日期 YYYY-MM-DD")
         parser.add_argument("--lookback", type=int, default=60, help="OHLCV 回看天数（普通模式）")
-        parser.add_argument("--capital", type=float, default=1e6, help="初始资金")
-        parser.add_argument("--fee", type=float, default=0.0015, help="单边费率")
+        parser.add_argument(
+            "--capital",
+            type=float,
+            default=float(bt_cfg.get("initial_capital", 1e7)),
+            help="初始资金（默认读 strategy_params.json backtest.initial_capital）",
+        )
+        parser.add_argument(
+            "--fee",
+            type=float,
+            default=float(bt_cfg.get("fee_rate", 0.0015)),
+            help="单边费率（默认读 strategy_params.json backtest.fee_rate）",
+        )
         parser.add_argument(
             "--rebalance",
             type=int,
@@ -523,7 +576,7 @@ class Backtester:
             raise ValueError(f"start_date={start_date} ~ end_date={end_date} 无可用交易日")
 
         # 打印开场 banner（无 strategy_config 时用 StrategyPipeline 默认配置）
-        cfg_print = StrategyPipeline.load_runtime_config(strategy_config)
+        cfg_print = load_runtime_config(strategy_config)
         opt_cfg = (cfg_print.get('portfolio_optimization') or {})
         tov_cfg = (cfg_print.get('turnover_control') or {})
         _adaptive_banner = bool((cfg_print.get("adaptive_rebalance") or {}).get("enabled"))
@@ -564,21 +617,21 @@ class Backtester:
         cost_records: List[float] = []
 
         cfg_runtime = (
-            StrategyPipeline.load_runtime_config(strategy_config)
+            load_runtime_config(strategy_config)
             if strategy_config is not None
-            else StrategyPipeline.load_runtime_config()
+            else load_runtime_config()
         )
         hard_stop_pct = float(
             (cfg_runtime.get("risk_management") or {}).get("hard_stop_loss_pct", -0.08)
         )
         exit_cfg = cfg_runtime.get("exit_rules") or {}
-        flat_after_bad_days = int(exit_cfg.get("flat_after_bad_days", 3))
-        no_signal_action = str(exit_cfg.get("no_signal_action", "reduce_then_flat"))
+        flat_after_bad_days = int(exit_cfg.get("flat_after_bad_days", 5))
+        no_signal_action = str(exit_cfg.get("no_signal_action", "hold"))
         no_signal_reduce_scale = float(exit_cfg.get("no_signal_reduce_scale", 0.5))
         out_of_cand_days = int(
             exit_cfg.get(
                 "consecutive_days_out_of_candidates",
-                exit_cfg.get("consecutive_days_out_of_top3", 2),
+                exit_cfg.get("consecutive_days_out_of_top3", 3),
             )
         )
         max_holdings = int(

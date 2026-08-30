@@ -436,7 +436,14 @@ class DragonFactors:
         last_close: Dict[str, float],
         provider: Any,
     ) -> None:
-        """F3.9 PB / F3.10 股东户数变化（PIT-safe，与预计算路径一致）。"""
+        """F3.9 PB / F3.10 股东户数变化（PIT-safe，与预计算路径一致）。
+
+        **重要**：`last_close[code]` 必须是**未复权价（raw close）**。
+        因为 BPS 是绝对金额、不随除权除息调整，若传入前复权价会让除权后 PB
+        系统性低估（f39 反向）。当前 pipeline 从 xtquant/MongoDB 取 close
+        时使用的复权类型由数据层决定，因子层无法反查；若上游改用前复权，
+        请务必同步保留一份 raw close 供本函数使用。
+        """
         close = last_close.get(code)
         if close and close > 0:
             pb_val = provider.compute_pb(code, close, trade_date)

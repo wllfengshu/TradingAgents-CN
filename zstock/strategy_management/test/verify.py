@@ -166,7 +166,6 @@ def verify_pipeline():
         logger.info("✅ StrategyPipeline 初始化成功")
 
         assert hasattr(pipeline, 'execute_full_pipeline')
-        assert hasattr(pipeline, 'get_target_positions')
         logger.info("✅ 管道验证成功")
         return True
 

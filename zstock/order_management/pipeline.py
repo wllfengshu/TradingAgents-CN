@@ -294,9 +294,3 @@ class OrderManagementPipeline:
         except Exception as e:
             logger.error(f"❌ 管道执行失败: {e}", exc_info=True)
             return {"status": "failed", "error": str(e)}
-
-    def get_execution_summary(self) -> Dict:
-        if not self.pipeline_result:
-            logger.error("⚠️ 管道未执行")
-            return {}
-        return self.pipeline_result

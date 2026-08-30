@@ -10,27 +10,21 @@ API 路径通过 SignalGenerator.generate_signals() 调用 score_signals（预�
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
+from zstock.common.config.strategy_config import (
+    build_runtime_config,
+    load_strategy_params,
+)
 from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
 from zstock.strategy_management.pipeline import StrategyPipeline
 from zstock.strategy_management.signal_generator import SignalGenerator
 
 logger = logging.getLogger(__name__)
-
-_STRATEGY_PARAMS_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "zstock"
-    / "common"
-    / "config"
-    / "strategy_params.json"
-)
 
 _SIGNAL_COLUMNS = (
     "code",
@@ -77,70 +71,16 @@ class StrategySignalService:
     def load_strategy_params(self) -> Dict[str, Any]:
         if self._params_cache is not None:
             return self._params_cache
-        try:
-            with open(_STRATEGY_PARAMS_PATH, "r", encoding="utf-8") as f:
-                self._params_cache = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logger.warning("加载 strategy_params 失败: %s", e)
-            self._params_cache = {}
+        self._params_cache = load_strategy_params()
         return self._params_cache
 
     def _load_runtime_config(self, override: Optional[Dict] = None) -> Dict[str, Dict]:
         """加载运行时配置（从 strategy_params 合并）。
 
-        这是从 StrategyPipeline.load_runtime_config 提出的辅助方法，
-        用于 get_daily_signals / validate_consistency 等需要配置的场景。
+        派生逻辑统一委托给 zstock.common.config.strategy_config.build_runtime_config()。
         """
-        import copy
-
         params = override or self.load_strategy_params()
-
-        final_score = params.get('final_score', {})
-        top_k = final_score.get('top_k', 5)
-        portfolio = params.get('portfolio', {})
-        tov = params.get('turnover_control', {})
-        exit_rules = params.get('exit_rules', {})
-
-        cfg = {
-            'portfolio_optimization': {
-                'min_holdings': max(1, top_k - 2),
-                'max_holdings': top_k,
-                'max_weight_per_stock': float(
-                    portfolio.get('max_weight_per_stock', round(1.0 / max(top_k, 1), 2))
-                ),
-                'weighting': 'score',
-            },
-            'risk_management': {
-                'hard_stop_loss_pct': exit_rules.get('hard_stop_loss_pct', -0.08),
-                'max_sector_exposure': float(portfolio.get('max_sector_exposure', 0.35)),
-            },
-            'turnover_control': {
-                'buffer_threshold': float(tov.get('buffer_threshold', 0.25)),
-                'min_hold_days': int(tov.get('min_hold_days', 3)),
-            },
-            'exit_rules': {
-                'hard_stop_loss_pct': float(
-                    exit_rules.get('hard_stop_loss_pct', -0.08)
-                ),
-                'rank_percentile_threshold': float(
-                    exit_rules.get('rank_percentile_threshold', 0.8)
-                ),
-                'consecutive_days_out_of_candidates': int(
-                    exit_rules.get(
-                        'consecutive_days_out_of_candidates',
-                        exit_rules.get('consecutive_days_out_of_top3', 2),
-                    )
-                ),
-                'flat_after_bad_days': int(exit_rules.get('flat_after_bad_days', 3)),
-                'no_signal_action': str(
-                    exit_rules.get('no_signal_action', 'reduce_then_flat')
-                ),
-                'no_signal_reduce_scale': float(
-                    exit_rules.get('no_signal_reduce_scale', 0.5)
-                ),
-            },
-        }
-        return cfg
+        return build_runtime_config(params)
 
     def get_strategy_meta(self) -> Dict[str, Any]:
         params = self.load_strategy_params()

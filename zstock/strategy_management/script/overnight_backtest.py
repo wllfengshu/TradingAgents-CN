@@ -211,9 +211,11 @@ def _default_rebalance_freq() -> int:
 def _clear_strategy_caches() -> None:
     from zstock.strategy_management.pipeline import StrategyPipeline
     from zstock.strategy_management.risk_manager import _load_risk_limits_from_config
+    from zstock.common.config import strategy_config
 
     StrategyPipeline._config_cache = None
     _load_risk_limits_from_config._cache = None
+    strategy_config._clear_cache()
 
 
 def _avg_exposure(holdings_log: List[Dict[str, Any]]) -> float:

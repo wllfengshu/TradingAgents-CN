@@ -20,8 +20,9 @@ secid 规则：
 """
 
 import logging
+import random
+import threading
 import time
-from random import random
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -41,6 +42,7 @@ UA = (
 
 EM_MIN_INTERVAL = 5.0  # 两次东财请求最小间隔(秒)
 _em_last_call = [0.0]
+_em_throttle_lock = threading.Lock()
 
 
 def em_get(
@@ -55,16 +57,16 @@ def em_get(
     注：不使用 session（keep-alive 连接被东财服务端间歇重置后复用死连接，
     导致 RemoteDisconnected）。每次新建短连接更稳定。
     """
-    wait = EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
-    if wait > 0:
-        time.sleep(wait + random.uniform(0.1, 0.5))
+    # 节流窗口下的读-判-睡-记 必须原子，避免多线程/多协程并发时同时通过
+    with _em_throttle_lock:
+        wait = EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
+        if wait > 0:
+            time.sleep(wait + random.uniform(0.1, 0.5))
+        _em_last_call[0] = time.time()
     default_headers = {"User-Agent": UA, "Connection": "close"}
     if headers:
         default_headers.update(headers)
-    try:
-        return requests.get(url, params=params, headers=default_headers, timeout=timeout, **kwargs)
-    finally:
-        _em_last_call[0] = time.time()
+    return requests.get(url, params=params, headers=default_headers, timeout=timeout, **kwargs)
 
 
 # ───────────────────── secid 映射 ─────────────────────

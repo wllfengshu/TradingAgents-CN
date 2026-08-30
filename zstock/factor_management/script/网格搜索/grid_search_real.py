@@ -289,9 +289,7 @@ class RealGridSearchOptimizer:
     ) -> Dict[str, Any]:
         from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
         from zstock.strategy_management.pipeline import StrategyPipeline
-        from zstock.strategy_management.portfolio_optimizer import PortfolioOptimizer
         from zstock.strategy_management.risk_manager import RiskManager
-        from zstock.strategy_management.signal_generator import SignalGenerator
         from zstock.strategy_management.script.backtester import Backtester
         from zstock.strategy_management.turnover_controller import TurnoverController
 
@@ -343,8 +341,6 @@ class RealGridSearchOptimizer:
                 min_hold_days=int(params["min_hold_days"]),
             )
             strategy = StrategyPipeline(
-                signal_generator=SignalGenerator(),
-                portfolio_optimizer=PortfolioOptimizer(),
                 risk_manager=risk,
                 turnover_controller=tov,
             )

@@ -20,6 +20,7 @@ import pandas as pd
 
 from zstock.common.utils.common_utils import (
     ensure_ohlcv_sorted,
+    flow_docs_asof,
     limit_up_threshold,
     minmax_normalize,
     ohlcv_asof,
@@ -130,6 +131,7 @@ class SectorFactors:
                     stock_ohlcv,
                     stock_flow_recent or {},
                     eligible_codes=eligible_codes,
+                    trade_date=trade_date,
                 )
             )
         else:
@@ -142,6 +144,7 @@ class SectorFactors:
                 stock_ohlcv,
                 stock_flow_recent or {},
                 eligible_codes=eligible_codes,
+                trade_date=trade_date,
             )
 
         # 涨停/连板：只扫板块内 eligible 成分（默认全成分）
@@ -466,11 +469,16 @@ class SectorFactors:
         stock_flow_recent: Dict[str, List[Dict]],
         *,
         eligible_codes: Optional[set] = None,
+        trade_date: Optional[str] = None,
     ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Dict[str, float]]]:
         """【私有】从个股聚合板块 OHLCV + 资金流（numpy 累加，避免 pandas concat）。
 
         板块 OHLCV 聚合用全部有行情成分（反映板块指数）；
         资金流 F2.2 在提供 eligible_codes 时只累加主板宇宙。
+
+        trade_date 提供时对个股资金流做 asof 截断（require_exact=True），
+        禁止把 trade_date 之后的资金流数据混入截面计算，避免共享缓存跨日
+        造成 F2.2 look-ahead。
         """
         sector_ohlcv: Dict[str, pd.DataFrame] = {}
         sector_capital_flow: Dict[str, Dict[str, float]] = {}
@@ -577,6 +585,13 @@ class SectorFactors:
                 rows = (stock_flow_recent or {}).get(c) or []
                 if not rows:
                     continue
+                # 与 stock_ohlcv 的 ohlcv_asof(require_exact=True) 语义保持一致：
+                # 若提供 trade_date，就把资金流也截到当日且末条必须等于当日，
+                # 防止共享缓存/预取跨日的资金流数据造成 F2.2 look-ahead。
+                if trade_date:
+                    rows = flow_docs_asof(rows, trade_date, require_exact=True)
+                    if not rows:
+                        continue
                 today_doc = rows[-1]
                 try:
                     main_sum += float(today_doc.get("main_net", 0.0) or 0.0) * WAN_TO_YUAN

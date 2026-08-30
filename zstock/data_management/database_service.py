@@ -100,13 +100,20 @@ class DatabaseService:
             logger.error(f"❌ 插入失败 {collection}: {e}")
             raise
 
-    async def insert_many(self, collection: str, documents: List[Dict]) -> List[str]:
+    async def insert_many(
+        self,
+        collection: str,
+        documents: List[Dict],
+        ordered: bool = False,
+    ) -> List[str]:
         """
         批量插入数据
 
         Args:
             collection: 集合名称
             documents: 文档列表
+            ordered: 是否顺序写入。默认 False——遇到重复键等错误时继续处理剩余文档，
+                     避免行情/因子回填因单条冲突静默丢失整批数据。
 
         Returns:
             插入的文档 ID 列表
@@ -114,11 +121,62 @@ class DatabaseService:
         if not documents:
             return []
         try:
-            result = await self.db[collection].insert_many(documents)
-            logger.info(f"✅ 批量插入 {collection}: {len(result.inserted_ids)} 条")
+            result = await self.db[collection].insert_many(documents, ordered=ordered)
+            logger.debug(f"✅ 批量插入 {collection}: {len(result.inserted_ids)} 条")
             return [str(_id) for _id in result.inserted_ids]
         except Exception as e:
+            # ordered=False 场景下 BulkWriteError 会带 details.nInserted；上层可据此判断是否需要报警。
             logger.error(f"❌ 批量插入失败 {collection}: {e}")
+            raise
+
+    async def bulk_upsert(
+        self,
+        collection: str,
+        documents: List[Dict],
+        key_fields: List[str],
+        ordered: bool = False,
+    ) -> Dict[str, int]:
+        """
+        批量 upsert：按 key_fields 组成的组合键 upsert 每条文档。
+
+        用于行情/因子回填这类"允许重复调用、需要幂等"的场景，比逐条 replace_one
+        吞吐至少高一个数量级。
+
+        Args:
+            collection: 集合名称
+            documents: 文档列表
+            key_fields: 用于匹配已有文档的字段名（例如 ["code", "trade_date"]）
+            ordered: 是否顺序执行（默认 False，一条失败不影响其余）
+
+        Returns:
+            {"matched": ..., "modified": ..., "upserted": ...}
+        """
+        if not documents:
+            return {"matched": 0, "modified": 0, "upserted": 0}
+        if not key_fields:
+            raise ValueError("bulk_upsert 必须指定 key_fields")
+
+        from pymongo import UpdateOne  # 局部导入避免顶部对 pymongo 的硬依赖
+
+        ops = []
+        for doc in documents:
+            missing = [k for k in key_fields if k not in doc]
+            if missing:
+                raise ValueError(f"bulk_upsert 文档缺少 key_fields: {missing}")
+            flt = {k: doc[k] for k in key_fields}
+            ops.append(UpdateOne(flt, {"$set": doc}, upsert=True))
+
+        try:
+            result = await self.db[collection].bulk_write(ops, ordered=ordered)
+            summary = {
+                "matched": int(result.matched_count or 0),
+                "modified": int(result.modified_count or 0),
+                "upserted": int(len(result.upserted_ids or {})),
+            }
+            logger.debug(f"✅ bulk_upsert {collection}: {summary}")
+            return summary
+        except Exception as e:
+            logger.error(f"❌ bulk_upsert 失败 {collection}: {e}")
             raise
 
     # ==================== 数据更新方法 ====================
@@ -129,7 +187,13 @@ class DatabaseService:
             return update
         return {"$set": update}
 
-    async def update_one(self, collection: str, query: Dict, update: Dict) -> int:
+    async def update_one(
+        self,
+        collection: str,
+        query: Dict,
+        update: Dict,
+        upsert: bool = False,
+    ) -> int:
         """
         更新单条数据
 
@@ -137,15 +201,17 @@ class DatabaseService:
             collection: 集合名称
             query: 查询条件
             update: 更新内容（如果不用操作符会自动包裹 $set）
+            upsert: 未匹配到文档时是否插入新文档（Mongo upsert）
 
         Returns:
-            修改的文档数
+            修改的文档数（upsert 插入时也算 1）
         """
         try:
             update_doc = self._prepare_update(update)
-            result = await self.db[collection].update_one(query, update_doc)
-            logger.info(f"✅ 更新 {collection}: {result.modified_count} 条")
-            return result.modified_count
+            result = await self.db[collection].update_one(query, update_doc, upsert=upsert)
+            changed = int(result.modified_count or 0) + (1 if result.upserted_id is not None else 0)
+            logger.debug(f"✅ 更新 {collection}: {changed} 条 (upsert={upsert})")
+            return changed
         except Exception as e:
             logger.error(f"❌ 更新失败 {collection}: {e}")
             raise

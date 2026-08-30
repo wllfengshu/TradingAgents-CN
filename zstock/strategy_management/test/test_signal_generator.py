@@ -13,6 +13,18 @@ class _ReplayPipeline:
         self.score_calls = 0
         self.live_calls = 0
 
+    async def compute_signals(
+        self, trade_date: str = None, prebuilt_data=None, prefer_precomputed: bool = True, **kwargs
+    ) -> pd.DataFrame:
+        """因子层的唯一入口 (mock 版本)。"""
+        # 如果提供了 prebuilt_data，直接跳过预计算
+        if prebuilt_data is None and prefer_precomputed:
+            try:
+                return await self.score_signals(trade_date)
+            except ValueError:
+                pass
+        return await self.score_signals_live(**kwargs)
+
     async def score_signals(self, trade_date: str) -> pd.DataFrame:
         self.score_calls += 1
         if self.fail_precomputed:

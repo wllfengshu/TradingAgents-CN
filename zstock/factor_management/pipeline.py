@@ -161,10 +161,10 @@ class CrossSectionStrategyPipeline:
         return self.config.get(config_key, default)
 
     def _cfg_top_sectors(self) -> int:
-        return int(self._cfg_from_layered_config("sector_layer", "top_sectors", 3))
+        return int(self._cfg_from_layered_config("sector_layer", "top_sectors", 4))
 
     def _cfg_top_per_sector(self) -> int:
-        return int(self._cfg_from_layered_config("dragon_layer", "top_per_sector", 3))
+        return int(self._cfg_from_layered_config("dragon_layer", "top_per_sector", 2))
 
     def _cfg_top_k(self, regime: str = "neutral") -> int:
         fs = self.config.get("final_score") or {}
@@ -625,6 +625,55 @@ class CrossSectionStrategyPipeline:
             'market_composite_score': market_sentiment.get('market_composite_score', 0.0),
             'stock_infos': stock_infos,
         }
+
+    async def compute_signals(
+        self,
+        trade_date: Optional[str] = None,
+        lookback_days: int = 60,
+        sectors: Optional[List[str]] = None,
+        max_stocks: Optional[int] = None,
+        prebuilt_data: Optional[Dict[str, Any]] = None,
+        prefer_precomputed: bool = True,
+    ) -> pd.DataFrame:
+        """
+        因子层的唯一公开入口：计算截面信号。
+
+        内部自动选择最优路径：
+        1. prefer_precomputed=True 时，优先尝试 Mongo 预计算（score_signals）
+        2. 预计算不可用或 prefer_precomputed=False，则现场计算（score_signals_live）
+
+        返回统一 schema 的信号 DataFrame，包含 code/rank/final_score/signal_type 等字段。
+
+        Args:
+            trade_date: 交易日，'YYYY-MM-DD'，None 表示今天
+            lookback_days: OHLCV 回看天数（实时计算用）
+            sectors: 关心的板块列表（None 走默认）
+            max_stocks: 限制处理股票数（调试用）
+            prebuilt_data: 已构造的 M0 数据（跳过数据加载）
+            prefer_precomputed: True 时优先尝试 Mongo 预计算
+
+        Returns:
+            信号 DataFrame（code, rank, final_score, signal_type 等）
+        """
+        td = trade_date or datetime.now().strftime("%Y-%m-%d")
+
+        # 路径 1：优先尝试预计算
+        if prebuilt_data is None and prefer_precomputed:
+            try:
+                logger.info(f"🔍 {td} 尝试预计算信号（Mongo 快速路径）")
+                return await self.score_signals(td)
+            except ValueError as e:
+                logger.info(f"预计算不可用，降级到实时计算: {e}")
+
+        # 路径 2：实时计算（现场 M0~M5）
+        logger.info(f"📊 {td} 实时计算信号（M0~M5 完整流程）")
+        return await self.score_signals_live(
+            trade_date=td,
+            lookback_days=lookback_days,
+            sectors=sectors,
+            max_stocks=max_stocks,
+            prebuilt_data=prebuilt_data,
+        )
 
     async def run_pipeline(
         self,

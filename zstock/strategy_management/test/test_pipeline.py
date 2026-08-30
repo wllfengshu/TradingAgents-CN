@@ -24,13 +24,6 @@ def test_default_config_matches_ssot(strategy_params):
     assert cfg["exit_rules"]["no_signal_action"] == "hold"
 
 
-def test_load_runtime_config_keeps_adaptive_and_weak(strategy_params):
-    runtime = StrategyPipeline.load_runtime_config(strategy_params)
-    assert runtime["adaptive_rebalance"]["enabled"] is True
-    assert runtime["weak_regime_protection"]["enabled"] is True
-    assert runtime["final_score"]["by_regime"]["reversal"]["top_k"] == 3
-
-
 def test_resolve_effective_top_k(strategy_params):
     assert StrategyPipeline._resolve_effective_top_k(strategy_params, "reversal") == 3
     assert StrategyPipeline._resolve_effective_top_k(strategy_params, "neutral") == 5
@@ -50,7 +43,6 @@ async def test_empty_precomputed_stops_as_no_signals():
     pipe = make_offline_pipeline()
     out = await pipe.execute_full_pipeline(trade_date="2024-01-02", precomputed_signals=empty)
     assert out["status"] == "no_signals"
-    assert pipe.get_target_positions().empty
 
 
 @pytest.mark.asyncio
@@ -118,14 +110,6 @@ async def test_optimization_failure_status(real_signals, real_trade_date):
     )
     out = await pipe.execute_full_pipeline(trade_date=real_trade_date, precomputed_signals=real_signals)
     assert out["status"] == "optimization_failed"
-
-
-@pytest.mark.asyncio
-async def test_get_target_positions_before_and_after(real_signals, real_trade_date):
-    pipe = make_offline_pipeline()
-    assert pipe.get_target_positions().empty
-    await pipe.execute_full_pipeline(trade_date=real_trade_date, precomputed_signals=real_signals)
-    assert not pipe.get_target_positions().empty
 
 
 def test_rank_force_exit_guards(real_signals, strategy_params):

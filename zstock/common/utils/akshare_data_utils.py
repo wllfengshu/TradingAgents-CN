@@ -21,6 +21,7 @@ import pandas as pd
 from .common_utils import (
     determine_market,
     is_index_code,
+    limit_up_threshold,
     normalize_code,
     normalize_date,
     to_yyyymmdd,
@@ -97,13 +98,25 @@ def fetch_ohlcv(
         volume, amount, preClose。无数据返回空 DataFrame。
     """
     ak = _get_ak()
+    # 保留原始 symbol 以便正确识别显式指数标记（如 "SH000001"）；
+    # normalize_code 会剥掉市场前缀，因此需要在剥离前先做指数判定。
+    raw_symbol = symbol
     code = normalize_code(symbol)
     st = to_yyyymmdd(start_date)
     et = to_yyyymmdd(end_date)
 
     # ── 指数走专用接口 ──
-    if is_index_code(code):
-        market = 'sh' if code.startswith('000') else 'sz'
+    # 显式带 SH 前缀（含 "SH000001"、"000001.SH"）或属于无歧义指数段时才走指数分支。
+    # 深市 000xxx 段股票（如 000001 平安银行）默认按股票处理，避免历史缓存被指数曲线污染。
+    if is_index_code(raw_symbol):
+        # market 从原始 symbol 的前缀推断；无前缀则按代码段兜底
+        s_upper = str(raw_symbol or '').strip().upper()
+        if s_upper.startswith('SH') or s_upper.endswith('.SH'):
+            market = 'sh'
+        elif s_upper.startswith('SZ') or s_upper.endswith('.SZ'):
+            market = 'sz'
+        else:
+            market = 'sh' if code.startswith('000') else 'sz'
         full_code = f"{market}{code}"
         try:
             df = ak.stock_zh_index_daily(symbol=full_code)
@@ -631,12 +644,11 @@ def fetch_trade_status_batch(
             is_limit_down = low_limit > 0 and last_price <= low_limit
         elif pre_close > 0 and last_price > 0:
             pct = (last_price - pre_close) / pre_close
-            if code.startswith('30') or code.startswith('68'):
-                is_limit_up   = pct >= 0.195
-                is_limit_down = pct <= -0.195
-            else:
-                is_limit_up   = pct >= 0.095
-                is_limit_down = pct <= -0.095
+            # 用 common_utils.limit_up_threshold 统一多板块阈值（主板 9.5% /
+            # 创业板+科创板 19.5% / 北交所 29.5%），避免各处硬编码分支遗漏板块。
+            thr = limit_up_threshold(code)
+            is_limit_up   = pct >=  thr
+            is_limit_down = pct <= -thr
 
         result[code] = {
             'code': code,

@@ -98,12 +98,36 @@ class FakeDB:
             return docs
         return [d for d in docs if all(d.get(k) == v for k, v in query.items())]
 
-    async def update_one(self, collection, query, update):
+    async def update_one(self, collection, query, update, upsert: bool = False):
         oid = (query or {}).get("order_id")
-        if not oid or oid not in self.store:
+        # 支持 $set / $setOnInsert / $push 三种最常见的更新算子，
+        # 与生产 DatabaseService 语义对齐（P0#1/P0#5 的 upsert 语义）。
+        set_patch = update.get("$set") if isinstance(update, dict) and "$set" in update else None
+        setoninsert = update.get("$setOnInsert") if isinstance(update, dict) else None
+        push_patch = update.get("$push") if isinstance(update, dict) else None
+        # 无 $ 操作符时把整个 update 当作 $set
+        if set_patch is None and setoninsert is None and push_patch is None:
+            set_patch = update if isinstance(update, dict) else None
+
+        if not oid:
             return 0
-        patch = update.get("$set") if isinstance(update, dict) and "$set" in update else update
-        self.store[oid].update(patch or {})
+        if oid not in self.store:
+            if not upsert:
+                return 0
+            # upsert：插入新文档，先写 $setOnInsert，再叠加 $set
+            base = dict(setoninsert or {})
+            base.update(set_patch or {})
+            base.setdefault("order_id", oid)
+            self.store[oid] = base
+            self.inserted.append(dict(base))
+            return 1
+        # 已存在：$set 覆盖，$push 追加到数组字段，$setOnInsert 忽略
+        if set_patch:
+            self.store[oid].update(set_patch)
+        if push_patch:
+            for field, val in push_patch.items():
+                arr = self.store[oid].setdefault(field, [])
+                arr.append(val)
         return 1
 
 

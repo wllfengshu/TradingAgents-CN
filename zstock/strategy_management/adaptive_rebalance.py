@@ -30,6 +30,6 @@ def resolve_rebalance_freq(
     else:
         freq = max(r_freq, g_freq)
 
-    lo = int(cfg.get("min_freq", 2))
-    hi = int(cfg.get("max_freq", 10))
+    lo = int(cfg.get("min_freq", 3))
+    hi = int(cfg.get("max_freq", 8))
     return max(lo, min(hi, freq))

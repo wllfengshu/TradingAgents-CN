@@ -40,7 +40,7 @@ class TurnoverController:
 
     def __init__(
         self,
-        buffer_threshold: float = 0.40,
+        buffer_threshold: float = 0.25,
         fee_rate: float = 0.0015,
         min_hold_days: int = 3,
     ):
