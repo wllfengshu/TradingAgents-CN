@@ -265,7 +265,7 @@ async def test_consistency_run_checks_skip_missing_precompute(monkeypatch):
     monkeypatch.setattr("zstock.common.utils.db_utils.init_zstock_database", _init)
     monkeypatch.setattr("zstock.common.utils.db_utils.close_zstock_database", _close)
     monkeypatch.setattr(
-        "app.services.strategy_signal_service.get_strategy_signal_service",
+        "zstock.strategy_management.signal_service.get_strategy_signal_service",
         lambda: _Svc(),
     )
     rc = await scc._run_checks(["2024-06-03"], include_pipeline=False, tolerance=1e-6)

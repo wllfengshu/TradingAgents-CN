@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def _run_checks(dates: list[str], include_pipeline: bool, tolerance: float) -> int:
     from zstock.common.utils.db_utils import close_zstock_database, init_zstock_database
-    from app.services.strategy_signal_service import get_strategy_signal_service
+    from zstock.strategy_management.signal_service import get_strategy_signal_service
 
     await init_zstock_database()
     svc = get_strategy_signal_service()

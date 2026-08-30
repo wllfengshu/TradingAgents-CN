@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.core.response import ok
 from app.routers.auth_db import get_current_user
 from app.schemas.strategy import ConsistencyCheckData, ConsistencyCheckRequest, DailySignalsData
-from app.services.strategy_signal_service import get_strategy_signal_service
+from zstock.strategy_management.signal_service import get_strategy_signal_service
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
 logger = logging.getLogger("webapi")

@@ -54,6 +54,7 @@ class StrategySignalService:
         self._signal_generator: Optional[SignalGenerator] = None
         self._strategy_pipeline: Optional[StrategyPipeline] = None
         self._params_cache: Optional[Dict[str, Any]] = None
+        self._runtime_config_cache: Optional[Dict[str, Dict]] = None
 
     @property
     def factor_pipeline(self) -> CrossSectionStrategyPipeline:
@@ -83,6 +84,63 @@ class StrategySignalService:
             logger.warning("加载 strategy_params 失败: %s", e)
             self._params_cache = {}
         return self._params_cache
+
+    def _load_runtime_config(self, override: Optional[Dict] = None) -> Dict[str, Dict]:
+        """加载运行时配置（从 strategy_params 合并）。
+
+        这是从 StrategyPipeline.load_runtime_config 提出的辅助方法，
+        用于 get_daily_signals / validate_consistency 等需要配置的场景。
+        """
+        import copy
+
+        params = override or self.load_strategy_params()
+
+        final_score = params.get('final_score', {})
+        top_k = final_score.get('top_k', 5)
+        portfolio = params.get('portfolio', {})
+        tov = params.get('turnover_control', {})
+        exit_rules = params.get('exit_rules', {})
+
+        cfg = {
+            'portfolio_optimization': {
+                'min_holdings': max(1, top_k - 2),
+                'max_holdings': top_k,
+                'max_weight_per_stock': float(
+                    portfolio.get('max_weight_per_stock', round(1.0 / max(top_k, 1), 2))
+                ),
+                'weighting': 'score',
+            },
+            'risk_management': {
+                'hard_stop_loss_pct': exit_rules.get('hard_stop_loss_pct', -0.08),
+                'max_sector_exposure': float(portfolio.get('max_sector_exposure', 0.35)),
+            },
+            'turnover_control': {
+                'buffer_threshold': float(tov.get('buffer_threshold', 0.25)),
+                'min_hold_days': int(tov.get('min_hold_days', 3)),
+            },
+            'exit_rules': {
+                'hard_stop_loss_pct': float(
+                    exit_rules.get('hard_stop_loss_pct', -0.08)
+                ),
+                'rank_percentile_threshold': float(
+                    exit_rules.get('rank_percentile_threshold', 0.8)
+                ),
+                'consecutive_days_out_of_candidates': int(
+                    exit_rules.get(
+                        'consecutive_days_out_of_candidates',
+                        exit_rules.get('consecutive_days_out_of_top3', 2),
+                    )
+                ),
+                'flat_after_bad_days': int(exit_rules.get('flat_after_bad_days', 3)),
+                'no_signal_action': str(
+                    exit_rules.get('no_signal_action', 'reduce_then_flat')
+                ),
+                'no_signal_reduce_scale': float(
+                    exit_rules.get('no_signal_reduce_scale', 0.5)
+                ),
+            },
+        }
+        return cfg
 
     def get_strategy_meta(self) -> Dict[str, Any]:
         params = self.load_strategy_params()
@@ -137,7 +195,7 @@ class StrategySignalService:
             payload["watch_signals"] = self._dataframe_to_records(watch_df)
 
         if include_targets:
-            runtime_cfg = StrategyPipeline.load_runtime_config(self.load_strategy_params())
+            runtime_cfg = self._load_runtime_config(self.load_strategy_params())
             summary = await self.strategy_pipeline.execute_full_pipeline(
                 trade_date=td,
                 config=runtime_cfg,
@@ -172,7 +230,7 @@ class StrategySignalService:
         3. pipeline: execute_full_pipeline(precomputed) vs execute_full_pipeline(内部 generate)
         """
         td = trade_date
-        runtime_cfg = StrategyPipeline.load_runtime_config(self.load_strategy_params())
+        runtime_cfg = self._load_runtime_config(self.load_strategy_params())
 
         backtest_df = await self.factor_pipeline.score_signals(td)
         api_df = await self.signal_generator.generate_signals(
