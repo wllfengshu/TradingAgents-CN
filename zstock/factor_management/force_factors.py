@@ -1,24 +1,20 @@
 """
 合力因子计算模块（M4 & M5）
 
-黑盒设计：
-- 公开接口：apply_cooperative_force_raw() / apply_cooperative_force_and_score()
-- 所有实现细节都隐藏在私有方法中
-- 职责：合力验证过滤（M4）+ 最终得分合成（M5）
-- MongoDB 只存储原始因子值，不存储得分（得分由 apply_cooperative_force_and_score 实时计算）
+黑盒设计，对外入口：
+- apply_cooperative_force_raw()   从资金流/OHLCV 计算原始合力因子（预计算落库）
+- score_and_compose_final()       M4 门禁过滤 + M5 最终合成（现场/回测打分）
+- resolve_gate_settings()         cooperative_force 配置 → (threshold, gate_mode)
 
-M4 合力过滤逻辑（P0）：
-  门槛：主力净流入 > 0 AND 主力净流入/总成交 >= threshold（见 strategy_params.json cooperative_force.threshold_pct）
-        AND 近5日净流入天数 >= _MIN_SUSTAINED_DAYS
-
-M5 最终得分（权重见 strategy_params.json final_score.weights）：
-  Score = 0.40×板块排名 + 0.35×龙头分 + 0.25×合力综合分
+原始行情与资金流由调用方传入，本模块不查库。
+门禁阈值见 strategy_params.json cooperative_force；
+M5 权重见 final_score.weights；因子列表见 active_factors.force。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -58,8 +54,6 @@ class ForceFactors:
     """合力因子计算器（M4 & M5）。黑盒设计，只负责合力验证和最终合成"""
 
     # ===================== 公开接口 =====================
-    # 【公开接口1】计算原始因子值（M4）
-    # 【公开接口2】合力过滤 + 最终合成（M4+M5）
 
     @staticmethod
     def apply_cooperative_force_raw(
@@ -177,92 +171,101 @@ class ForceFactors:
         return result
 
     @staticmethod
-    def apply_cooperative_force_and_score(
-        candidates: List[Dict],  # 候选列表 [{"code": "600000", "sector_code": "金融", "dragon_composite_score": 80}, ...]
-        top_sectors: List[Tuple[str, float]],  # 板块排名 [("金融", 0.95), ("消费", 0.87), ...] 供 M5 权重计算
-        m4_threshold: float = 0.03,  # M4 合力过滤门槛（主力净流入/总成交比），与 strategy_params.json 对齐
-        w_sector: float = 0.40,  # M5 权重：板块排名权重（与 final_score.weights.sector 对齐）
-        w_dragon: float = 0.35,  # M5 权重：龙头分权重（与 final_score.weights.dragon 对齐）
-        w_coop: float = 0.25,  # M5 权重：合力综合分权重（与 final_score.weights.cooperative 对齐）
-        stock_flow_recent: dict = None,  # {code: [资金流文档]} 由 query_service.get_stock_flow_recent() 提供
-        stock_ohlcv: dict = None,  # {code: DataFrame} 个股 OHLCV 数据，用于降级取成交额
-        stock_lhb_recent: dict = None,  # {code: [龙虎榜文档]} 由 query_service.get_lhb_recent() 提供
-        assume_sorted: bool = False,  # True 时跳过 OHLCV 排序，性能优化
-        trade_date: Optional[str] = None,  # 截面日期，YYYY-MM-DD 格式
-        style_info: Optional[Dict[str, object]] = None,  # 风格检测结果，含 regime/momentum_weight/reversal_weight
-        active_factors: dict = None,  # 活跃因子配置
-        force_raw: List[Dict] = None,  # 可选：apply_cooperative_force_raw 的结果（含 fcoop1/6/7/8 原始字段）
+    def score_and_compose_final(
+        candidates: List[Dict],
+        top_sectors: List[Tuple[str, float]],
+        m5_weights: Optional[Dict[str, float]] = None,
+        style_info: Optional[Dict[str, object]] = None,
+        active_factors: Optional[Dict] = None,
+        force_docs_map: Optional[Dict[str, Dict]] = None,
+        force_raw: Optional[List[Dict]] = None,
+        m4_threshold: float = 0.03,
+        gate_mode: str = "inflow",
     ) -> List[Dict]:
-        """
-        【公开接口2a】完整处理M4合力验证 + M5最终合成，返回排好序的最终候选列表
+        """M4 门禁过滤 + M5 最终合成，返回按 strategy_signal_score 降序的候选。
 
-        配置驱动：当 active_factors 传入时，从配置读取合力因子权重。
+        原始合力特征来源（三选一，优先级从高到低）：
+        1. force_docs_map: code → 预计算/现场 raw 文档
+        2. force_raw: apply_cooperative_force_raw 的列表结果
+        3. candidates 自身已带 fcoop* 字段
         """
-        filtered = ForceFactors._apply_cooperative_force_filter(
-            candidates,
-            m4_threshold,
-            stock_flow_recent or {},
-            stock_ohlcv or {},
-            assume_sorted=assume_sorted,
-            trade_date=trade_date,
-        )
+        if force_docs_map is None and force_raw:
+            force_docs_map = {r["code"]: r for r in force_raw if r.get("code")}
+
+        filtered: List[Dict] = []
+        for c in candidates:
+            code = c.get("code")
+            if not code:
+                continue
+            fd = (force_docs_map or {}).get(code, c)
+            if force_docs_map is not None and code not in force_docs_map:
+                continue
+            if not ForceFactors._passes_m4_gate(fd, m4_threshold, gate_mode):
+                continue
+            filtered.append({**c, **fd} if fd is not c else c)
 
         if not filtered:
-            logger.warning("⚠️ M4合力过滤：无候选通过")
             return []
 
-        sector_rank_map = ForceFactors._normalize_sector_ranks(top_sectors)
-
-        # 风格调整因子权重（配置驱动，含极性）
-        adjusted_entries = ForceFactors._adjust_weights_by_style(style_info, active_factors)
-
-        # 复合评分所需的 fcoop 原始字段：优先用调用方传入的 force_raw，否则现场计算
-        # （否则 filtered 候选只有 main_net_ratio/turnover_quality，缺 fcoop1/6/7/8，复合分恒为 50）
-        if force_raw:
-            raw_map = {r["code"]: r for r in force_raw}
-        else:
-            raw_map = {
-                r["code"]: r
-                for r in ForceFactors.apply_cooperative_force_raw(
-                    filtered,
-                    stock_flow_recent=stock_flow_recent,
-                    stock_ohlcv=stock_ohlcv,
-                    stock_lhb_recent=stock_lhb_recent,
-                    assume_sorted=assume_sorted,
-                    trade_date=trade_date,
-                )
-            }
-        for c in filtered:
-            r = raw_map.get(c["code"])
-            if r:
-                c.update({k: v for k, v in r.items() if k not in ("code", "sector_code")})
-
-        # 4个B级因子复合评分，按调整后权重加权
+        adjusted_entries = ForceFactors._adjust_weights_by_style(
+            style_info, active_factors=active_factors
+        )
         composite_scores = ForceFactors._composite_force_scores(filtered, adjusted_entries)
 
-        lhb_bonus_map = {c["code"]: c.get("longhu_board_bonus", 0.0) for c in filtered}
-
+        weights = m5_weights or {}
+        w_sector = float(weights.get("sector", 0.40))
+        w_dragon = float(weights.get("dragon", 0.35))
+        w_coop = float(weights.get("cooperative", 0.25))
         total_w = max(w_sector + w_dragon + w_coop, 1e-8)
+        sector_rank_map = ForceFactors._normalize_sector_ranks(top_sectors)
+
         for c in filtered:
-            code = c["code"]
-            coop_score = composite_scores.get(code, 50.0)
-            lhb_bonus = lhb_bonus_map.get(code, 0.0)
+            coop_score = composite_scores.get(c["code"], 50.0)
+            lhb_bonus = float(c.get("longhu_board_bonus", 0.0) or 0.0)
             coop_score = min(coop_score + lhb_bonus, 100.0)
-            c["strategy_signal_score"] = (
-                w_sector * sector_rank_map.get(c.get("sector_code"), 0)
-                + w_dragon * c.get("dragon_composite_score", 0)
-                + w_coop * coop_score
-            ) / total_w
             c["force_composite_score"] = coop_score
             c["longhu_board_bonus"] = lhb_bonus
+            c["strategy_signal_score"] = (
+                w_sector * sector_rank_map.get(c.get("sector_code", ""), 0.0)
+                + w_dragon * c.get("dragon_composite_score", 0.0)
+                + w_coop * coop_score
+            ) / total_w
 
-        ranked = sorted(filtered, key=lambda x: x.get("strategy_signal_score", 0), reverse=True)
-        logger.info(f"✅ M4+M5 合力+最终得分计算完成: {len(ranked)} 只候选")
-        return ranked
+        return sorted(filtered, key=lambda x: x.get("strategy_signal_score", 0), reverse=True)
 
     @staticmethod
-    def passes_precomputed_m4_gate(doc: Dict[str, Any], threshold_pct: float) -> bool:
-        """预计算文档是否通过与 live 相同的 M4 门槛（fcoop1 + 有限的 fcoop3）。"""
+    def resolve_gate_settings(
+        coop_cfg: Dict[str, Any],
+        regime: str,
+        grade: str,
+    ) -> Tuple[float, str]:
+        """cooperative_force 全局 + by_regime + gate_mode_by_grade/context。"""
+        cfg = coop_cfg or {}
+        threshold = float(cfg.get("threshold_pct", 0.01))
+        gate_mode = str(cfg.get("gate_mode") or "inflow").strip().lower()
+        by_regime = cfg.get("by_regime") or {}
+        sub = by_regime.get(regime) or by_regime.get(str(regime))
+        if isinstance(sub, dict):
+            if sub.get("threshold_pct") is not None:
+                threshold = float(sub["threshold_pct"])
+            if sub.get("gate_mode"):
+                gate_mode = str(sub["gate_mode"]).strip().lower()
+        if bool(cfg.get("skip_filter", False)):
+            gate_mode = "off"
+        by_ctx = cfg.get("gate_mode_by_context") or {}
+        ctx_key = f"{regime}_{grade}"
+        if isinstance(by_ctx, dict) and by_ctx.get(ctx_key):
+            gate_mode = str(by_ctx.get(ctx_key)).strip().lower()
+        by_grade = cfg.get("gate_mode_by_grade") or {}
+        if isinstance(by_grade, dict) and by_grade.get(grade):
+            gate_mode = str(by_grade.get(grade)).strip().lower()
+        return threshold, gate_mode
+
+    # ===================== 私有方法 =====================
+
+    @staticmethod
+    def _passes_m4_inflow_gate(doc: Dict[str, Any], threshold_pct: float) -> bool:
+        """fcoop1 >= 门槛 且 fcoop3 有限。"""
         try:
             fcoop1 = float(doc.get("fcoop1_main_net_ratio", 0.0) or 0.0)
         except (TypeError, ValueError):
@@ -274,11 +277,36 @@ class ForceFactors:
             sustained = float(raw) if raw is not None else float("nan")
         except (TypeError, ValueError):
             return False
-        if not np.isfinite(sustained) or sustained < _MIN_SUSTAINED_DAYS:
-            return False
-        return True
+        return bool(np.isfinite(sustained) and sustained >= _MIN_SUSTAINED_DAYS)
 
-    # ===================== 私有方法 =====================
+    @staticmethod
+    def _passes_m4_outflow_gate(doc: Dict[str, Any], max_ratio: float = 0.0) -> bool:
+        """保留主力净流入不超过 max_ratio 的票（默认 ≤0）。"""
+        try:
+            fcoop1 = float(doc.get("fcoop1_main_net_ratio", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return False
+        if fcoop1 > float(max_ratio):
+            return False
+        raw = doc.get("fcoop3_sustained_days")
+        try:
+            sustained = float(raw) if raw is not None else float("nan")
+        except (TypeError, ValueError):
+            return False
+        return bool(np.isfinite(sustained) and sustained >= _MIN_SUSTAINED_DAYS)
+
+    @staticmethod
+    def _passes_m4_gate(
+        doc: Dict[str, Any],
+        threshold_pct: float,
+        mode: str = "inflow",
+    ) -> bool:
+        m = (mode or "inflow").strip().lower()
+        if m in ("off", "skip", "none"):
+            return True
+        if m in ("outflow", "invert"):
+            return ForceFactors._passes_m4_outflow_gate(doc, 0.0)
+        return ForceFactors._passes_m4_inflow_gate(doc, threshold_pct)
 
     @staticmethod
     def _adjust_weights_by_style(
@@ -471,100 +499,6 @@ class ForceFactors:
         }
 
     @staticmethod
-    def _apply_cooperative_force_filter(
-        candidates: List[Dict],
-        threshold_pct: float = 0.05,
-        stock_flow_recent: dict = None,
-        stock_ohlcv: dict = None,
-        assume_sorted: bool = False,
-        trade_date: Optional[str] = None,
-    ) -> List[Dict]:
-        """
-        【私有】M4合力过滤（净值比）
-
-        通过条件：主力净流入 > 0 AND 主力净流入/总成交 >= threshold_pct
-        主散比：散户同向/背离均用 main / (main + |retail|)，值域 (0, 1]
-        """
-        _flow = stock_flow_recent or {}
-        _ohlcv = stock_ohlcv or {}
-
-        metrics_by_code: Dict[str, Dict[str, Any]] = {}
-        for c in candidates:
-            code = c.get("code", "?")
-            metrics_by_code[code] = ForceFactors._extract_candidate_metrics(
-                c, _flow, _ohlcv, assume_sorted=assume_sorted, trade_date=trade_date
-            )
-
-        result = []
-        rejected_reasons = {
-            "total_volume<=0": 0,
-            "main_flow<=0": 0,
-            "net_ratio<threshold": 0,
-            "sustained_days<min": 0,
-        }
-        for c in candidates:
-            code = c.get("code", "?")
-            sector = c.get("sector_code", "?")
-            m = metrics_by_code[code]
-            main_flow = m["main_flow"]
-            retail_flow = m["retail_flow"]
-            total_volume = m["total_volume"]
-
-            if total_volume <= 0:
-                rejected_reasons["total_volume<=0"] += 1
-                logger.debug(
-                    f"  M4拒绝 {code}({sector}): total_volume={total_volume:.0f} 无成交"
-                )
-                continue
-            if main_flow <= 0:
-                rejected_reasons["main_flow<=0"] += 1
-                logger.debug(
-                    f"  M4拒绝 {code}({sector}): main_flow={main_flow:.0f}<=0 主力净流出"
-                )
-                continue
-            main_net_ratio = main_flow / total_volume
-            if main_net_ratio < threshold_pct:
-                rejected_reasons["net_ratio<threshold"] += 1
-                logger.debug(
-                    f"  M4拒绝 {code}({sector}): main_net_ratio={main_net_ratio:.4f} "
-                    f"< threshold={threshold_pct:.4f}"
-                )
-                continue
-
-            sustained = m["main_flow_days"]
-            if np.isnan(sustained) or sustained < _MIN_SUSTAINED_DAYS:
-                rejected_reasons["sustained_days<min"] += 1
-                logger.debug(
-                    f"  M4拒绝 {code}({sector}): sustained_days={sustained} "
-                    f"< min={_MIN_SUSTAINED_DAYS}"
-                )
-                continue
-
-            main_retail_ratio = ForceFactors._main_retail_ratio(main_flow, retail_flow)
-            logger.debug(
-                f"  M4通过 {code}({sector}): main_flow={main_flow:.0f} "
-                f"retail_flow={retail_flow:.0f} total_vol={total_volume:.0f} "
-                f"net_ratio={main_net_ratio:.4f} retail_ratio={main_retail_ratio:.4f}"
-            )
-            result.append({
-                **c,
-                "main_flow": main_flow,
-                "retail_flow": retail_flow,
-                "total_volume": total_volume,
-                "main_net_ratio": main_net_ratio,
-                "main_retail_ratio": main_retail_ratio,
-                "main_flow_days": m["main_flow_days"],
-                "turnover_quality": ForceFactors._score_turnover_quality(
-                    m["turnover_rate"]
-                ),
-            })
-
-        logger.info(f"✅ M4 合力过滤: {len(candidates)} → {len(result)} 只")
-        if len(result) < len(candidates):
-            logger.info(f"  M4拒绝统计: {rejected_reasons}")
-        return result
-
-    @staticmethod
     def _sustained_days(day_docs: list, window: int) -> float:
         """近 window 日主力净流入 > 0 的天数（整数天数，非占比）。
 
@@ -631,8 +565,6 @@ class ForceFactors:
             free_days += 1
 
         return float(free_days)
-
-    # ==================== P0 新主力资金因子 ====================
 
     @staticmethod
     def _main_force_aggression_ratio(day_docs: list) -> float:
@@ -751,8 +683,6 @@ class ForceFactors:
         except Exception as e:
             logger.debug(f"fcoop8_main_flow_trend_5d 计算失败: {e}")
             return float("nan")
-
-    # ==================== A级因子（新高质量因子） ====================
 
     @staticmethod
     def _sigmoid(x: float, k: float = 1.0, x0: float = 0.0) -> float:
@@ -908,7 +838,6 @@ class ForceFactors:
         except Exception as e:
             logger.debug(f"mean_reversion_signal计算失败: {e}")
             return float("nan")
-
 
     @staticmethod
     def _score_turnover_quality(turnover_rate: float) -> float:

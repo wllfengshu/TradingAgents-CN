@@ -9,8 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.response import ok
 from app.routers.auth_db import get_current_user
-from app.schemas.strategy import ConsistencyCheckData, ConsistencyCheckRequest, DailySignalsData
-from zstock.strategy_management.signal_service import get_strategy_signal_service
+from app.schemas.strategy import (
+    ConsistencyCheckData,
+    ConsistencyCheckRequest,
+    DailySignalsData,
+    ExecuteOrdersRequest,
+)
+from zstock.strategy_management.signal_service import StrategySignalService
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
 logger = logging.getLogger("webapi")
@@ -19,7 +24,7 @@ logger = logging.getLogger("webapi")
 @router.get("/meta")
 async def get_strategy_meta(user: dict = Depends(get_current_user)):
     """返回当前 strategy_params.json 摘要（版本、自适应调仓等）。"""
-    svc = get_strategy_signal_service()
+    svc = StrategySignalService.instance()
     meta = svc.get_strategy_meta()
     return ok(data=meta, message="ok")
 
@@ -37,7 +42,7 @@ async def get_daily_signals(
 
     信号来源与回测一致：CrossSectionStrategyPipeline.score_signals()（预计算优先）。
     """
-    svc = get_strategy_signal_service()
+    svc = StrategySignalService.instance()
     try:
         payload = await svc.get_daily_signals(
             trade_date,
@@ -67,10 +72,10 @@ async def validate_signal_consistency(
 ):
     """
     回测一致性校验：
-    - score_signals（回测快路径） vs SignalGenerator（API 路径）
+    - score_signals（回测快路径） vs StrategyPipeline._generate_signals（API 路径）
     - execute_full_pipeline(precomputed) vs execute_full_pipeline(内部 generate)
     """
-    svc = get_strategy_signal_service()
+    svc = StrategySignalService.instance()
     try:
         result = await svc.validate_consistency(
             req.trade_date,
@@ -89,3 +94,28 @@ async def validate_signal_consistency(
 
     msg = "consistent" if result["consistent"] else "inconsistent"
     return ok(data=result, message=msg)
+
+
+@router.post("/execute-orders", response_model=None)
+async def execute_orders(
+    req: ExecuteOrdersRequest,
+    user: dict = Depends(get_current_user),
+):
+    """将当日目标持仓交给 OrderManagementPipeline（默认拒绝 Mock 下单）。"""
+    svc = StrategySignalService.instance()
+    try:
+        result = await svc.execute_orders(
+            req.trade_date,
+            allow_mock=req.allow_mock,
+            prefer_precomputed=req.prefer_precomputed,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("execute_orders failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"下单失败: {e}",
+        ) from e
+    exec_status = (result.get("execution") or {}).get("status", "unknown")
+    return ok(data=result, message=str(exec_status))

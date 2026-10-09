@@ -2,9 +2,9 @@
 因子预计算脚本（手动批处理，不属于在线策略流程）
 
 职责：
-1. 从 MongoDB 加载 OHLCV / 资金流
-2. 使用 FactorComputeEngine 计算全市场因子原始值
-3. 写入 zstock_factor_* 集合
+1. 从 MongoDB 加载全部个股 OHLCV / 资金流（不主板/ST/黑名单过滤）
+2. 使用 FactorComputeEngine 计算全市场、全股票因子原始值
+3. 写入 zstock_factor_* 集合（个股覆盖应对齐 OHLCV）
 
 用法：
     python -m zstock.factor_management.script.precompute_factors --start 2026-01-01 --end 2026-06-30
@@ -36,24 +36,41 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
 import numpy as np
 
-from zstock.common.utils.common_utils import ensure_ohlcv_sorted
+from zstock.common.utils.common_utils import (
+    ensure_ohlcv_sorted,
+    is_index_code,
+    normalize_code,
+)
 from zstock.common.utils.resource_budget import (
     cap_worker_count,
     compute_resource_budget,
 )
 from zstock.common.utils.xtquant_data_utils import to_xt_code
+from zstock.data_management.fundamental_provider import FundamentalDataProvider
 from zstock.factor_management.dragon_factors import DragonFactors
 from zstock.factor_management.force_factors import ForceFactors
-from zstock.factor_management.fundamental_factors import FundamentalDataProvider
 from zstock.factor_management.market_factors import MarketFactors
 from zstock.factor_management.sector_factors import SectorFactors
-from zstock.factor_management.prefilters import PreFilters
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 logger = logging.getLogger(__name__)
+
+# 北证50 与 sync_ohlcv.INDEX_CODES 对齐；399xxx 由 is_index_code 排除。
+_EXTRA_INDEX_CODES = frozenset({"899050"})
+# 无板块归属的个股仍写入龙头/合力，保证覆盖对齐 OHLCV。
+_UNASSIGNED_SECTOR = "_UNASSIGNED"
+
+
+def _is_stock_code(code: Any) -> bool:
+    if not code:
+        return False
+    c = normalize_code(str(code))
+    if not c or c in _EXTRA_INDEX_CODES:
+        return False
+    return not is_index_code(c)
 
 
 def _resolve_worker_count(
@@ -140,8 +157,8 @@ def _compute_sliced_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return FactorComputeEngine.compute_all_factors_raw_sync(
         **payload["data"],
         assume_sorted=True,
-        filtered_sectors=payload["filtered_sectors"],
-        filtered_stocks_set=payload["filtered_stocks_set"],
+        compute_sectors=payload["compute_sectors"],
+        compute_universe=payload["compute_universe"],
         quiet=True,
         fund_provider=payload.get("fund_provider"),
     )
@@ -160,8 +177,8 @@ def _compute_day_sync(
     return FactorComputeEngine.compute_all_factors_raw_sync(
         **data,
         assume_sorted=True,
-        filtered_sectors=preload["filtered_sectors"],
-        filtered_stocks_set=preload["filtered_stocks_set"],
+        compute_sectors=preload["compute_sectors"],
+        compute_universe=preload["compute_universe"],
         quiet=quiet,
         fund_provider=preload.get("fund_provider"),
     )
@@ -185,8 +202,7 @@ def _error_handler(context: str, critical: bool = False):
 class FactorComputeEngine:
     """全市场因子计算引擎（纯计算逻辑，不涉及数据库）
 
-    这是从 CrossSectionStrategyPipeline.compute_all_factor_raw() 提取的业务逻辑，
-    专门用于预计算流程。
+    从策略 pipeline 的 raw 计算路径抽离，专用于预计算（与 score_signals 无关）。
     """
 
     @staticmethod
@@ -203,8 +219,8 @@ class FactorComputeEngine:
         *,
         stock_lhb_recent: Optional[Dict[str, List[Dict]]] = None,
         assume_sorted: bool = False,
-        filtered_sectors: Optional[List[Dict]] = None,
-        filtered_stocks_set: Optional[Set[str]] = None,
+        compute_sectors: Optional[List[Dict]] = None,
+        compute_universe: Optional[Set[str]] = None,
         sector_ohlcv: Optional[Dict[str, pd.DataFrame]] = None,
         quiet: bool = False,
         fund_provider: Optional[Any] = None,
@@ -213,8 +229,9 @@ class FactorComputeEngine:
         全市场因子原始值计算（供预计算入库，不做 topK 选股裁剪）。
 
         与 run_pipeline_raw 的差异：
-        - M2：全部非黑名单板块
-        - M3：全部过滤后板块 × 主板非黑名单成分股
+        - 不做主板 / ST / 黑名单过滤，覆盖全部个股
+        - M2：全部板块
+        - M3：全部板块成分股 + 无板块归属的个股
         - M4：上述全部股票（按 code 去重）
 
         Args:
@@ -228,8 +245,8 @@ class FactorComputeEngine:
             index_ohlcv: 指数 OHLCV 数据
             index_name: 指数名称
             assume_sorted: OHLCV 是否已排序
-            filtered_sectors: 预过滤的板块
-            filtered_stocks_set: 预过滤的股票集合
+            compute_sectors: 参与计算的板块；None 则用 sectors 全量（非策略过滤）
+            compute_universe: 参与计算的股票；None 则用 all_stocks ∪ OHLCV keys
             sector_ohlcv: 预聚合的板块 OHLCV
             fund_provider: 基本面数据提供者；静态方法不能用 self.fund_provider
 
@@ -262,76 +279,76 @@ class FactorComputeEngine:
             f"📊 M1 完成: market_sentiment={market_sentiment.get('market_composite_score', 0):.2f}"
         )
 
-        if filtered_sectors is None or filtered_stocks_set is None:
-            raise ValueError(
-                "filtered_sectors 和 filtered_stocks_set 必须由调用方提供。"
-                "请先执行宇宙过滤（技术过滤 + 黑名单过滤）再传入。"
+        if compute_sectors is None:
+            compute_sectors = list(sectors or [])
+        if compute_universe is None:
+            compute_universe = {
+                c for c in (all_stocks or []) if _is_stock_code(c)
+            }
+            compute_universe.update(
+                c for c in (stock_ohlcv or {}) if _is_stock_code(c)
             )
 
-        log(f"🔍 个股过滤后可用: {len(filtered_stocks_set)} 只")
+        log(f"🔍 参与计算个股: {len(compute_universe)} 只")
 
         # 计算全市场板块OHLCV（用于F2.8排名计算）
         if sector_ohlcv is not None:
             market_sector_ohlcv = sector_ohlcv
         else:
-            market_sector_ohlcv, _ = SectorFactors._aggregate_sectors_from_stocks(
+            market_sector_ohlcv, _ = SectorFactors.aggregate_sector_ohlcv(
                 sector_stocks,
                 stock_ohlcv,
                 stock_flow_recent or {},
             )
 
         sector_raw = SectorFactors.calculate_all_sector_factors_raw(
-            filtered_sectors,
+            compute_sectors,
             sector_stocks,
             stock_ohlcv,
             stock_flow_recent,
             sector_ohlcv=sector_ohlcv,
             market_sector_ohlcv=market_sector_ohlcv,
             trade_date=trade_date,
-            eligible_codes=filtered_stocks_set,
+            eligible_codes=compute_universe,
         )
         log(f"📊 M2 完成: {len(sector_raw.get('f21_rps', {}))} 个板块")
 
         # ===== M3: 龙头因子计算 =====
         sector_jobs = []
         all_m3_codes: Set[str] = set()
-        for sector in filtered_sectors:
+        for sector in compute_sectors:
             sector_code = sector.get("sector_code")
             if not sector_code:
                 continue
             sector_stock_list = [
                 s
                 for s in sector_stocks.get(sector_code, [])
-                if s in filtered_stocks_set
+                if s in compute_universe
             ]
             if sector_stock_list:
                 sector_jobs.append((sector_code, sector_stock_list))
                 all_m3_codes.update(sector_stock_list)
 
-        # M3 龙头因子计算：全市场 features 一次计算，逐板块复用
-        # _precompute_stock_features 中所有计算都是个股独立的，
-        # 对同一只股票同一份 OHLCV，无论放在哪个板块算结果都一样
-        all_m3_codes_list = list(all_m3_codes)
-        m3_features = DragonFactors._precompute_stock_features(
+        leftover = [
+            c
+            for c in sorted(compute_universe)
+            if c not in all_m3_codes and c in (stock_ohlcv or {})
+        ]
+        if leftover:
+            sector_jobs.append((_UNASSIGNED_SECTOR, leftover))
+            all_m3_codes.update(leftover)
+            log(f"🔍 无板块归属个股: {len(leftover)} 只")
+
+        # M3：多板块一次计算（个股特征在 DragonFactors 内部复用）
+        dragon_raw_by_sector = DragonFactors.calculate_all_dragon_factors_raw(
+            sector_jobs,
             stock_ohlcv,
-            all_m3_codes_list,
             assume_sorted=True,
             trade_date=trade_date,
+            fund_provider=fund_provider,
         )
-        dragon_raw_by_sector: Dict[str, Dict] = {}
         force_candidates: List[Dict] = []
-        for sector_code, codes in sector_jobs:
-            dragon_raw = DragonFactors.calculate_all_dragon_factors_in_sector_raw(
-                codes,
-                stock_ohlcv,
-                assume_sorted=True,
-                trade_date=trade_date,
-                features=m3_features,
-                fund_provider=fund_provider,
-            )
-            if not dragon_raw:
-                continue
-            dragon_raw_by_sector[sector_code] = dragon_raw
+        for sector_code, dragon_raw in dragon_raw_by_sector.items():
             for code in dragon_raw:
                 force_candidates.append(
                     {
@@ -374,7 +391,7 @@ class FactorComputeEngine:
             "index_code": index_code,
             "index_name": index_name,
             "sector_raw": sector_raw,
-            "filtered_sectors": filtered_sectors,
+            "compute_sectors": compute_sectors,
             "dragon_raw_by_sector": dragon_raw_by_sector,
             "all_candidates": force_candidates,
             "force_raw": force_raw,
@@ -404,9 +421,7 @@ class FactorPrecomputeService:
     ) -> None:
         from zstock.data_management.database_service import get_database_service
         from zstock.data_management.query_service import get_data_query_service
-        from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
 
-        self.pipeline = CrossSectionStrategyPipeline()
         self.database_service = get_database_service()
         self.query_service = get_data_query_service()
         (
@@ -421,9 +436,8 @@ class FactorPrecomputeService:
             query_workers=query_workers,
         )
         self.resource_budget = budget
+        self._load_fundamentals = load_fundamentals
         self.fund_provider: Optional[FundamentalDataProvider] = None
-        if load_fundamentals:
-            self._init_fundamental_provider()
         logger.info(
             "FactorPrecomputeService 初始化完成 "
             f"(资源预算={budget.resource_fraction:.0%}, "
@@ -432,20 +446,22 @@ class FactorPrecomputeService:
             f"query={self.query_workers})"
         )
 
-    def _init_fundamental_provider(self):
-        """从 MongoDB 加载基本面数据 (需先运行 sync_fundamental.py)"""
+    async def _ensure_fundamental_provider(self):
+        """从 query_service 装载基本面 PIT 缓存（需先运行 sync_fundamental.py）。"""
+        if self.fund_provider is not None or not self._load_fundamentals:
+            return
         try:
-            self.fund_provider = FundamentalDataProvider()
-            self.fund_provider.load_from_mongodb()
-            if self.fund_provider.is_loaded:
+            provider = FundamentalDataProvider()
+            await provider.load_from_query_service(self.query_service)
+            if provider.is_loaded:
+                self.fund_provider = provider
                 logger.info(
                     f"FundamentalDataProvider: 加载完成 "
-                    f"(BPS={self.fund_provider.codes_with_pb()}, "
-                    f"HolderChange={self.fund_provider.codes_with_holder()})"
+                    f"(BPS={provider.codes_with_pb()}, "
+                    f"HolderChange={provider.codes_with_holder()})"
                 )
             else:
-                logger.warning("FundamentalDataProvider: MongoDB 中无基本面数据, 请先运行 sync_fundamental.py")
-                self.fund_provider = None
+                logger.warning("FundamentalDataProvider: 无基本面数据, 请先运行 sync_fundamental.py")
         except Exception as e:
             logger.warning(f"FundamentalDataProvider: 加载失败 - {e}, 基本面因子将不可用")
             import traceback
@@ -462,32 +478,16 @@ class FactorPrecomputeService:
         td = normalize_date(trade_date)
         logger.info(f"预计算 {td}")
         t0 = perf_counter()
-        data = await self.pipeline.load_real_data(
-            trade_date=td,
-            lookback_days=lookback_days,
-        )
+        preload = await self._preload_range_data(td, td, lookback_days)
         t1 = perf_counter()
-        # 单日模式：需自行执行宇宙过滤（区间模式由 _preload_range_data 预过滤）
-        prefilters = PreFilters()
-        tech_filtered = prefilters.apply_technical_filters(
-            data["all_stocks"], data["stock_ohlcv"], data["stock_infos"],
-            apply_main_board=True, apply_bollinger=False,
-        )
-        bl_result = prefilters.apply_blacklist_filters(tech_filtered, sectors=data["sectors"])
-        data["filtered_sectors"] = bl_result.get("sectors", data["sectors"])
-        data["filtered_stocks_set"] = set(bl_result["stocks"])
-        # 使用 FactorComputeEngine 计算原始因子值
-        raw_result = FactorComputeEngine.compute_all_factors_raw_sync(
-            **data,
-            fund_provider=self.fund_provider,
-        )
+        raw_result = _compute_day_sync(preload, td, lookback_days, quiet=False)
         t2 = perf_counter()
-        stock_infos = data.get("stock_infos", {})
+        stock_infos = preload.get("stock_infos", {})
         counts = await self._store_all(td, raw_result, stock_infos)
         t3 = perf_counter()
         logger.info(
             f"{td} 完成: {counts} | "
-            f"load={t1 - t0:.2f}s compute={t2 - t1:.2f}s store={t3 - t2:.2f}s"
+            f"preload={t1 - t0:.2f}s compute={t2 - t1:.2f}s store={t3 - t2:.2f}s"
         )
         return counts
 
@@ -499,7 +499,7 @@ class FactorPrecomputeService:
         lookback_days: int = 120,
     ) -> Dict[str, int]:
         t_range0 = perf_counter()
-        logger.info("筛选交易日（MongoDB 聚合，请稍候）...")
+        logger.info("读取 OHLCV 交易日...")
         trade_dates = await self._gen_trade_dates(start_date, end_date)
         if not trade_dates:
             raise ValueError(f"{start_date} ~ {end_date} 无可用交易日")
@@ -527,8 +527,8 @@ class FactorPrecomputeService:
                         "data": self.slice_preloaded_data(
                             preload, td, lookback_days
                         ),
-                        "filtered_sectors": preload["filtered_sectors"],
-                        "filtered_stocks_set": preload["filtered_stocks_set"],
+                        "compute_sectors": preload["compute_sectors"],
+                        "compute_universe": preload["compute_universe"],
                         "fund_provider": self.fund_provider,
                     }
                     raw_result = await loop.run_in_executor(
@@ -576,23 +576,15 @@ class FactorPrecomputeService:
         )
         return total
 
-    async def _preload_range_data(
+    async def _resolve_stock_universe(
         self,
-        start_date: str,
-        end_date: str,
-        lookback_days: int,
-    ) -> Dict[str, Any]:
-        from zstock.common.utils.common_utils import normalize_date
+        window_start: str,
+        end: str,
+    ) -> Tuple[List[str], Dict[str, Dict]]:
+        """OHLCV 日线全部个股 ∪ stock_info，排除指数代码。"""
+        from zstock.data_management.query_service import COL_OHLCV
 
-        start = normalize_date(start_date)
-        end = normalize_date(end_date)
-        window_start = (
-            datetime.strptime(start, "%Y-%m-%d") - timedelta(days=lookback_days)
-        ).strftime("%Y-%m-%d")
-
-        t0 = perf_counter()
         all_stock_docs, _ = await self.query_service.get_all_stocks()
-        all_stocks = [d["code"] for d in all_stock_docs]
         stock_infos: Dict[str, Dict] = {
             d["code"]: {
                 "code": d["code"],
@@ -601,19 +593,87 @@ class FactorPrecomputeService:
                 "is_mainboard": d.get("is_mainboard", False),
             }
             for d in all_stock_docs
+            if d.get("code") and _is_stock_code(d["code"])
         }
+
+        ohlcv_codes: List[Any] = []
+        try:
+            ohlcv_codes = await self.database_service.db[COL_OHLCV].distinct(
+                "code",
+                {
+                    "period": "D",
+                    "trade_date": {"$gte": window_start, "$lte": end},
+                },
+            )
+        except Exception as e:
+            logger.warning("OHLCV distinct codes 失败，回退 stock_info: %s", e)
+
+        seen: Set[str] = set()
+        all_stocks: List[str] = []
+        for raw in list(ohlcv_codes or []) + list(stock_infos):
+            if not _is_stock_code(raw):
+                continue
+            code = normalize_code(str(raw))
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            all_stocks.append(code)
+            if code not in stock_infos:
+                stock_infos[code] = {
+                    "code": code,
+                    "name": "",
+                    "is_st": False,
+                    "is_mainboard": False,
+                }
+        all_stocks.sort()
+        logger.info(
+            f"股票宇宙: ohlcv_codes={len(ohlcv_codes or [])} "
+            f"stock_info={len(all_stock_docs)} universe={len(all_stocks)}"
+        )
+        return all_stocks, stock_infos
+
+    async def _preload_range_data(
+        self,
+        start_date: str,
+        end_date: str,
+        lookback_days: int,
+    ) -> Dict[str, Any]:
+        from zstock.common.utils.common_utils import normalize_date
+
+        await self._ensure_fundamental_provider()
+        start = normalize_date(start_date)
+        end = normalize_date(end_date)
+        window_start = (
+            datetime.strptime(start, "%Y-%m-%d") - timedelta(days=lookback_days)
+        ).strftime("%Y-%m-%d")
+
+        t0 = perf_counter()
+        all_stocks, stock_infos = await self._resolve_stock_universe(
+            window_start, end
+        )
+        all_stock_set = set(all_stocks)
 
         sector_list, _ = await self.query_service.get_sector_list()
         sector_list = sector_list or []
-        all_stock_set = set(all_stocks)
         sector_stocks_map: Dict[str, List[str]] = {}
         for sector in sector_list:
             sector_code = sector.get("sector_code")
             if not sector_code:
                 continue
-            stocks = [s for s in sector.get("stocks", []) if s in all_stock_set]
-            if stocks:
-                sector_stocks_map[sector_code] = stocks
+            stocks = [s for s in sector.get("stocks", []) if _is_stock_code(s)]
+            sector_stocks_map[sector_code] = stocks
+            for code in stocks:
+                if code in all_stock_set:
+                    continue
+                all_stock_set.add(code)
+                all_stocks.append(code)
+                if code not in stock_infos:
+                    stock_infos[code] = {
+                        "code": code,
+                        "name": "",
+                        "is_st": False,
+                        "is_mainboard": False,
+                    }
 
         flow_days = max(15, lookback_days // 4)
         # 只加载资金流中实际使用的字段，减少内存占用 ~70%
@@ -712,27 +772,11 @@ class FactorPrecomputeService:
                 index_ohlcv_full[code] = df
         logger.info(f"OHLCV 预排序完成: {perf_counter() - t_sort:.2f}s")
 
-        # 过滤结果跨日不变，只算一次
-        # 使用公开接口 apply_blacklist_filters() 来同时过滤板块和个股
-        tech_filtered = self.pipeline.prefilters.apply_technical_filters(
-            all_stocks, stock_ohlcv_full, stock_infos, apply_main_board=True, apply_bollinger=False
+        compute_sectors = list(sector_list)
+        compute_universe = set(all_stocks)
+        compute_universe.update(
+            c for c in stock_ohlcv_full if _is_stock_code(c)
         )
-        blacklist_result = self.pipeline.prefilters.apply_blacklist_filters(tech_filtered, sectors=sector_list)
-        filtered_sectors = blacklist_result.get("sectors", sector_list)
-        filtered_stocks_set = set(blacklist_result.get("stocks", tech_filtered))
-
-        needed_codes: set = set()
-        for s in filtered_sectors:
-            sc = s.get("sector_code")
-            if sc:
-                needed_codes.update(sector_stocks_map.get(sc, []))
-        # 丢掉用不到的全市场 OHLCV / 资金流，显著降低每日切片成本
-        stock_ohlcv_full = {
-            c: df for c, df in stock_ohlcv_full.items() if c in needed_codes
-        }
-        stock_flow_full = {
-            c: rows for c, rows in stock_flow_full.items() if c in needed_codes
-        }
 
         from collections import defaultdict
         from zstock.data_management.query_service import COL_LHB
@@ -742,7 +786,7 @@ class FactorPrecomputeService:
             lhb_docs = await self.database_service.query(
                 COL_LHB,
                 {
-                    "code": {"$in": list(needed_codes)},
+                    "code": {"$in": list(compute_universe)},
                     "trade_date": {"$gte": window_start, "$lte": end},
                 },
                 projection={"_id": 0},
@@ -787,12 +831,12 @@ class FactorPrecomputeService:
 
         t_sec = perf_counter()
         need_sector_codes = {
-            s.get("sector_code") for s in filtered_sectors if s.get("sector_code")
+            s.get("sector_code") for s in compute_sectors if s.get("sector_code")
         }
         sector_stocks_use = {
             k: v for k, v in sector_stocks_map.items() if k in need_sector_codes
         }
-        sector_ohlcv_full, _ = SectorFactors._aggregate_sectors_from_stocks(
+        sector_ohlcv_full, _ = SectorFactors.aggregate_sector_ohlcv(
             sector_stocks_use,
             stock_ohlcv_full,
             {},
@@ -817,17 +861,17 @@ class FactorPrecomputeService:
         )
 
         logger.info(
-            f"区间预加载完成: stocks={len(all_stocks)} keep_ohlcv={len(stock_ohlcv_full)} "
-            f"sectors={len(filtered_sectors)} flow={len(stock_flow_full)} "
-            f"filtered_stocks={len(filtered_stocks_set)} "
+            f"区间预加载完成: stocks={len(all_stocks)} ohlcv={len(stock_ohlcv_full)} "
+            f"sectors={len(compute_sectors)} flow={len(stock_flow_full)} "
+            f"universe={len(compute_universe)} "
             f"window={window_start}~{end} cost={perf_counter() - t0:.2f}s"
         )
         return {
             "all_stocks": all_stocks,
             "stock_infos": stock_infos,
             "sectors": sector_list,
-            "filtered_sectors": filtered_sectors,
-            "filtered_stocks_set": filtered_stocks_set,
+            "compute_sectors": compute_sectors,
+            "compute_universe": compute_universe,
             "sector_stocks": sector_stocks_map,
             "stock_ohlcv_full": stock_ohlcv_full,
             "stock_flow_full": stock_flow_full,
@@ -1262,7 +1306,7 @@ class FactorPrecomputeService:
                     "f_mean_reversion_signal": c.get(
                         "f_mean_reversion_signal", float("nan")
                     ),
-                    # P1a 龙虎榜加分
+                    # P1a 龙虎榜加分（原始加分项，非策略综合分）
                     "longhu_board_bonus": c.get("longhu_board_bonus", 0.0),
                 }
             )
@@ -1283,54 +1327,27 @@ class FactorPrecomputeService:
         return len(docs)
 
     async def _gen_trade_dates(self, start_date: str, end_date: str) -> List[str]:
-        """OHLCV∩L2 且当日 OHLCV 股票数 >= 1000。"""
+        """区间内全部 OHLCV 日线交易日（不按股票数或 L2 再筛）。"""
         from zstock.common.utils.common_utils import normalize_date
-        from zstock.data_management.query_service import (
-            COL_CAPITAL_FLOW,
-            COL_OHLCV,
-            PERIOD_L2_DAILY,
-        )
+        from zstock.data_management.query_service import COL_OHLCV
 
         start = normalize_date(start_date)
         end = normalize_date(end_date)
-        db = self.database_service.db
-
-        pipe = [
-            {
-                "$match": {
-                    "period": "D",
-                    "trade_date": {"$gte": start, "$lte": end},
-                }
-            },
-            {"$group": {"_id": "$trade_date", "n": {"$sum": 1}}},
-            {"$match": {"n": {"$gte": 1000}}},
-            {"$sort": {"_id": 1}},
-        ]
-        oh_dates = {
-            r["_id"]
-            async for r in db[COL_OHLCV].aggregate(pipe, allowDiskUse=True)
-        }
-        cf_dates = set(
-            await db[COL_CAPITAL_FLOW].distinct(
-                "trade_date",
-                {
-                    "period": PERIOD_L2_DAILY,
-                    "trade_date": {"$gte": start, "$lte": end},
-                },
-            )
+        dates = await self.database_service.db[COL_OHLCV].distinct(
+            "trade_date",
+            {"period": "D", "trade_date": {"$gte": start, "$lte": end}},
         )
-        dates = sorted(oh_dates & cf_dates)
+        dates = sorted(str(d) for d in dates if d)
         logger.info(
-            f"交易日筛选: ohlcv合格={len(oh_dates)}, L2={len(cf_dates)}, "
-            f"交集={len(dates)} ({dates[0] if dates else '-'} ~ "
-            f"{dates[-1] if dates else '-'})"
+            f"交易日: ohlcv={len(dates)} "
+            f"({dates[0] if dates else '-'} ~ {dates[-1] if dates else '-'})"
         )
         return dates
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(
-        description="预计算因子原始值并存储到 MongoDB（手动批处理脚本）"
+        description="预计算全部个股因子原始值并存储到 MongoDB（不主板/ST/黑名单过滤）"
     )
     parser.add_argument("--start", required=False, help="开始日期 YYYY-MM-DD（区间模式）")
     parser.add_argument("--end", required=False, help="结束日期 YYYY-MM-DD（区间模式）")

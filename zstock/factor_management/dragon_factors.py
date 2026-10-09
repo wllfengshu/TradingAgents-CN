@@ -1,25 +1,23 @@
 """
 龙头层因子计算模块（M3）
 
-黑盒设计：
-- 公开接口：calculate_all_dragon_factors_in_sector_raw() / scores_from_raw()
-- 所有实现细节都隐藏在私有方法中
-- 职责：只计算龙头因子（技术面 + 基本面 f39/f40）
-- MongoDB 只存储原始因子值，不存储得分（得分由 scores_from_raw 实时计算）
+黑盒门面：DragonFactors（行情与基本面均由调用方传入，本模块不查库）
+- calculate_all_dragon_factors_in_sector_raw()  现场：单板块 OHLCV → 因子原始值
+- calculate_all_dragon_factors_raw()            预计算：多板块一次算完（内部复用个股特征）
+- scores_from_raw()                             回测：原始值 → 门禁 + 加权得分
+- raw_from_doc()                                预计算 Mongo 文档 → scores_from_raw 单股 raw
 
-因子权重/极性由 strategy_params.json active_factors.dragon 提供（单一事实来源），
-按 regime 路由（momentum / reversal）。scores_from_raw 从配置动态提取因子并 min-max 加权。
+基本面 f39/f40：调用方传入 fund_provider（data_management.FundamentalDataProvider）；
+未传入则 f39/f40 为 NaN。MongoDB 只存原始值，得分由 scores_from_raw 实时计算。
 
-φ 门槛（不进加权）：布林趋势 >= _F35_MIN_TREND 或连板 >= _F33_MIN_BOARDS
-
-预计算多窗口（网格搜索用）；默认窗口与线上打分一致：
-  _RETURN_WINDOWS (5,10,15,20) / _RESONANCE_WINDOWS (3,5,10)
+因子权重/极性由 strategy_params.json active_factors.dragon 提供，
+准入门禁由 dragon_layer.gates 驱动。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -29,51 +27,58 @@ from zstock.common.utils.common_utils import (
     limit_up_threshold,
     minmax_normalize,
     ohlcv_asof,
+    passes_gate_value,
+    to_float_or_none,
 )
 
 logger = logging.getLogger(__name__)
 
-# φ 门槛（不进加权）
-_F35_MIN_TREND = 20.0   # 布林趋势绝对分下限（从40降到20：原值过严，大量候选被误杀）
-_F33_MIN_BOARDS = 1     # 连板基因；或与 f35_bollinger_pass 二选一
-
-# 预计算多窗口（网格搜索用）；默认窗口与线上打分一致
+# 预计算特征工程多窗口（落库供策略按需订阅，默认窗口与线上打分一致）
 _RETURN_WINDOWS = (5, 10, 15, 20)
 _RESONANCE_WINDOWS = (3, 5, 10)
 _DEFAULT_RETURN_WINDOW = 5
 _DEFAULT_RESONANCE_WINDOW = 5
-
-_fundamental_provider: Optional[Any] = None
-_fundamental_provider_tried: bool = False
-
-
-def _get_fundamental_provider() -> Optional[Any]:
-    """懒加载基本面提供者（MongoDB PIT-safe BPS / 股东户数）。"""
-    global _fundamental_provider, _fundamental_provider_tried
-    if _fundamental_provider_tried:
-        return _fundamental_provider
-    _fundamental_provider_tried = True
-    try:
-        from zstock.factor_management.fundamental_factors import FundamentalDataProvider
-
-        provider = FundamentalDataProvider()
-        provider.load_from_mongodb()
-        if provider.is_loaded:
-            _fundamental_provider = provider
-            logger.info(
-                "✅ 基本面因子就绪: BPS=%d, HolderChange=%d",
-                provider.codes_with_pb(),
-                provider.codes_with_holder(),
-            )
-        else:
-            logger.warning("⚠️ 基本面数据未加载，f39/f40 将为 NaN")
-    except Exception as e:
-        logger.warning("⚠️ 基本面因子加载失败，f39/f40 将为 NaN: %s", e)
-    return _fundamental_provider
+_BOLL_WINDOW = 20
+_BOLL_SLOPE_WINDOW = 5
+_TURNOVER_ANOMALY_WINDOW = 20
 
 
 class DragonFactors:
-    """龙头层因子计算器（M3）。黑盒设计，只负责龙头因子计算"""
+    """龙头层因子计算器（M3）。黑盒：只计算，不查库。"""
+
+    @staticmethod
+    def _filter_rows_by_gates(
+        rows: Dict[str, Dict[str, Any]],
+        gates: Optional[List[Dict[str, Any]]],
+    ) -> Set[str]:
+        """M3 龙头门禁：rows 为 code → raw dict。gates=None 时要求 f35 有限。"""
+        if not rows:
+            return set()
+
+        if gates is None:
+            out: Set[str] = set()
+            for code, row in rows.items():
+                f35 = to_float_or_none((row or {}).get("f35_bollinger_trend"))
+                if f35 is not None:
+                    out.add(code)
+            return out
+
+        if len(gates) == 0:
+            return set(rows.keys())
+
+        passed: Set[str] = set()
+        for code, row in rows.items():
+            ok = True
+            for gate in gates:
+                field = gate.get("field")
+                if not field:
+                    continue
+                if not passes_gate_value((row or {}).get(field), gate):
+                    ok = False
+                    break
+            if ok:
+                passed.add(code)
+        return passed
 
     # ===================== 公开接口 =====================
 
@@ -82,45 +87,74 @@ class DragonFactors:
         sector_stocks: List[str],
         stock_ohlcv: Dict[str, pd.DataFrame],
         assume_sorted: bool = False,
-        features: Optional[Dict[str, Any]] = None,
         trade_date: Optional[str] = None,
         fund_provider: Optional[Any] = None,
     ) -> Dict[str, Dict[str, Any]]:
-        """
-        【公开接口1】计算单个板块的龙头因子原始值。
-
-        供 precompute_factors.py 调用，逐板块计算并存储原始因子值到 MongoDB。
-
-        Args:
-            sector_stocks: 单个板块的股票列表 [code1, code2, ...]
-            stock_ohlcv: {code: DataFrame} 个股 OHLCV 数据
-            assume_sorted: True 时跳过 OHLCV 排序
-            features: 可选，_precompute_stock_features 的结果（用于性能优化）
-            trade_date: 截面日
-
-        Returns:
-            {code: {f31b_..., f32_..., f34_..., f35_..., f39_pb, f40_holder_change, ...}}
-        """
-        if features is None:
-            features = DragonFactors._precompute_stock_features(
-                stock_ohlcv,
-                sector_stocks,
-                assume_sorted=assume_sorted,
-                trade_date=trade_date,
-            )
-        return DragonFactors._assemble_sector_raw_from_features(
-            sector_stocks,
-            features,
+        """计算单个板块的龙头因子原始值。"""
+        by_sector = DragonFactors.calculate_all_dragon_factors_raw(
+            [("", list(sector_stocks or []))],
+            stock_ohlcv,
+            assume_sorted=assume_sorted,
             trade_date=trade_date,
             fund_provider=fund_provider,
         )
+        return next(iter(by_sector.values()), {})
 
     @staticmethod
-    def scores_from_raw(raw: Dict[str, Dict[str, Any]], regime: str = "neutral", active_factors: dict = None, scoring_method: str = "linear") -> Dict[str, float]:
-        """从 raw 原始值打分（配置驱动 + 决策树）。
+    def calculate_all_dragon_factors_raw(
+        sector_jobs: List[Tuple[str, List[str]]],
+        stock_ohlcv: Dict[str, pd.DataFrame],
+        assume_sorted: bool = False,
+        trade_date: Optional[str] = None,
+        fund_provider: Optional[Any] = None,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """多板块原始因子：个股特征只算一次，再按板块组装。
 
-        配置驱动：从 active_factors.dragon 按 regime 动态提取配置中声明的所有因子。
-        scoring_method: "linear"（默认，加权求和）或 "tree"（决策树分箱）。
+        Args:
+            sector_jobs: [(sector_code, [code, ...]), ...]
+            stock_ohlcv: {code: DataFrame}
+            fund_provider: 调用方装载的基本面缓存；None 则 f39/f40 为 NaN
+
+        Returns:
+            {sector_code: {code: raw_dict}}
+        """
+        all_codes: List[str] = []
+        seen: Set[str] = set()
+        for _, codes in sector_jobs:
+            for code in codes:
+                if code not in seen:
+                    seen.add(code)
+                    all_codes.append(code)
+        if not all_codes:
+            return {}
+        features = DragonFactors._precompute_stock_features(
+            stock_ohlcv,
+            all_codes,
+            assume_sorted=assume_sorted,
+            trade_date=trade_date,
+        )
+        out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for sector_code, codes in sector_jobs:
+            raw = DragonFactors._assemble_sector_raw_from_features(
+                codes,
+                features,
+                trade_date=trade_date,
+                fund_provider=fund_provider,
+            )
+            if raw:
+                out[sector_code] = raw
+        return out
+
+    @staticmethod
+    def scores_from_raw(
+        raw: Dict[str, Dict[str, Any]],
+        regime: str = "neutral",
+        active_factors: dict = None,
+        gates: Optional[list] = None,
+    ) -> Dict[str, float]:
+        """从 raw 原始值线性加权打分（配置驱动）。
+
+        从 active_factors.dragon 按 regime 提取因子；φ 见 dragon_layer.gates。
 
         Note: 接受规范的 MongoDB 字段名（带窗口后缀如 f31_excess_return_5d）
         """
@@ -136,6 +170,8 @@ class DragonFactors:
         if not factor_configs:
             return {}
 
+        allowed_codes = DragonFactors._filter_rows_by_gates(raw, gates)
+
         # 从配置中收集所有需要的因子字段
         config_fields = [fc["field"] for fc in factor_configs]
 
@@ -144,7 +180,7 @@ class DragonFactors:
         valid_stocks = set()
 
         for c, r in raw.items():
-            if not DragonFactors._passes_dragon_filters(r):
+            if c not in allowed_codes:
                 continue
             # 至少需要一个有效因子值
             has_any = False
@@ -165,17 +201,31 @@ class DragonFactors:
         if not valid_stocks:
             return {}
 
-        # ── 决策树路径 ──
-        if scoring_method == "tree":
-            from zstock.factor_management.tree_scorer import get_tree_scorer
-            try:
-                scorer = get_tree_scorer()
-                return scorer.score(field_values)
-            except FileNotFoundError:
-                logger.warning("决策树模型未找到，降级为线性加权")
-                # fall through to linear path
-
         return DragonFactors._combine_from_config_dragon(field_values, factor_configs)
+
+    @staticmethod
+    def raw_from_doc(d: Dict[str, Any]) -> Dict[str, Any]:
+        """预计算龙头文档 → scores_from_raw 单股 raw（字段别名由本类持有）。"""
+        nan = float("nan")
+        return {
+            "f31b_rps_percentile": d.get("f31b_rps_percentile", nan),
+            "f31_excess_return_5d": d.get("f31_excess_return_5d", d.get("f31_excess_return", nan)),
+            "f31_excess_return_10d": d.get("f31_excess_return_10d", nan),
+            "f31_excess_return_15d": d.get("f31_excess_return_15d", nan),
+            "f31_excess_return_20d": d.get("f31_excess_return_20d", nan),
+            "f32_amount": d.get("f32_amount", nan),
+            "f33_consecutive_boards": d.get("f33_consecutive_boards", 0),
+            "f34_resonance_pct_5d": d.get("f34_resonance_pct_5d", d.get("f34_resonance_pct", nan)),
+            "f34_resonance_pct_3d": d.get("f34_resonance_pct_3d", nan),
+            "f34_resonance_pct_10d": d.get("f34_resonance_pct_10d", nan),
+            "f35_bollinger_trend": d.get("f35_bollinger_trend", nan),
+            "f35_bollinger_pass": d.get("f35_bollinger_pass", 0),
+            "f36_identity_premium": d.get("f36_identity_premium", nan),
+            "f37_relative_strength": d.get("f37_relative_strength", nan),
+            "f38_turnover_anomaly": d.get("f38_turnover_anomaly", nan),
+            "f39_pb": d.get("f39_pb", nan),
+            "f40_holder_change": d.get("f40_holder_change", nan),
+        }
 
     @staticmethod
     def _combine_from_config_dragon(
@@ -218,8 +268,6 @@ class DragonFactors:
 
         return result
 
-    # ===================== 私有方法 =====================
-
     @staticmethod
     def _precompute_stock_features(
             stock_ohlcv: Dict[str, pd.DataFrame],
@@ -227,10 +275,7 @@ class DragonFactors:
             assume_sorted: bool = False,
             trade_date: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        【私有】一次性计算个股级 M3 特征（与板块无关）。
-
-        预计算路径用于性能优化：全市场特征一次计算，多板块复用。
+        """一次性计算个股级 M3 特征（与板块无关），供多板块复用。
 
         trade_date 提供时要求末行恰好为该日，停牌/缺日股票不计入当日截面。
         """
@@ -389,8 +434,6 @@ class DragonFactors:
 
         last_close = features.get("last_close", {})
         provider = fund_provider
-        if trade_date and provider is None:
-            provider = _get_fundamental_provider()
         use_fundamental = bool(
             trade_date and provider is not None and getattr(provider, "is_loaded", False)
         )
@@ -452,16 +495,6 @@ class DragonFactors:
         hc_val = provider.get_holder_change(code, trade_date)
         if hc_val is not None:
             row["f40_holder_change"] = hc_val
-
-    @staticmethod
-    def _passes_dragon_filters(raw_row: Dict[str, Any]) -> bool:
-        """【私有】φ 门槛（极度放松）：仅排除完全无数据的股票。"""
-        # 不再检查 F3.5 布林趋势和 F3.3 连板门槛
-        # 所有因子进入打分排名，由加权分数决定排名
-        f35 = float(raw_row.get("f35_bollinger_trend", float("nan")))
-        if f35 != f35:  # NaN 检查：排除完全无布林数据的
-            return False
-        return True
 
     @staticmethod
     def _sorted_ohlcv_map(
@@ -542,7 +575,7 @@ class DragonFactors:
         result = {}
         for code in codes:
             df = stock_ohlcv.get(code)
-            if df is None or len(df) < 20:
+            if df is None or len(df) < _TURNOVER_ANOMALY_WINDOW:
                 continue
             if "turnover" in df.columns:
                 col = "turnover"
@@ -554,7 +587,7 @@ class DragonFactors:
             today = turnover[-1]
             if not np.isfinite(today) or today <= 0:
                 continue
-            ma20 = np.nanmean(turnover[-20:])
+            ma20 = np.nanmean(turnover[-_TURNOVER_ANOMALY_WINDOW:])
             if ma20 > 0 and np.isfinite(ma20):
                 result[code] = float(today / ma20)
         return result
@@ -607,8 +640,8 @@ class DragonFactors:
     def _compute_bollinger_pair(
         stock_ohlcv: Dict[str, pd.DataFrame],
         codes: List[str],
-        window: int = 20,
-        slope_window: int = 5,
+        window: int = _BOLL_WINDOW,
+        slope_window: int = _BOLL_SLOPE_WINDOW,
         slope_threshold: float = 0.0,
     ) -> tuple:
         """【私有】一次算布林中轨，同时产出 F3.5 趋势分与硬过滤 pass。"""

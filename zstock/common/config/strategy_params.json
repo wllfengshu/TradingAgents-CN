@@ -1,8 +1,12 @@
 {
   "strategy_name": "截面日频龙头策略",
-  "description": "v1.16.0 [定版] 弱段保护: reversal+yellow只减不加+20d回撤节流10%→scale0.7",
-  "version": "1.16.0",
-  "scoring_method": "linear",
+  "description": "v1.30.0 生产：单票上限0.40打满 + Buffer空席位补齐(fill_open_slots) (7年CAGR 10.99%, MDD -13.77%)",
+  "version": "1.30.0",
+  "market_selection": {
+    "factor_pipeline_stops_on_red": false,
+    "strategy_blocks_new_on_red": true,
+    "position_scale_applied_in": "strategy"
+  },
   "style_switching": true,
   "backtest": {
     "start_date": "2024-01-01",
@@ -32,13 +36,6 @@
   },
   "factor_decay": {
     "enabled": true,
-    "grade_multipliers": {
-      "A": 1.25,
-      "B": 1.0,
-      "C": 0.55,
-      "D": 0.15
-    },
-    "eval_blend_ratio": 0.0,
     "by_regime": {
       "reversal": {
         "field_overrides": {
@@ -48,13 +45,31 @@
     }
   },
   "sector_layer": {
-    "top_sectors": 4
+    "top_sectors": 4,
+    "gates": []
   },
   "dragon_layer": {
-    "top_per_sector": 2
+    "top_per_sector": 2,
+    "gates": [
+      {
+        "field": "f35_bollinger_trend",
+        "op": "finite"
+      }
+    ]
   },
   "cooperative_force": {
-    "threshold_pct": 0.01
+    "threshold_pct": 0.01,
+    "by_regime": {
+      "momentum": {
+        "threshold_pct": 0.005
+      },
+      "reversal": {
+        "threshold_pct": 0.01
+      },
+      "neutral": {
+        "threshold_pct": 0.01
+      }
+    }
   },
   "final_score": {
     "weights": {
@@ -75,7 +90,8 @@
   },
   "turnover_control": {
     "buffer_threshold": 0.25,
-    "min_hold_days": 3
+    "min_hold_days": 3,
+    "fill_open_slots": true
   },
   "exit_rules": {
     "hard_stop_loss_pct": -0.08,
@@ -86,15 +102,36 @@
     "no_signal_reduce_scale": 0.5
   },
   "market_overlay": {
-    "position_scale_yellow": 0.5
+    "position_scale_yellow": 0.6,
+    "position_scale_green": 1.0,
+    "by_regime": {
+      "momentum": {
+        "position_scale_yellow": 0.85,
+        "position_scale_green": 1.0
+      }
+    }
+  },
+  "target_equity": {
+    "enabled": true,
+    "by_context": {
+      "momentum_green": 1.0,
+      "momentum_yellow": 1.0,
+      "momentum_neutral": 0.95,
+      "reversal_green": 0.7,
+      "reversal_yellow": 0.45,
+      "neutral_green": 0.9,
+      "neutral_yellow": 0.55,
+      "volatile_green": 0.75,
+      "volatile_yellow": 0.4
+    }
   },
   "market_factors": {
     "weights": {
-      "trend_strength": 0.30,
+      "trend_strength": 0.3,
       "bollinger_position": 0.25,
-      "volume_state": 0.20,
+      "volume_state": 0.2,
       "momentum_5day": 0.15,
-      "volatility_suppression": 0.10
+      "volatility_suppression": 0.1
     },
     "grade_green": 70.0,
     "grade_yellow": 40.0,
@@ -112,8 +149,12 @@
     "enabled": true,
     "reduce_only": {
       "enabled": true,
-      "when_regime": ["reversal"],
-      "when_market_grade": ["yellow"]
+      "when_regime": [
+        "reversal"
+      ],
+      "when_market_grade": [
+        "yellow"
+      ]
     },
     "drawdown_throttle": {
       "enabled": true,
@@ -265,6 +306,43 @@
           "polarity": "negative"
         }
       ]
+    },
+    "profiles": {
+      "momentum_green": {
+        "dragon": {
+          "momentum": [
+            {
+              "field": "f31b_rps_percentile",
+              "weight": 0.3,
+              "polarity": "positive"
+            },
+            {
+              "field": "f35_bollinger_trend",
+              "weight": 0.25,
+              "polarity": "positive"
+            },
+            {
+              "field": "f33_consecutive_boards",
+              "weight": 0.15,
+              "polarity": "negative"
+            },
+            {
+              "field": "f39_pb",
+              "weight": 0.15,
+              "polarity": "negative"
+            },
+            {
+              "field": "f38_turnover_anomaly",
+              "weight": 0.15,
+              "polarity": "negative"
+            }
+          ]
+        }
+      }
     }
+  },
+  "portfolio_optimization": {
+    "fill_weights_to_position_scale": true,
+    "max_single_stock_cap": 0.4
   }
 }

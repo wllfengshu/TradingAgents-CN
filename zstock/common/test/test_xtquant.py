@@ -9,6 +9,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import pytest
+
+
+def _is_xtdata_available() -> bool:
+    try:
+        from zstock.common.utils.xtquant_data_utils import _get_xtdata
+        _get_xtdata()
+        return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _is_xtdata_available(),
+    reason="miniQMT / xtquant 未连接或当前 Python 环境不可用",
+)
+
 
 def test_fetch_ohlcv():
     from zstock.common.utils.xtquant_data_utils import fetch_ohlcv

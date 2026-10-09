@@ -14,15 +14,19 @@ zstock 订单管理模块 (执行层)
 - execution_strategy: 执行策略
 """
 
-# 核心类
 from .order_generator import OrderGenerator
 from .xtquant_executor import XtQuantExecutor
 from .trade_settlement import TradeSettlement
 from .execution_strategy import ExecutionStrategy
+from .pipeline import OrderManagementPipeline
+from .qmt_client_factory import QMTClientFactory, QMTConnectionError
 
 __all__ = [
     'OrderGenerator',
     'XtQuantExecutor',
     'TradeSettlement',
     'ExecutionStrategy',
+    'OrderManagementPipeline',
+    'QMTClientFactory',
+    'QMTConnectionError',
 ]

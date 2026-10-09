@@ -130,32 +130,45 @@ def test_update_export_and_get_orders(target_holdings, real_price_map, initial_c
         total_capital=initial_capital,
     )
     oid = orders[0].order_id
-    assert gen.get_orders(oid)[0].order_id == oid
-    assert gen.get_orders("missing") == []
-    assert gen.update_order_status(oid, "filled", filled_volume=100, filled_price=12.3)
-    assert not gen.update_order_status("missing", "filled")
-    df = gen.export_orders("dataframe")
+    assert gen._get_orders(oid)[0].order_id == oid
+    assert gen._get_orders("missing") == []
+    assert gen._update_order_status(oid, "filled", filled_volume=100, filled_price=12.3)
+    assert not gen._update_order_status("missing", "filled")
+    df = gen._export_orders("dataframe")
     assert not df.empty
-    assert isinstance(gen.export_orders("list"), list)
-    assert oid in gen.export_orders("dict")
-    assert gen.export_orders("xml") is None
+    assert isinstance(gen._export_orders("list"), list)
+    assert oid in gen._export_orders("dict")
+    assert gen._export_orders("xml") is None
 
 
 @pytest.mark.asyncio
-async def test_save_orders_to_db(target_holdings, real_price_map, initial_capital, fake_db):
+async def test_persist_orders(target_holdings, real_price_map, initial_capital, fake_db):
     gen = OrderGenerator()
-    gen._database_service = fake_db
     orders = gen.generate_orders(
         target_holdings,
         trade_date="2024-01-02",
         price_map=real_price_map,
         total_capital=initial_capital,
     )
-    assert await gen.save_orders_to_db(orders)
+    assert await OrderGenerator.persist_orders(orders, fake_db)
     assert len(fake_db.inserted) == len(orders)
-    assert await gen.save_orders_to_db([])
+    assert await OrderGenerator.persist_orders([], fake_db)
 
 
 def test_normalize_requires_code_column():
     with pytest.raises(KeyError):
-        OrderGenerator.normalize_positions_df(pd.DataFrame([{"volume": 100}]))
+        OrderGenerator._normalize_positions_df(pd.DataFrame([{"volume": 100}]))
+
+
+def test_lots_from_positions_skips_unpriced(target_holdings, real_price_map, initial_capital):
+    gen = OrderGenerator()
+    lots = gen.lots_from_positions(target_holdings, real_price_map, initial_capital)
+    assert not lots.empty
+    assert set(lots.columns) >= {"stock_code", "volume"}
+    assert (lots["volume"] >= 100).all()
+    skipped = gen.lots_from_positions(
+        pd.DataFrame([{"code": str(target_holdings["code"].iloc[0]), "weight": 0.2}]),
+        {},
+        initial_capital,
+    )
+    assert skipped.empty

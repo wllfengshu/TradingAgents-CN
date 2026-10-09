@@ -2,7 +2,10 @@
 主线板块层因子计算模块（M2）
 
 黑盒设计：
-- 公开接口：calculate_all_sector_factors_raw() / scores_from_raw()
+- calculate_all_sector_factors_raw()  现场/预计算：原始数据 → 因子原始值
+- scores_from_raw()                   回测：原始值 → 门禁 + 加权得分 + Top N
+- raw_from_docs()                     预计算 Mongo 文档 → scores_from_raw 入参
+- aggregate_sector_ohlcv()            个股行情 → 板块日线（pipeline / 预计算复用）
 - 所有实现细节都隐藏在私有方法中
 - MongoDB 只存储原始因子值，不存储得分（得分由 scores_from_raw 实时计算）
 
@@ -13,7 +16,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -24,33 +27,64 @@ from zstock.common.utils.common_utils import (
     limit_up_threshold,
     minmax_normalize,
     ohlcv_asof,
+    passes_gate_value,
     WAN_TO_YUAN,
 )
 
 logger = logging.getLogger(__name__)
 
+# ==============================================================================
+# 特征工程常数说明：
+# 1. 离线预计算特征货架（Feature Engineering Windows）：
+#    用于 precompute_factors.py 离线批量计算多周期特征列落库 MongoDB。
+#    在线/回测策略通过 strategy_params.json -> active_factors.sector 动态订阅所需列（如 f21_rps_20d），
+#    无需重新计算特征，从而实现毫秒级快速调参与回测。
+# 2. 算子数学定义常数（Mathematical Definition）：
+#    F2.8 板块持续性算子的固有定义（近 10 日排名前 10% 的天数）。
+# 3. 策略权重与准入门禁：
+#    100% 动态配置于 strategy_params.json（active_factors 与 sector_layer.gates），
+#    模块内不硬编码任何交易门禁与权重。
+# ==============================================================================
+
+# 特征工程多窗口（落库供策略按需订阅）
 _RPS_WINDOWS = (10, 20, 60)
 _VOLUME_SLOPE_WINDOWS = (3, 5, 10)
-_DEFAULT_RPS_WINDOW = 20
-_DEFAULT_VOLUME_SLOPE_WINDOW = 5
-# F2.5：对最近 N 个 MA 点做斜率（与 MF1 slope_window 对齐）
-_VOLUME_SLOPE_REG_WINDOW = 5
-# F2.6：成交额 5 日增长窗口（多窗口支持）
 _VOLUME_SHARE_INCREASE_WINDOWS = (5, 20)
-_DEFAULT_VOLUME_SHARE_INCREASE_WINDOW = 5
-# F2.8：10 日持续性 φ 门槛 - 近 10 日排名 Top 10% 的天数 ≥ 2
-# _CONSISTENCY_WINDOW: 回溯天数 = 10
-# _CONSISTENCY_TOP_PCT: Top 百分位 = 10%（排名前10%的板块）
-# _CONSISTENCY_THRESHOLD: 达标天数阈值 = 2 天（近10日中至少2天在Top10%）
-# 从3降到2：原值过严，大多数交易日无板块通过φ门槛，导致选股管线空转
+
+# F2.5 / F2.6 内部均线平滑与回归窗口
+_VOLUME_SLOPE_REG_WINDOW = 5
+
+# F2.8 板块持续性算子的数学定义（回溯 10 日，统计跻身 Top 10% 的天数）
 _CONSISTENCY_WINDOW = 10
 _CONSISTENCY_TOP_PCT = 0.10
-_CONSISTENCY_THRESHOLD = 2
+
+# 历史无后缀字段兼容别名默认窗口（如 f21_rps 别名映射）
+_DEFAULT_RPS_WINDOW = 20
+_DEFAULT_VOLUME_SLOPE_WINDOW = 5
+_DEFAULT_VOLUME_SHARE_INCREASE_WINDOW = 5
+
 
 class SectorFactors:
-    """板块层因子计算器。黑盒设计，所有实现隐藏，只暴露统一入口"""
+    """板块层因子计算器。黑盒设计，所有实现隐藏，只暴露规范接口"""
 
     # ===================== 公开接口 =====================
+
+    @staticmethod
+    def aggregate_sector_ohlcv(
+        sector_stocks: Dict[str, List[str]],
+        stock_ohlcv: Dict[str, pd.DataFrame],
+        stock_flow_recent: Optional[Dict[str, List[Dict]]] = None,
+        eligible_codes: Optional[Set[str]] = None,
+        trade_date: Optional[str] = None,
+    ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Dict]]:
+        """将成分股行情与资金流聚合为板块日线 OHLCV 与资金流。"""
+        return SectorFactors._aggregate_sectors_from_stocks(
+            sector_stocks=sector_stocks,
+            stock_ohlcv=stock_ohlcv,
+            stock_flow_recent=stock_flow_recent or {},
+            eligible_codes=eligible_codes,
+            trade_date=trade_date,
+        )
 
     @staticmethod
     def calculate_all_sector_factors_raw(
@@ -96,10 +130,15 @@ class SectorFactors:
             - sector_names：板块名称映射 {sector_code: sector_name}
         """
         if market_sector_ohlcv is None:
-            raise ValueError(
-                "market_sector_ohlcv 不能为 None！F2.8 持续性必须基于全市场排名计算。"
-                "请传入完整的全市场板块 OHLCV 数据。"
-            )
+            if sector_ohlcv is not None and len(sector_ohlcv) > 0:
+                market_sector_ohlcv = sector_ohlcv
+            else:
+                market_sector_ohlcv, _ = SectorFactors._aggregate_sectors_from_stocks(
+                    sector_stocks or {},
+                    stock_ohlcv or {},
+                    stock_flow_recent or {},
+                    trade_date=trade_date,
+                )
         stock_ohlcv = {
             c: ensure_ohlcv_sorted(df) for c, df in (stock_ohlcv or {}).items()
         }
@@ -261,10 +300,17 @@ class SectorFactors:
         return out
 
     @staticmethod
-    def scores_from_raw(raw: Dict[str, Dict], regime: str = "neutral", active_factors: list = None, top_n: int = 3) -> Dict[str, float]:
+    def scores_from_raw(
+        raw: Dict[str, Dict],
+        regime: str = "neutral",
+        active_factors: list = None,
+        top_n: int = 3,
+        gates: Optional[list] = None,
+    ) -> Dict[str, float]:
         """从 raw 原始值做 min-max + 加权合成，得到 M2 得分及 Top N 选股。
 
         配置驱动：从 active_factors.sector 按 regime 读取因子列表/权重/极性。
+        φ 门槛：sector_layer.gates；gates=None 时兼容旧逻辑（F2.3>0），gates=[] 不过 φ。
 
         Args:
             top_n: 选出的主线板块数量（对齐 config sector_layer.top_sectors）。
@@ -272,24 +318,11 @@ class SectorFactors:
         if not raw:
             return {}
 
-        # 读取规范字段名（默认窗口或明确指定的窗口）
-        f21 = raw.get("f21_rps_20d") or raw.get("f21_rps") or {}
         f26 = raw.get("f26_volume_growth_5d") or raw.get("f26_volume_growth") or {}
-        f23 = raw.get("f23_limit_up_density") or {}
 
-        # Step1 φ 门槛过滤（只要求 F2.3>0）
-        candidate_sectors = set()
-        for sector_code in f21.keys():
-            if f23.get(sector_code, 0.0) > 0:
-                candidate_sectors.add(sector_code)
-        # 如果 f21 为空，用 f23 兜底
+        candidate_sectors = SectorFactors._filter_sectors_by_gates(raw, gates)
         if not candidate_sectors:
-            for sector_code, val in f23.items():
-                if val > 0:
-                    candidate_sectors.add(sector_code)
-
-        if not candidate_sectors:
-            logger.warning("M2 选股 φ 门槛：无符合条件板块（F2.3>0）")
+            logger.warning("M2 φ 门槛：无符合条件板块")
             return {}
 
         # Step2 α 合成 — 配置驱动
@@ -309,7 +342,93 @@ class SectorFactors:
 
         return SectorFactors._select_top_sectors(scores, f26, top_n=top_n)
 
+    @staticmethod
+    def raw_from_docs(docs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """预计算板块文档列表 → scores_from_raw 所需的 {field: {sector_code: value}}。"""
+        nan = float("nan")
+
+        def col(field: str, alias: Optional[str] = None, default: Any = nan) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            for d in docs:
+                sc = d.get("sector_code")
+                if not sc:
+                    continue
+                val = d.get(field, d.get(alias, default) if alias else default)
+                out[sc] = val
+            return out
+
+        return {
+            "f21_rps_20d": col("f21_rps_20d", "f21_rps"),
+            "f21_rps_10d": col("f21_rps_10d"),
+            "f21_rps_60d": col("f21_rps_60d"),
+            "f22_main_flow": col("f22_main_flow", default=0.0),
+            "f23_limit_up_density": col("f23_limit_up_density", default=0.0),
+            "f24_max_consecutive": col("f24_max_consecutive", default=0.0),
+            "f25_volume_slope_5d": col("f25_volume_slope_5d", "f25_volume_slope"),
+            "f25_volume_slope_3d": col("f25_volume_slope_3d"),
+            "f25_volume_slope_10d": col("f25_volume_slope_10d"),
+            "f26_volume_growth_5d": col("f26_volume_growth_5d", "f26_volume_growth"),
+            "f26_volume_growth_20d": col("f26_volume_growth_20d"),
+            "f27_new_high_ratio": col("f27_new_high_ratio"),
+            "f28_consistency": col("f28_consistency", default=0),
+            "f29_sector_breadth": col("f29_sector_breadth"),
+            "f30_sector_concentration": col("f30_sector_concentration"),
+        }
+
     # ===================== 私有方法 =====================
+
+    @staticmethod
+    def _sector_universe_keys(raw: Dict[str, Dict]) -> Set[str]:
+        """提取板块原始因子覆盖的板块代码集合。"""
+        keys: Set[str] = set()
+        for field_map in (raw or {}).values():
+            if isinstance(field_map, dict):
+                keys.update(field_map.keys())
+        primary = raw.get("f21_rps_20d") or raw.get("f21_rps") or {}
+        if primary:
+            keys.update(primary.keys())
+        return keys
+
+    @staticmethod
+    def _filter_sectors_by_gates(
+        raw: Dict[str, Dict],
+        gates: Optional[List[Dict[str, Any]]],
+    ) -> Set[str]:
+        """返回通过 M2 φ 门槛的 sector_code 集合。gates=None 时兼容历史默认 F2.3>0。"""
+        universe = SectorFactors._sector_universe_keys(raw)
+        if not universe:
+            return set()
+
+        if gates is None:
+            f23 = raw.get("f23_limit_up_density") or {}
+            out: Set[str] = set()
+            for sc in universe:
+                if f23.get(sc, 0.0) > 0:
+                    out.add(sc)
+            if not out:
+                for sc, val in f23.items():
+                    if val > 0:
+                        out.add(sc)
+            return out
+
+        if len(gates) == 0:
+            return set(universe)
+
+        passed: Set[str] = set()
+        for sc in universe:
+            ok = True
+            for gate in gates:
+                field = gate.get("field")
+                if not field:
+                    continue
+                field_map = raw.get(field) or {}
+                val = field_map.get(sc)
+                if not passes_gate_value(val, gate):
+                    ok = False
+                    break
+            if ok:
+                passed.add(sc)
+        return passed
 
     @staticmethod
     def _combine_from_config(
@@ -855,7 +974,6 @@ class SectorFactors:
                     result[w][code] = slope
         return result
 
-    # ==================== 板块结构因子（P3 新增） ====================
 
     @staticmethod
     def _calculate_sector_breadth(

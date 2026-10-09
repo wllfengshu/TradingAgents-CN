@@ -109,6 +109,18 @@ async def test_sync_stock_info_and_sector_persist(stock_info_sample, sector_list
         "zstock.common.utils.xtquant_data_utils.fetch_all_stocks",
         lambda: flags,
     )
+    monkeypatch.setattr(
+        "zstock.common.utils.xtquant_data_utils.fetch_sectors_with_stocks",
+        lambda *args, **kwargs: [
+            {
+                "sector_code": d["sector_code"],
+                "sector_name": d.get("sector_name", ""),
+                "sector_type": d.get("sector_type", "sw"),
+                "stocks": ["603201", "000060"],
+            }
+            for d in sector_list_sample["sample"][:3]
+        ],
+    )
     from zstock.data_management.script.sync_stock_info import (
         _persist_sector_meta,
         _persist_sector_stocks,

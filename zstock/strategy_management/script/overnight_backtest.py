@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import json
 import logging
 import shutil
@@ -210,11 +211,9 @@ def _default_rebalance_freq() -> int:
 
 def _clear_strategy_caches() -> None:
     from zstock.strategy_management.pipeline import StrategyPipeline
-    from zstock.strategy_management.risk_manager import _load_risk_limits_from_config
     from zstock.common.config import strategy_config
 
     StrategyPipeline._config_cache = None
-    _load_risk_limits_from_config._cache = None
     strategy_config._clear_cache()
 
 
@@ -528,6 +527,7 @@ async def run_backtest_current(
     start: str, end: str, capital: float, fee: float, rebalance_freq: int,
     output_dir: Path, label: str,
 ) -> Dict[str, Any]:
+    from zstock.common.config.strategy_config import load_strategy_params
     from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
     from zstock.strategy_management.script.backtester import Backtester
 
@@ -541,9 +541,12 @@ async def run_backtest_current(
         result = await bt.run(
             start_date=start, end_date=end, ohlcv_provider=provider,
             rebalance_freq=rebalance_freq, use_precomputed_factors=True, verbose=False,
+            strategy_config=load_strategy_params(),
         )
     except Exception as e:
         logger.error("回测失败: %s", e)
+        bt.factor_pipeline = None
+        gc.collect()
         return {"status": f"failed:{type(e).__name__}", "error": str(e), "label": label, "start": start, "end": end}
 
     chart = result.plot(output_path=str(seg_dir / "equity.png"), title=f"{label} {start}~{end}")
@@ -565,6 +568,12 @@ async def run_backtest_current(
         row["total_return"] * 100, row["total_return_gross"] * 100, row["sharpe"],
         row["max_drawdown"] * 100, row["avg_exposure"] * 100, row["total_cost"] * 100,
     )
+    fp = getattr(bt, "factor_pipeline", None)
+    reset = getattr(fp, "_reset_precomputed", None) if fp is not None else None
+    if callable(reset):
+        reset()
+    bt.factor_pipeline = None
+    gc.collect()
     return row
 
 

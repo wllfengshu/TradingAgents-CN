@@ -329,6 +329,16 @@ def fetch_sector_stocks(sector_code: str, trade_date: Optional[str] = None, sect
     return [normalize_code(s) for s in stocks]
 
 
+def fetch_sectors_with_stocks(sector_type: str = 'all', a_stock_only: bool = True) -> List[Dict[str, Any]]:
+    """
+    获取板块列表及其成分股。每个元素包含 sector_code, sector_name, sector_type, stocks。
+    """
+    sectors = fetch_sector_list(sector_type=sector_type, a_stock_only=a_stock_only)
+    for s in sectors:
+        s['stocks'] = fetch_sector_stocks(s['sector_code'], sector_name=s.get('sector_name'))
+    return sectors
+
+
 # ============================== 龙虎榜接口（暂时用不了） ==============================
 
 def fetch_lhb(codes: List[str], start_date: str, end_date: str) -> List[Dict[str, Any]]:

@@ -205,7 +205,7 @@ class ExecutionStrategy:
         TWAP_INTERVAL = self.twap_interval_seconds
 
         for order in buy_orders:
-            batches = _lot_batches(order.volume, TWAP_SLICES, self.A_SHARE_LOT)
+            batches = self._lot_batches(order.volume, TWAP_SLICES, self.A_SHARE_LOT)
             if not batches:
                 logger.error(
                     "%s 买单量 %s 无法按 100 股整手下单，跳过",
@@ -299,31 +299,31 @@ class ExecutionStrategy:
 
         return batch_order
 
-    def get_strategy_stats(self) -> dict:
+    def _get_strategy_stats(self) -> dict:
         """获取策略执行统计"""
         return self.execution_stats.copy()
 
-    def reset_stats(self) -> None:
+    def _reset_stats(self) -> None:
         """重置统计信息"""
         for key in self.execution_stats:
             self.execution_stats[key] = 0
 
         logger.info("✅ 执行统计已重置")
 
+    @staticmethod
+    def _lot_batches(volume: int, slices: int, lot: int = 100) -> List[int]:
+        """把股数切成不超过 slices 批，每批都是 lot 的整数倍。
 
-def _lot_batches(volume: int, slices: int, lot: int = 100) -> List[int]:
-    """把股数切成不超过 slices 批，每批都是 lot 的整数倍。
-
-    买单不足一手则返回空列表（由调用方跳过），避免拆出 20/60 这种废单。
-    """
-    if volume <= 0 or slices <= 0 or lot <= 0:
-        return []
-    if volume < lot or volume % lot != 0:
-        return []
-    n = min(slices, volume // lot)
-    chunk = (volume // n) // lot * lot
-    if chunk < lot:
-        return [volume]
-    batches = [chunk] * n
-    batches[-1] += volume - chunk * n
-    return [b for b in batches if b > 0]
+        买单不足一手则返回空列表（由调用方跳过），避免拆出 20/60 这种废单。
+        """
+        if volume <= 0 or slices <= 0 or lot <= 0:
+            return []
+        if volume < lot or volume % lot != 0:
+            return []
+        n = min(slices, volume // lot)
+        chunk = (volume // n) // lot * lot
+        if chunk < lot:
+            return [volume]
+        batches = [chunk] * n
+        batches[-1] += volume - chunk * n
+        return [b for b in batches if b > 0]

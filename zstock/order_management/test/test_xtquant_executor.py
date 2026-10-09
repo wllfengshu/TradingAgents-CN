@@ -3,7 +3,7 @@
 import pytest
 
 from zstock.common.entity.order_entity import Order
-from zstock.order_management.xtquant_executor import XtQuantExecutor, _accepts_volume
+from zstock.order_management.xtquant_executor import XtQuantExecutor
 from zstock.order_management.test.conftest import FakeDB, FakeQMT, make_position
 
 
@@ -14,8 +14,8 @@ def _make_executor(price_map, fake_db, positions=None, capital=10_000_000):
 
 
 def test_to_broker_code():
-    assert XtQuantExecutor.to_broker_code("603201").endswith(".SH")
-    assert XtQuantExecutor.to_broker_code("000060").endswith(".SZ")
+    assert XtQuantExecutor._to_broker_code("603201").endswith(".SH")
+    assert XtQuantExecutor._to_broker_code("000060").endswith(".SZ")
 
 
 @pytest.mark.asyncio
@@ -64,7 +64,7 @@ def test_account_positions_price_map(real_price_map, fake_db):
 
 def test_accepts_volume_on_fake_buy():
     qmt = FakeQMT({"603201": 12.0})
-    assert _accepts_volume(qmt.buy) is True
+    assert XtQuantExecutor._accepts_volume(qmt.buy) is True
 
 
 def test_executor_error_paths(real_price_map, fake_db):
@@ -83,4 +83,4 @@ def test_executor_error_paths(real_price_map, fake_db):
     assert exe.get_account_info() is None
     assert exe.get_positions() is None
     assert exe.get_price_map(["603201"]) == {}
-    assert _accepts_volume(1) is False
+    assert XtQuantExecutor._accepts_volume(1) is False

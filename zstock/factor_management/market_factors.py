@@ -1,129 +1,71 @@
 """
 市场因子模块（M1）
 
-职责：通过大盘指数的多维特征评估当日市场情绪，
-      输出市场风险等级，决定策略是否允许开新仓/加仓等。
+职责：基于沪深300指数评估当日宏观环境，包含两个维度：
+  1. 情绪强弱（红黄绿灯 + 仓位缩放）
+  2. 风格运行（动量 / 反转 / 中性）
 
-黑盒设计：
-- 公开接口：calculate_market_sentiment() 计算
-- 公开接口：score_from_raw() 打分
-- 所有实现细节都隐藏在私有方法中
+黑盒门面：MarketFactors（指数行情由调用方传入，本模块不查库）
+- calculate_market_sentiment(index_ohlcv)  现场：OHLCV → 情绪/红绿灯
+- score_from_raw(...)                      回测：预计算原始值 → 情绪/红绿灯
+- detect_style(index_ohlcv)                风格：OHLCV → momentum/reversal/neutral
 
-五个子因子（均以沪深300指数为主锚）：
-  market_trend_strength（30%）：市场趋势强度 - 20日均线斜率，衡量中期趋势方向
-  market_bollinger_position（25%）：市场布林位置 - 价格在布林带内的相对位置，衡量超买/超卖
-  market_volume_state（20%）：市场成交量状态 - 当日成交量相对20日均量，判断缩量/放量
-  market_5day_momentum（15%）：市场5日动量 - 5日涨跌幅，快速反映短期趋势
-  market_volatility_suppression（10%）：市场波动率抑制 - ATR比率的倒数，低波动=市场稳定
-
-风险等级（market_risk_level）：
-  green  [70, 100]：市场强势，正常开仓
-  yellow [40,  70)：市场震荡，减仓系数 0.5（减半仓位）
-  red    [ 0,  40)：市场弱势，不开新仓，不加仓
-
-使用示例：
-    sentiment = MarketFactors.calculate_market_sentiment(index_ohlcv_df)
-    # sentiment = {
-    #     'market_composite_score': 72.5,
-    #     'market_risk_level': 'green',
-    #     'position_scale_factor': 1.0,
-    #     'market_trend_strength': 68.0, 'market_bollinger_position': 75.0, ...
-    # }
+策略权重、红绿灯阈值、仓位缩放、风格阈值一律从
+strategy_config.get_market_factors_config / get_style_detector_config 读取。
+本模块只保留特征算子的数学常数与离线预计算窗口。
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from zstock.common.utils.common_utils import ensure_ohlcv_sorted, ohlcv_asof
-from zstock.common.config.strategy_config import load_strategy_params
+from zstock.common.config.strategy_config import (
+    get_market_factors_config,
+    get_neutral_style,
+    get_style_detector_config,
+)
 
 logger = logging.getLogger(__name__)
 
-# 子因子权重（模块内置保底值；运行时以 strategy_params.json → market_factors 为准）
-_W_TREND = 0.30        # market_trend_strength（市场趋势强度）
-_W_BOLLINGER = 0.25    # market_bollinger_position（市场布林位置）
-_W_VOLUME = 0.20       # market_volume_state（市场成交量状态）
-_W_MOMENTUM = 0.15     # market_5day_momentum（市场5日动量）
-_W_VOLATILITY = 0.10   # market_volatility_suppression（市场波动率抑制）
+# ==============================================================================
+# 特征工程与算子数学常数（非策略交易参数）
+# 策略权重 / 红绿灯 / 仓位缩放 / 风格阈值 → strategy_config.py
+# ==============================================================================
 
-# 风险等级阈值
-_GRADE_GREEN  = 70.0
-_GRADE_YELLOW = 40.0
+# 默认打分窗口
+_MA_WINDOW = 20
+_BOLL_STD = 2.0
+_SLOPE_WINDOW = 5
+_MOMENTUM_WINDOW = 5
+_ATR_WINDOW = 20
+_VOL_MA_WINDOW = 20
 
-# 各等级对应仓位缩放系数
-_SCALE_GREEN  = 1.0
-_SCALE_YELLOW = 0.4   # P1：黄灯更保守，压回撤
-_SCALE_RED    = 0.0
+# Sigmoid / ATR 折线映射（特征公式内生）
+_SIGMOID_K_SLOPE = 800.0
+_SIGMOID_K_MOMENTUM = 30.0
+_ATR_RATIO_SEGMENTS = [0.01, 0.03, 0.06]
+_ATR_RATIO_SCORES = [90.0, 50.0, 10.0, 10.0]
 
-# 技术参数 - 单窗口（默认用于最终打分）
-_MA_WINDOW           = 20
-_BOLL_STD            = 2.0
-_SLOPE_WINDOW        = 5    # 用近 N 根均线估算斜率
-_MOMENTUM_WINDOW     = 5
-_ATR_WINDOW          = 20
-_VOL_MA_WINDOW       = 20
-
-# Sigmoid 映射参数（用于 slope 和 momentum）
-# k=800: slope_pct 变化 0.1% 时从 ~25 分涨到 ~75 分（灵敏度适中）
-# k=30: momentum 变化 5% 时从 ~18 分涨到 ~82 分（快速反应）
-_SIGMOID_K_SLOPE     = 800.0
-_SIGMOID_K_MOMENTUM  = 30.0
-
-# ATR 折线映射分段点（wave volatility suppression）
-# 根据 backtest 结果优化，衡量市场波动率相对于中期均线的比例
-# 0.01: 极低波动（市场稳定）→ 90分
-# 0.03: 正常波动区间（50分）
-# 0.06: 高波动区间（10分）
-# >0.06: 极端波动（10分）
-_ATR_RATIO_SEGMENTS  = [0.01, 0.03, 0.06]
-_ATR_RATIO_SCORES    = [90.0, 50.0, 10.0, 10.0]
-
-# 多窗口配置（网格搜索用）- 每个因子独立窗口
-_TREND_MA_WINDOWS    = (5, 10, 20)           # MF1 趋势强度：MA窗口
-_BOLL_MA_WINDOWS     = (10, 20, 30)          # MF2 布林位置：MA窗口
-_VOL_MA_WINDOWS      = (5, 10, 20)           # MF3 成交量：MA窗口
-_MOMENTUM_WINDOWS    = (3, 5, 10)            # MF4 动量：日期窗口
-_ATR_WINDOWS         = (10, 20, 30)          # MF5 波动率：ATR窗口
-_MA_WINDOWS_FOR_ATR  = (10, 20, 30)          # MF5 波动率：MA窗口（与ATR配对）
-
-_MIN_BARS            = 31   # 至少需要的 K 线根数（最大MA30 + 1根计算 True Range）
-
-
-def _market_factors_config() -> Dict:
-    """从 strategy_params.json → market_factors 读取 M1 参数（缓存）。
-
-    缺失字段回退到模块内置保底值，保证与 JSON 一致（Single Source of Truth）。
-    """
-    if _market_factors_config._cache is not None:
-        return _market_factors_config._cache
-
-    cfg = (load_strategy_params() or {}).get("market_factors") or {}
-    weights = cfg.get("weights") or {}
-    _market_factors_config._cache = {
-        "w_trend": float(weights.get("trend_strength", _W_TREND)),
-        "w_bollinger": float(weights.get("bollinger_position", _W_BOLLINGER)),
-        "w_volume": float(weights.get("volume_state", _W_VOLUME)),
-        "w_momentum": float(weights.get("momentum_5day", _W_MOMENTUM)),
-        "w_volatility": float(weights.get("volatility_suppression", _W_VOLATILITY)),
-        "grade_green": float(cfg.get("grade_green", _GRADE_GREEN)),
-        "grade_yellow": float(cfg.get("grade_yellow", _GRADE_YELLOW)),
-        "scale_green": float(cfg.get("scale_green", _SCALE_GREEN)),
-        "scale_yellow": float(cfg.get("scale_yellow", _SCALE_YELLOW)),
-        "scale_red": float(cfg.get("scale_red", _SCALE_RED)),
-    }
-    return _market_factors_config._cache
-
-
-_market_factors_config._cache = None
+# 离线预计算多窗口（落库供网格搜索订阅）
+_TREND_MA_WINDOWS = (5, 10, 20)
+_BOLL_MA_WINDOWS = (10, 20, 30)
+_VOL_MA_WINDOWS = (5, 10, 20)
+_MOMENTUM_WINDOWS = (3, 5, 10)
+_ATR_WINDOWS = (10, 20, 30)
+_MA_WINDOWS_FOR_ATR = (10, 20, 30)
+_MIN_BARS = 31
 
 
 class MarketFactors:
-    """市场因子计算器（M1）。黑盒设计，只负责市场情绪评估"""
+    """M1 黑盒门面：市场情绪评估 + 动量/反转风格检测。"""
 
-    # ===================== 公开接口=====================
+    # ===================== 公开接口 =====================
 
     @staticmethod
     def calculate_market_sentiment(
@@ -192,34 +134,6 @@ class MarketFactors:
         mf4, mf4_raw = MarketFactors._score_momentum(df)
         mf5, mf5_raw = MarketFactors._score_volatility(df)
 
-        mc = _market_factors_config()
-        score = (
-            mc["w_trend"] * mf1
-            + mc["w_bollinger"] * mf2
-            + mc["w_volume"] * mf3
-            + mc["w_momentum"] * mf4
-            + mc["w_volatility"] * mf5
-        )
-        score = float(np.clip(score, 0.0, 100.0))
-
-        if score >= mc["grade_green"]:
-            grade = "green"
-            scale = mc["scale_green"]
-        elif score >= mc["grade_yellow"]:
-            grade = "yellow"
-            scale = mc["scale_yellow"]
-        else:
-            grade = "red"
-            scale = mc["scale_red"]
-
-        allow_new_open = grade != "red"
-
-        logger.debug(
-            f"📊 [{index_name}] 市场得分={score:.1f} 等级={grade} "
-            f"MF1={mf1:.0f} MF2={mf2:.0f} MF3={mf3:.0f} MF4={mf4:.0f} MF5={mf5:.0f}"
-        )
-
-        # mf5_atr_ratio_inv = 1/ATR比率（波动越低该值越大）；打分仍用 mf5_atr_ratio
         atr_inv = (
             (1.0 / mf5_raw)
             if (mf5_raw is not None and mf5_raw == mf5_raw and mf5_raw > 0)
@@ -264,18 +178,7 @@ class MarketFactors:
                 _, raw_w = MarketFactors._score_volatility(df, atr_window=atr_w, ma_window=ma_w)
                 detail[f"mf5_atr_ratio_{atr_w}d_{ma_w}d"] = raw_w
 
-        return {
-            "market_composite_score": score,
-            "market_risk_level": grade,
-            "position_scale_factor": scale,
-            "allow_new_open": allow_new_open,
-            "market_trend_strength": mf1,
-            "market_bollinger_position": mf2,
-            "market_volume_state": mf3,
-            "market_5day_momentum": mf4,
-            "market_volatility_suppression": mf5,
-            "detail": detail,
-        }
+        return MarketFactors._compose_sentiment(mf1, mf2, mf3, mf4, mf5, detail)
 
     @staticmethod
     def score_from_raw(
@@ -311,48 +214,69 @@ class MarketFactors:
         mf3 = MarketFactors._map_vol_ratio_to_score(mf3_vol_ratio) if not np.isnan(mf3_vol_ratio) else 50.0
         mf4 = MarketFactors._map_momentum_to_score(mf4_momentum_5d) if not np.isnan(mf4_momentum_5d) else 50.0
         mf5 = MarketFactors._map_atr_ratio_to_score(mf5_atr_ratio) if not np.isnan(mf5_atr_ratio) else 50.0
+        atr_inv = (
+            (1.0 / mf5_atr_ratio)
+            if (mf5_atr_ratio is not None and not np.isnan(mf5_atr_ratio) and mf5_atr_ratio > 0)
+            else float("nan")
+        )
+        return MarketFactors._compose_sentiment(
+            mf1, mf2, mf3, mf4, mf5,
+            {
+                "mf1_slope_pct": mf1_slope_pct,
+                "mf2_boll_pct": mf2_boll_pct,
+                "mf3_vol_ratio": mf3_vol_ratio,
+                "mf4_momentum_5d": mf4_momentum_5d,
+                "mf5_atr_ratio": mf5_atr_ratio,
+                "mf5_atr_ratio_inv": atr_inv,
+            },
+        )
 
-        mc = _market_factors_config()
+    @staticmethod
+    def score_from_doc(doc: Dict[str, Any]) -> Dict:
+        """预计算 M1 文档 → 情绪结果（字段名由本类持有）。"""
+        nan = float("nan")
+        return MarketFactors.score_from_raw(
+            mf1_slope_pct=float(doc.get("mf1_slope_pct", nan)),
+            mf2_boll_pct=float(doc.get("mf2_boll_pct", nan)),
+            mf3_vol_ratio=float(doc.get("mf3_vol_ratio", nan)),
+            mf4_momentum_5d=float(doc.get("mf4_momentum_5d", nan)),
+            mf5_atr_ratio=float(doc.get("mf5_atr_ratio", nan)),
+        )
+
+    # ===================== 私有方法（实现细节，对外隐藏）=====================
+
+    @staticmethod
+    def _compose_sentiment(
+        mf1: float, mf2: float, mf3: float, mf4: float, mf5: float, detail: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """加权合成情绪分并映射红黄绿灯（现场计算与预计算打分共用）。"""
+        mc = get_market_factors_config()
         score = float(np.clip(
-            mc["w_trend"] * mf1 + mc["w_bollinger"] * mf2 + mc["w_volume"] * mf3
-            + mc["w_momentum"] * mf4 + mc["w_volatility"] * mf5,
+            mc["w_trend"] * mf1
+            + mc["w_bollinger"] * mf2
+            + mc["w_volume"] * mf3
+            + mc["w_momentum"] * mf4
+            + mc["w_volatility"] * mf5,
             0.0, 100.0,
         ))
-
         if score >= mc["grade_green"]:
-            grade, scale = 'green', mc["scale_green"]
+            grade, scale = "green", mc["scale_green"]
         elif score >= mc["grade_yellow"]:
-            grade, scale = 'yellow', mc["scale_yellow"]
+            grade, scale = "yellow", mc["scale_yellow"]
         else:
-            grade, scale = 'red', mc["scale_red"]
-
+            grade, scale = "red", mc["scale_red"]
         return {
-            'market_composite_score':   score,
-            'market_risk_level':   grade,
-            'position_scale_factor': scale,
-            'allow_new_open': grade != 'red',
-            'market_trend_strength':      mf1,
-            'market_bollinger_position':       mf2,
-            'market_volume_state':     mf3,
-            'market_5day_momentum':   mf4,
-            'market_volatility_suppression': mf5,
-            'detail': {
-                'mf1_slope_pct':      mf1_slope_pct,
-                'mf2_boll_pct':       mf2_boll_pct,
-                'mf3_vol_ratio':      mf3_vol_ratio,
-                'mf4_momentum_5d':    mf4_momentum_5d,
-                'mf5_atr_ratio':      mf5_atr_ratio,
-                'mf5_atr_ratio_inv':  (
-                    (1.0 / mf5_atr_ratio)
-                    if (mf5_atr_ratio is not None
-                        and not np.isnan(mf5_atr_ratio)
-                        and mf5_atr_ratio > 0)
-                    else float('nan')
-                ),
-            },
+            "market_composite_score": score,
+            "market_risk_level": grade,
+            "position_scale_factor": scale,
+            "allow_new_open": grade != "red",
+            "market_trend_strength": mf1,
+            "market_bollinger_position": mf2,
+            "market_volume_state": mf3,
+            "market_5day_momentum": mf4,
+            "market_volatility_suppression": mf5,
+            "detail": detail,
         }
-
-    # ===================== 原始值映射函数（供 score_from_raw 和 _score_* 共用）=====================
 
     @staticmethod
     def _map_slope_to_score(slope_pct: float, k: float = None) -> float:
@@ -398,8 +322,6 @@ class MarketFactors:
         else:
             score = 10.0
         return float(np.clip(score, 0.0, 100.0))
-
-    # ===================== 私有方法（实现细节，对外隐藏）=====================
 
     @staticmethod
     def _score_trend_strength(df: pd.DataFrame, ma_window: int = None) -> tuple:
@@ -576,7 +498,7 @@ class MarketFactors:
         return {
             'market_composite_score':   50.0,
             'market_risk_level':   'yellow',
-            'position_scale_factor': _market_factors_config()["scale_yellow"],
+            'position_scale_factor': get_market_factors_config()["scale_yellow"],
             'allow_new_open': True,
             'market_trend_strength':      50.0,
             'market_bollinger_position':       50.0,
@@ -584,4 +506,85 @@ class MarketFactors:
             'market_5day_momentum':   50.0,
             'market_volatility_suppression': 50.0,
             'detail': {'reason': reason},
+        }
+
+    # ===================== 市场风格检测 =====================
+
+    @staticmethod
+    def detect_style(
+        index_ohlcv: Optional[pd.DataFrame] = None,
+        trade_date: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """检测当前市场风格（动量 / 反转 / 中性）。"""
+        if index_ohlcv is None or index_ohlcv.empty:
+            logger.warning("MarketFactors.detect_style: 无指数数据")
+            return MarketFactors._classify_regime(float("nan"))
+
+        df = index_ohlcv.copy()
+        if "close" not in df.columns:
+            logger.warning("MarketFactors.detect_style: 缺少 close 列")
+            return MarketFactors._classify_regime(float("nan"))
+
+        if trade_date and "trade_date" in df.columns:
+            df["trade_date"] = df["trade_date"].astype(str)
+            df = df.loc[df["trade_date"] <= trade_date]
+
+        autocorr = MarketFactors._compute_rank_autocorr(df["close"].astype(float))
+        return MarketFactors._classify_regime(autocorr)
+
+    @staticmethod
+    def _compute_rank_autocorr(close_prices: pd.Series) -> float:
+        """滚动收益率排名的 1 阶 Spearman 自相关。"""
+        cfg = get_style_detector_config()
+        lookback = cfg["lookback"]
+        min_obs = cfg["min_observations"]
+        if close_prices is None or len(close_prices) < min_obs:
+            return float("nan")
+
+        tail = close_prices.iloc[-lookback:]
+        if len(tail) < min_obs:
+            return float("nan")
+
+        returns = tail.pct_change(fill_method=None).dropna()
+        if len(returns) < min_obs:
+            return float("nan")
+
+        ranks = returns.rank()
+        rp = ranks.iloc[:-1].to_numpy()
+        rc = ranks.iloc[1:].to_numpy()
+        valid = np.isfinite(rp) & np.isfinite(rc)
+        if valid.sum() < 10:
+            return float("nan")
+
+        corr, _ = stats.spearmanr(rp[valid], rc[valid])
+        return float(corr) if np.isfinite(corr) else float("nan")
+
+    @staticmethod
+    def _classify_regime(autocorr: float) -> Dict[str, object]:
+        """按自相关阈值分类 momentum / reversal / neutral。"""
+        if not np.isfinite(autocorr):
+            return get_neutral_style(autocorr=float("nan"), strength=0.0)
+
+        cfg = get_style_detector_config()
+        mom_th = cfg["momentum_threshold"]
+        rev_th = cfg["reversal_threshold"]
+        strength = min(abs(autocorr) / max(abs(mom_th), 0.01), 1.0)
+
+        if autocorr > mom_th:
+            regime = "momentum"
+            momentum_weight = min(0.5 + strength * 0.5, 1.0)
+            reversal_weight = 1.0 - momentum_weight
+        elif autocorr < rev_th:
+            regime = "reversal"
+            reversal_weight = min(0.5 + strength * 0.5, 1.0)
+            momentum_weight = 1.0 - reversal_weight
+        else:
+            return get_neutral_style(autocorr=float(autocorr), strength=float(strength))
+
+        return {
+            "regime": regime,
+            "autocorr": float(autocorr),
+            "strength": float(strength),
+            "momentum_weight": float(momentum_weight),
+            "reversal_weight": float(reversal_weight),
         }

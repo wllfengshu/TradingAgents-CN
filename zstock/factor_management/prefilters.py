@@ -85,7 +85,59 @@ class PreFilters:
         self._load_blacklists()
         logger.info("✅ 黑名单已重新加载")
 
-    # ===================== 公开接口1：技术过滤 =====================
+    # ===================== 核心公开接口 =====================
+
+    def filter_universe(
+        self,
+        stocks: List[str],
+        stock_infos: Optional[Dict[str, Dict]] = None,
+        sectors: Optional[List[Dict]] = None,
+        stock_data: Optional[Dict[str, pd.DataFrame]] = None,
+        apply_main_board: bool = True,
+        apply_bollinger: bool = False,
+        bollinger_slope_threshold: float = 0.0,
+    ) -> Dict[str, Any]:
+        """【黑盒单一主入口】综合股票池与板块宇宙准入过滤（主板/ST/布林 + 黑名单）。
+
+        Args:
+            stocks: 原始全量股票代码列表
+            stock_infos: 股票基础信息字典（含 is_mainboard / is_st 等）
+            sectors: 板块列表（可选，用于板块黑名单过滤）
+            stock_data: OHLCV字典（可选，用于布林带技术过滤）
+            apply_main_board: 是否过滤非主板及ST/退市
+            apply_bollinger: 是否应用布林带上升趋势过滤
+            bollinger_slope_threshold: 布林斜率阈值
+
+        Returns:
+            {
+                "stocks": 准入股票列表 List[str],
+                "sectors": 准入板块列表 List[Dict],
+                "blacklisted_stocks": 被个股黑名单排除的代码集合 Set[str],
+                "technically_filtered_out": 被技术/主板/ST排除的代码集合 Set[str],
+            }
+        """
+        tech_filtered = self.apply_technical_filters(
+            stocks=stocks,
+            stock_data=stock_data or {},
+            stock_infos=stock_infos,
+            apply_main_board=apply_main_board,
+            apply_bollinger=apply_bollinger,
+            bollinger_slope_threshold=bollinger_slope_threshold,
+        )
+        blacklist_result = self.apply_blacklist_filters(tech_filtered, sectors=sectors)
+        non_blacklisted = blacklist_result["stocks"]
+        allowed_sectors = blacklist_result.get("sectors") if sectors is not None else []
+        blacklisted_codes = set(tech_filtered) - set(non_blacklisted)
+        tech_out = set(stocks) - set(tech_filtered)
+
+        return {
+            "stocks": non_blacklisted,
+            "sectors": allowed_sectors,
+            "blacklisted_stocks": blacklisted_codes,
+            "technically_filtered_out": tech_out,
+        }
+
+    # ===================== 独立过滤方法（兼容与精细调用）=====================
 
     def apply_technical_filters(
         self,
@@ -174,7 +226,8 @@ class PreFilters:
             name = ""
             flagged_st = False
             if stock_infos:
-                info = stock_infos.get(code) or stock_infos.get(normalized) or {}
+                raw_info = stock_infos.get(code) or stock_infos.get(normalized) or {}
+                info = raw_info if isinstance(raw_info, dict) else {"name": str(raw_info)}
                 name = info.get("name", "") or ""
                 flagged_st = bool(info.get("is_st", False))
             if (

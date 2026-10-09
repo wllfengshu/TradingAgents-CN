@@ -13,7 +13,7 @@
 import logging
 import pandas as pd
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class TradeSettlement:
 
         logger.info("✅ TradeSettlement 初始化完成")
 
-    def handle_trade_report(self, order_id: str, filled_volume: int,
+    def _handle_trade_report(self, order_id: str, filled_volume: int,
                            filled_price: float, order_direction: str,
                            stock_code: str) -> bool:
         """
@@ -75,7 +75,7 @@ class TradeSettlement:
                 'volume': filled_volume,
                 'price': filled_price,
                 'amount': filled_volume * filled_price,
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
             }
 
             self.trades[trade_id] = trade_info
@@ -116,7 +116,7 @@ class TradeSettlement:
 
         logger.info(f"   持仓更新: {stock_code} {current_volume} → {new_volume}")
 
-    def reconcile_positions(self, xtquant_positions: List[Dict]) -> Dict:
+    def _reconcile_positions(self, xtquant_positions: List[Dict]) -> Dict:
         """
         对账：比较本地持仓和 XtQuant 持仓
 
@@ -196,7 +196,7 @@ class TradeSettlement:
             'matched': matched,
             'discrepancies': discrepancies,
             'status': status,
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
         }
 
         logger.info(f"✅ 对账完成: {result['matched_count']} 正常, "
@@ -217,22 +217,25 @@ class TradeSettlement:
 
     def reconcile_target_vs_broker(
         self,
-        target_positions: "pd.DataFrame",
+        target_lots: "pd.DataFrame",
         broker_positions: List[Dict],
-        price_map: Optional[Dict[str, float]] = None,
-        total_capital: Optional[float] = None,
     ) -> Dict:
-        """
-        对账：目标持仓 vs 券商实际持仓（执行层核心对账）。
-
-        比较的是「应该持有多少股」与「实际持有多少股」，而非空本地账本。
-        """
+        """对账：目标股数 vs 券商实际持仓。只吃 stock_code/code + volume。"""
         from zstock.common.utils.common_utils import normalize_code
-        from zstock.order_management.order_generator import OrderGenerator
 
         logger.info("🔍 目标持仓 vs 券商对账")
 
-        target_df = OrderGenerator.normalize_positions_df(target_positions)
+        lots: Dict[str, int] = {}
+        if target_lots is not None and not target_lots.empty:
+            code_col = "stock_code" if "stock_code" in target_lots.columns else "code"
+            vol_col = "volume" if "volume" in target_lots.columns else "target_shares"
+            for _, row in target_lots.iterrows():
+                code = normalize_code(str(row[code_col]))
+                try:
+                    lots[code] = int(row[vol_col])
+                except (TypeError, ValueError):
+                    continue
+
         broker_map = {
             normalize_code(p["code"]): int(p.get("volume", 0))
             for p in broker_positions
@@ -242,26 +245,8 @@ class TradeSettlement:
         matched = []
         discrepancies = []
 
-        for _, row in target_df.iterrows():
-            code = str(row["stock_code"])
+        for code, target_vol in lots.items():
             broker_vol = broker_map.get(code, 0)
-            if "target_shares" in row.index and not pd.isna(row.get("target_shares")):
-                target_vol = int(row["target_shares"])
-            else:
-                target_vol = OrderGenerator._row_to_volume(
-                    row, price_map or {}, total_capital
-                )
-            if target_vol is None:
-                discrepancies.append(
-                    {
-                        "stock_code": code,
-                        "target_volume": None,
-                        "broker_volume": broker_vol,
-                        "difference": None,
-                        "status": "skipped_unpriced",
-                    }
-                )
-                continue
             if target_vol == broker_vol:
                 matched.append(
                     {"stock_code": code, "target_volume": target_vol, "broker_volume": broker_vol}
@@ -277,7 +262,7 @@ class TradeSettlement:
                 )
 
         for code, broker_vol in broker_map.items():
-            if code not in set(target_df["stock_code"].astype(str)):
+            if code not in lots:
                 discrepancies.append(
                     {
                         "stock_code": code,
@@ -301,7 +286,7 @@ class TradeSettlement:
             "matched": matched,
             "discrepancies": discrepancies,
             "status": status,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         logger.info(
             "✅ 目标对账: %d 一致, %d 偏差, status=%s",
@@ -311,7 +296,7 @@ class TradeSettlement:
         )
         return result
 
-    def calculate_slippage(self, order_price: float, filled_price: float) -> float:
+    def _calculate_slippage(self, order_price: float, filled_price: float) -> float:
         """
         计算滑点
 
@@ -331,7 +316,7 @@ class TradeSettlement:
 
         return round(slippage, 2)
 
-    def get_trades(self, trade_id: Optional[str] = None) -> List[Dict]:
+    def _get_trades(self, trade_id: Optional[str] = None) -> List[Dict]:
         """
         获取成交记录
 
@@ -347,7 +332,7 @@ class TradeSettlement:
 
         return list(self.trades.values())
 
-    def export_trades(self, format: str = 'dataframe') -> object:
+    def _export_trades(self, format: str = 'dataframe') -> object:
         """
         导出成交记录
 
@@ -369,11 +354,11 @@ class TradeSettlement:
             logger.warning(f"❌ 未知的导出格式: {format}")
             return None
 
-    def get_current_positions(self) -> Dict[str, int]:
+    def _get_current_positions(self) -> Dict[str, int]:
         """获取当前持仓"""
         return self.current_positions.copy()
 
-    def export_positions(self, format: str = 'dataframe') -> object:
+    def _export_positions(self, format: str = 'dataframe') -> object:
         """
         导出当前持仓
 

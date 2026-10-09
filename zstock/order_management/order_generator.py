@@ -11,13 +11,12 @@
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import pandas as pd
 
 from zstock.common.utils.common_utils import normalize_code
-from zstock.data_management.database_service import get_database_service
 from zstock.common.entity.order_entity import Order
 
 logger = logging.getLogger(__name__)
@@ -26,20 +25,13 @@ ORDER_COLLECTION_NAME = "zstock_orders"
 
 
 class OrderGenerator:
-    """订单生成器。"""
+    """订单黑盒：generate_orders / lots_from_positions / persist_orders。"""
 
     def __init__(self):
         self.orders: Dict[str, Order] = {}
         self.trade_date: Optional[str] = None
         self.order_sequence = 0
-        self._database_service = None
         logger.info("✅ OrderGenerator 初始化完成")
-
-    @property
-    def database_service(self):
-        if self._database_service is None:
-            self._database_service = get_database_service()
-        return self._database_service
 
     @staticmethod
     def _position_code_column(df: pd.DataFrame) -> str:
@@ -50,7 +42,7 @@ class OrderGenerator:
         raise KeyError("持仓 DataFrame 须包含 code 或 stock_code 列")
 
     @staticmethod
-    def normalize_positions_df(df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    def _normalize_positions_df(df: Optional[pd.DataFrame]) -> pd.DataFrame:
         """统一为 stock_code(6位) + volume/weight/target_shares 列。"""
         if df is None or df.empty:
             return pd.DataFrame(columns=["stock_code", "volume"])
@@ -94,12 +86,12 @@ class OrderGenerator:
         self.order_sequence = 0
         orders: List[Order] = []
 
-        target_positions = self.normalize_positions_df(target_positions)
+        target_positions = self._normalize_positions_df(target_positions)
         if target_positions.empty:
             logger.warning("⚠️ 目标持仓为空")
             return orders
 
-        current_positions = self.normalize_positions_df(current_positions)
+        current_positions = self._normalize_positions_df(current_positions)
         raw_price_map = price_map or {}
         price_map = {}
         for k, v in raw_price_map.items():
@@ -281,16 +273,52 @@ class OrderGenerator:
                 )
                 return None
             return lot_shares
+        if "volume" in row.index and not pd.isna(row["volume"]):
+            try:
+                return max(int(row["volume"]), 0)
+            except (TypeError, ValueError):
+                return None
         logger.error("目标行既无 target_shares 也无 weight，跳过")
         return None
 
-    def get_orders(self, order_id: Optional[str] = None) -> List[Order]:
+    def lots_from_positions(
+        self,
+        positions: Optional[pd.DataFrame],
+        price_map: Optional[Dict[str, float]] = None,
+        total_capital: Optional[float] = None,
+    ) -> pd.DataFrame:
+        """目标持仓 → stock_code + volume（股）。换算失败的标的不出现在结果里。"""
+        df = self._normalize_positions_df(positions)
+        if df.empty:
+            return pd.DataFrame(columns=["stock_code", "volume"])
+        raw = price_map or {}
+        px: Dict[str, float] = {}
+        for k, v in raw.items():
+            if v is None:
+                continue
+            try:
+                price = float(v)
+            except (TypeError, ValueError):
+                continue
+            if price > 0:
+                px[normalize_code(k)] = price
+        rows = []
+        for _, row in df.iterrows():
+            vol = self._row_to_volume(row, px, total_capital)
+            if vol is None:
+                continue
+            rows.append({"stock_code": str(row["stock_code"]), "volume": int(vol)})
+        if not rows:
+            return pd.DataFrame(columns=["stock_code", "volume"])
+        return pd.DataFrame(rows)
+
+    def _get_orders(self, order_id: Optional[str] = None) -> List[Order]:
         if order_id:
             order = self.orders.get(order_id)
             return [order] if order else []
         return list(self.orders.values())
 
-    def update_order_status(
+    def _update_order_status(
         self,
         order_id: str,
         status: str,
@@ -304,11 +332,11 @@ class OrderGenerator:
         order.status = status
         order.filled_volume = filled_volume
         order.filled_price = filled_price
-        order.updated_at = datetime.utcnow().isoformat()
+        order.updated_at = datetime.now(timezone.utc).isoformat()
         logger.info(f"📝 订单状态更新: {order_id} → {status}")
         return True
 
-    def export_orders(self, format: str = "dataframe"):
+    def _export_orders(self, format: str = "dataframe"):
         orders = list(self.orders.values())
         if format == "dataframe":
             data = [o.to_dict() for o in orders]
@@ -320,28 +348,28 @@ class OrderGenerator:
         logger.warning(f"❌ 未知的导出格式: {format}")
         return None
 
-    async def save_orders_to_db(self, orders: List[Order]) -> bool:
-        """把订单落库为"created"状态（幂等：仅在首次插入时写入初始字段）。
+    @staticmethod
+    async def persist_orders(orders: List[Order], database_service=None) -> bool:
+        """把订单落库为 created（幂等：$setOnInsert，不覆盖已存在文档）。
 
-        订单生命周期由两个模块协作维护，共用 zstock_orders 集合按 order_id 幂等：
-          created  (order_generator.save_orders_to_db)
-              → pending  (xtquant_executor.submit_order 成功后写 xt_order_id/status)
-              → filled / partial / cancelled / rejected  (由 broker 回报驱动)
-
-        用 update_one(upsert=True) + $setOnInsert，而不是 insert_many：
-          - insert_many 与 executor 端的 upsert 会因同 order_id 造成 DuplicateKey
-            或数据重复（历史 bug：账本损坏）；
-          - $setOnInsert 保证"文档已存在则不覆盖"，即使 executor 已先写入
-            pending + xt_order_id，此处也不会把 status 退回 created。
+        与 XtQuantExecutor 共用 zstock_orders，按 order_id 幂等：
+          created  (OrderGenerator.persist_orders)
+              → pending  (submit_order 成功后写 xt_order_id/status)
+              → filled / partial / cancelled / rejected
         """
         if not orders:
             return True
+        db = database_service
+        if db is None:
+            from zstock.data_management.database_service import get_database_service
+
+            db = get_database_service()
         try:
             for o in orders:
                 doc = o.to_dict()
                 if not doc.get("status"):
                     doc["status"] = "created"
-                await self.database_service.update_one(
+                await db.update_one(
                     ORDER_COLLECTION_NAME,
                     {"order_id": doc["order_id"]},
                     {"$setOnInsert": doc},

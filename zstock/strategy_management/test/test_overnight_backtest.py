@@ -10,10 +10,6 @@ import pandas as pd
 import pytest
 
 from zstock.strategy_management.script import overnight_backtest as ob
-from zstock.strategy_management.test.conftest import (
-    DummySignalGenerator,
-    ReplayFactorPipeline,
-)
 from zstock.strategy_management.script.overnight_backtest import (
     _CHECKPOINT_FILE,
     _avg_exposure,
@@ -166,13 +162,10 @@ def test_backup_and_parser(tmp_path, strategy_params):
 
 def test_clear_strategy_caches():
     from zstock.strategy_management.pipeline import StrategyPipeline
-    from zstock.strategy_management.risk_manager import _load_risk_limits_from_config
 
     StrategyPipeline._default_config()
-    _load_risk_limits_from_config()
     ob._clear_strategy_caches()
     assert StrategyPipeline._config_cache is None
-    assert _load_risk_limits_from_config._cache is None
 
 
 def test_logging_helpers(tmp_path):
@@ -205,10 +198,6 @@ async def test_run_backtest_current_uses_exported_jan_window(
     monkeypatch.setattr(
         "zstock.factor_management.pipeline.CrossSectionStrategyPipeline",
         lambda *a, **k: replay,
-    )
-    monkeypatch.setattr(
-        "zstock.strategy_management.pipeline.SignalGenerator",
-        DummySignalGenerator,
     )
     row = await ob.run_backtest_current(
         make_ohlcv_provider_from_dict(ohlcv_by_code),
@@ -265,7 +254,7 @@ async def test_consistency_run_checks_skip_missing_precompute(monkeypatch):
     monkeypatch.setattr("zstock.common.utils.db_utils.init_zstock_database", _init)
     monkeypatch.setattr("zstock.common.utils.db_utils.close_zstock_database", _close)
     monkeypatch.setattr(
-        "zstock.strategy_management.signal_service.get_strategy_signal_service",
+        "zstock.strategy_management.signal_service.StrategySignalService.instance",
         lambda: _Svc(),
     )
     rc = await scc._run_checks(["2024-06-03"], include_pipeline=False, tolerance=1e-6)

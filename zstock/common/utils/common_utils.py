@@ -285,3 +285,47 @@ def get_index_code_from_ohlcv_dict(index_ohlcv_dict):
     if not index_ohlcv_dict:
         return ""
     return list(index_ohlcv_dict.keys())[0]
+
+
+def get_index_ohlcv_df(index_ohlcv_dict):
+    """从 {index_code: DataFrame} 取指数行情：优先第一个 key，否则 399300。"""
+    if not index_ohlcv_dict:
+        return None
+    code = get_index_code_from_ohlcv_dict(index_ohlcv_dict)
+    df = index_ohlcv_dict.get(code) if code else None
+    if df is None:
+        df = index_ohlcv_dict.get("399300")
+    return df
+
+
+def to_float_or_none(val) -> Optional[float]:
+    """安全转换为 float，NaN/None/非法值均返回 None。"""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if f != f:
+        return None
+    return f
+
+
+def passes_gate_value(val, gate: dict) -> bool:
+    """通用配置驱动门禁条件判定：支持 finite / gt / gte / eq 操作符。"""
+    op = str(gate.get("op", "gt")).strip().lower()
+    if op == "finite":
+        return to_float_or_none(val) is not None
+    if op in ("gt", ">"):
+        f = to_float_or_none(val)
+        ref = to_float_or_none(gate.get("value", 0))
+        return f is not None and ref is not None and f > ref
+    if op in ("gte", ">="):
+        f = to_float_or_none(val)
+        ref = to_float_or_none(gate.get("value", 0))
+        return f is not None and ref is not None and f >= ref
+    if op in ("eq", "=="):
+        f = to_float_or_none(val)
+        ref = to_float_or_none(gate.get("value"))
+        return f is not None and ref is not None and f == ref
+    return True

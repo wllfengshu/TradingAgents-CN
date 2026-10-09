@@ -24,34 +24,17 @@ from zstock.common.config.strategy_config import build_risk_limits
 logger = logging.getLogger(__name__)
 
 
-def _load_risk_limits_from_config() -> Dict:
-    """
-    从 strategy_params.json 读取风控相关参数，构建 risk_limits。
-    派生逻辑统一委托给 zstock.common.config.strategy_config.build_risk_limits()。
-    结果缓存于函数属性，进程生命周期内只读一次磁盘。
-    """
-    if _load_risk_limits_from_config._cache is not None:
-        return _load_risk_limits_from_config._cache
-
-    limits = build_risk_limits()
-    _load_risk_limits_from_config._cache = limits
-    return limits
-
-_load_risk_limits_from_config._cache = None
-
-
 class RiskManager:
     """合规性检查器。"""
 
     def __init__(self, risk_limits: Optional[Dict] = None):
-        base_limits = _load_risk_limits_from_config()
-        # 外部传入的 risk_limits 可以覆盖配置文件的值
+        base_limits = dict(build_risk_limits())
         if risk_limits:
             base_limits.update(risk_limits)
         self.risk_limits = base_limits
         logger.info(f"✅ RiskManager 初始化完成: limits={self.risk_limits}")
 
-    def check_compliance(
+    def _check_compliance(
         self,
         holdings_df: pd.DataFrame,
         signals_df: Optional[pd.DataFrame] = None,
@@ -141,7 +124,7 @@ class RiskManager:
             (compliance_dict, corrected_holdings_df)
         """
         limits = {**self.risk_limits, **(limits_override or {})}
-        compliance = self.check_compliance(
+        compliance = self._check_compliance(
             holdings_df, signals_df, limits_override=limits_override
         )
 
@@ -215,7 +198,7 @@ class RiskManager:
         # 必须把同一份 limits_override 透传给复检——否则第一次用 override（例如
         # regime=aggressive 下 top_k=8），第二次退回 self.risk_limits 静态默认，
         # 会得到与 pipeline 期望不一致的 status/metrics。
-        final_compliance = self.check_compliance(
+        final_compliance = self._check_compliance(
             df, signals_df, limits_override=limits_override
         )
         corrected_compliance = {

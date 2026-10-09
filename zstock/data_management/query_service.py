@@ -44,6 +44,9 @@ COL_FACTOR_SECTOR = "zstock_factor_sector"
 COL_FACTOR_DRAGON = "zstock_factor_dragon"
 COL_FACTOR_FORCE = "zstock_factor_force"
 
+COL_FUNDAMENTAL_PERSHARE = "zstock_fundamental_pershare"
+COL_FUNDAMENTAL_HOLDER = "zstock_fundamental_holder"
+
 # 资金流默认周期：通达信 L2 历史；东财快照为 today/3day/5day/10day
 PERIOD_L2_DAILY = "L2_daily"
 
@@ -67,33 +70,33 @@ _OHLCV_PROJECTION = {
 }
 
 
-def _iter_date_windows(
-    start_date: str,
-    end_date: str,
-    chunk_days: int,
-) -> List[Tuple[str, str]]:
-    """将日期区间切分为若干窗口，避免单次 MongoDB 查询过大。"""
-    if chunk_days <= 0:
-        return [(normalize_date(start_date), normalize_date(end_date))]
-
-    start_str = normalize_date(start_date)
-    end_str = normalize_date(end_date)
-    if start_str > end_str:
-        return []
-
-    start_dt = datetime.strptime(start_str, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_str, "%Y-%m-%d")
-    windows: List[Tuple[str, str]] = []
-    cur = start_dt
-    while cur <= end_dt:
-        chunk_end = min(cur + timedelta(days=chunk_days - 1), end_dt)
-        windows.append((cur.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
-        cur = chunk_end + timedelta(days=1)
-    return windows
-
-
 class DataQueryService:
     """统一数据查询服务（只读 MongoDB，未命中抛异常或返回空容器）。"""
+
+    @staticmethod
+    def _iter_date_windows(
+        start_date: str,
+        end_date: str,
+        chunk_days: int,
+    ) -> List[Tuple[str, str]]:
+        """将日期区间切分为若干窗口，避免单次 MongoDB 查询过大（内部静态辅助方法）。"""
+        if chunk_days <= 0:
+            return [(normalize_date(start_date), normalize_date(end_date))]
+
+        start_str = normalize_date(start_date)
+        end_str = normalize_date(end_date)
+        if start_str > end_str:
+            return []
+
+        start_dt = datetime.strptime(start_str, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_str, "%Y-%m-%d")
+        windows: List[Tuple[str, str]] = []
+        cur = start_dt
+        while cur <= end_dt:
+            chunk_end = min(cur + timedelta(days=chunk_days - 1), end_dt)
+            windows.append((cur.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
+            cur = chunk_end + timedelta(days=1)
+        return windows
 
     def __init__(self):
         self.database_service = get_database_service()
@@ -323,7 +326,7 @@ class DataQueryService:
         p = _PERIOD_MAP.get(period, "D")
         norm_start = normalize_date(start_date)
         norm_end = normalize_date(end_date)
-        date_windows = _iter_date_windows(norm_start, norm_end, date_chunk_days)
+        date_windows = self._iter_date_windows(norm_start, norm_end, date_chunk_days)
 
         parts_by_code: Dict[str, List[pd.DataFrame]] = defaultdict(list)
         chunks: List[Tuple[List[str], str, str]] = []
@@ -543,7 +546,7 @@ class DataQueryService:
         pure_codes = [normalize_code(c) for c in codes]
         start_norm = normalize_date(start_date)
         end_norm = normalize_date(end_date)
-        date_windows = _iter_date_windows(start_norm, end_norm, date_chunk_days)
+        date_windows = self._iter_date_windows(start_norm, end_norm, date_chunk_days)
         grouped: Dict[str, List[Dict]] = defaultdict(list)
 
         proj = projection or {
@@ -860,6 +863,70 @@ class DataQueryService:
         )
         return docs or []
 
+    # =========================== 因子预计算区间查询 ===========================
+
+    async def get_factor_market_range(self, start_date: str, end_date: str) -> List[Dict]:
+        """获取 M1 市场因子预计算文档（区间）。"""
+        docs = await self.database_service.query(
+            COL_FACTOR_MARKET,
+            {"trade_date": {"$gte": normalize_date(start_date), "$lte": normalize_date(end_date)}},
+            projection={"_id": 0},
+            sort=[("trade_date", 1)],
+        )
+        return docs or []
+
+    async def get_factor_sectors_range(self, start_date: str, end_date: str) -> List[Dict]:
+        """获取 M2 板块因子预计算文档（区间）。"""
+        docs = await self.database_service.query(
+            COL_FACTOR_SECTOR,
+            {"trade_date": {"$gte": normalize_date(start_date), "$lte": normalize_date(end_date)}},
+            projection={"_id": 0},
+            sort=[("trade_date", 1), ("sector_code", 1)],
+        )
+        return docs or []
+
+    async def get_factor_dragons_range(self, start_date: str, end_date: str) -> List[Dict]:
+        """获取 M3 龙头因子预计算文档（区间）。"""
+        docs = await self.database_service.query(
+            COL_FACTOR_DRAGON,
+            {"trade_date": {"$gte": normalize_date(start_date), "$lte": normalize_date(end_date)}},
+            projection={"_id": 0},
+            sort=[("trade_date", 1), ("sector_code", 1), ("code", 1)],
+        )
+        return docs or []
+
+    async def get_factor_forces_range(self, start_date: str, end_date: str) -> List[Dict]:
+        """获取 M4 合力因子预计算文档（区间）。"""
+        docs = await self.database_service.query(
+            COL_FACTOR_FORCE,
+            {"trade_date": {"$gte": normalize_date(start_date), "$lte": normalize_date(end_date)}},
+            projection={"_id": 0},
+            sort=[("trade_date", 1), ("code", 1)],
+        )
+        return docs or []
+
+    # =========================== 基本面财务数据查询 ===========================
+
+    async def get_all_fundamental_pershare(self) -> List[Dict]:
+        """获取全量每股指标文档（包含 bps 等字段）。"""
+        docs = await self.database_service.query(
+            COL_FUNDAMENTAL_PERSHARE,
+            {"bps": {"$exists": True, "$ne": None}},
+            projection={"_id": 0, "code": 1, "ann_date": 1, "bps": 1},
+            sort=[("code", 1), ("ann_date", 1)],
+        )
+        return docs or []
+
+    async def get_all_fundamental_holder(self) -> List[Dict]:
+        """获取全量股东数历史文档。"""
+        docs = await self.database_service.query(
+            COL_FUNDAMENTAL_HOLDER,
+            {},
+            projection={"_id": 0, "code": 1, "ann_date": 1, "end_date": 1, "shareholder": 1},
+            sort=[("code", 1), ("end_date", 1)],
+        )
+        return docs or []
+
 
 # ==========================================================================
 
@@ -871,3 +938,8 @@ def get_data_query_service() -> DataQueryService:
     if _data_query_service is None:
         _data_query_service = DataQueryService()
     return _data_query_service
+
+
+# 模块级兼容导出（内部方法别名，保持外部已有工具/单测兼容）
+_iter_date_windows = DataQueryService._iter_date_windows
+

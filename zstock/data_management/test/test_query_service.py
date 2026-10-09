@@ -102,7 +102,13 @@ async def test_factor_layers_and_empty_lhb():
         {
             COL_FACTOR_SECTOR: [{"trade_date": "2024-01-02", "sector_code": "SW2出版"}],
             COL_FACTOR_DRAGON: [{"trade_date": "2024-01-02", "code": "601921", "sector_code": "SW2出版"}],
-            COL_FACTOR_FORCE: [{"trade_date": "2024-01-02", "code": "601921"}],
+            COL_FACTOR_FORCE: [
+                {
+                    "trade_date": "2024-01-02",
+                    "code": "601921",
+                    "fcoop1_main_net_ratio": 0.1,
+                }
+            ],
             COL_LHB: [],
             COL_CAPITAL_FLOW: [],
         }
@@ -113,6 +119,7 @@ async def test_factor_layers_and_empty_lhb():
     assert dragons[0]["code"] == "601921"
     forces = await qs.get_factor_forces("2024-01-02")
     assert forces[0]["code"] == "601921"
+    assert forces[0]["fcoop1_main_net_ratio"] == 0.1
     assert await qs.get_lhb("603201", "2024-01-02") is None
     assert await qs.get_lhb_recent("603201", "2024-01-02", days=0) == []
     with pytest.raises(ValueError):

@@ -69,11 +69,11 @@ def _quiet_loggers() -> None:
 
 
 def _clear_strategy_caches() -> None:
+    from zstock.common.config.strategy_config import _clear_cache
     from zstock.strategy_management.pipeline import StrategyPipeline
-    from zstock.strategy_management.risk_manager import _load_risk_limits_from_config
 
+    _clear_cache()
     StrategyPipeline._config_cache = None
-    _load_risk_limits_from_config._cache = None
 
 
 class RealGridSearchOptimizer:
@@ -311,14 +311,10 @@ class RealGridSearchOptimizer:
             tmp_path = tmp.name
 
         try:
-            # 临时把 StrategyPipeline 的默认路径切到本组合配置
-            from zstock.strategy_management import pipeline as sp_mod
-            from zstock.strategy_management import risk_manager as rm_mod
+            from zstock.common.config import strategy_config as sc_mod
 
-            old_sp = sp_mod._STRATEGY_PARAMS_PATH
-            old_rm = rm_mod._STRATEGY_PARAMS_PATH
-            sp_mod._STRATEGY_PARAMS_PATH = Path(tmp_path)
-            rm_mod._STRATEGY_PARAMS_PATH = Path(tmp_path)
+            old_params_path = sc_mod._STRATEGY_PARAMS_PATH
+            sc_mod._STRATEGY_PARAMS_PATH = Path(tmp_path)
             _clear_strategy_caches()
 
             factor_pipeline = CrossSectionStrategyPipeline(config_path=tmp_path)
@@ -387,8 +383,7 @@ class RealGridSearchOptimizer:
             }
         finally:
             try:
-                sp_mod._STRATEGY_PARAMS_PATH = old_sp
-                rm_mod._STRATEGY_PARAMS_PATH = old_rm
+                sc_mod._STRATEGY_PARAMS_PATH = old_params_path
             except Exception:
                 pass
             _clear_strategy_caches()

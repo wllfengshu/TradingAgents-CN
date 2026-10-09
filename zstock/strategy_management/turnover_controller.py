@@ -25,16 +25,6 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-def _trading_days_between(start: str, end: str) -> int:
-    """粗略按日历日差估算持有天数（回测交易日序列更准，此处作保护下限）。"""
-    try:
-        a = datetime.strptime(str(start)[:10], "%Y-%m-%d")
-        b = datetime.strptime(str(end)[:10], "%Y-%m-%d")
-        return max(0, (b - a).days)
-    except (TypeError, ValueError):
-        return 0
-
-
 class TurnoverController:
     """Buffer 机制 + 最短持有 + 成本估算。"""
 
@@ -43,13 +33,15 @@ class TurnoverController:
         buffer_threshold: float = 0.25,
         fee_rate: float = 0.0015,
         min_hold_days: int = 3,
+        fill_open_slots: bool = False,
     ):
         self.buffer_threshold = buffer_threshold
         self.fee_rate = fee_rate  # 双边费率上限（手续费+滑点+印花税近似）
         self.min_hold_days = int(min_hold_days)
+        self.fill_open_slots = bool(fill_open_slots)
         logger.info(
             f"✅ TurnoverController 初始化完成: buffer={buffer_threshold} "
-            f"fee={fee_rate} min_hold={self.min_hold_days}"
+            f"fee={fee_rate} min_hold={self.min_hold_days} fill_open_slots={self.fill_open_slots}"
         )
 
     def apply_buffer_mechanism(
@@ -60,6 +52,7 @@ class TurnoverController:
         min_hold_days: Optional[int] = None,
         trade_date: Optional[str] = None,
         force_exit_codes: Optional[set] = None,
+        fill_open_slots: Optional[bool] = None,
     ) -> pd.DataFrame:
         """
         Args:
@@ -107,10 +100,27 @@ class TurnoverController:
             if 'score' not in df.columns:
                 df['score'] = np.nan
 
+        if fill_open_slots is None:
+            fill_open_slots = getattr(self, "fill_open_slots", False)
+
         new_codes = set(new_df['code'])
 
         kept = cur_df[cur_df['code'].isin(new_codes)].copy()
         kept_codes = set(kept['code'])
+
+        # 最短持有：不在新目标中、但未满持有期的旧仓继续保留（强制退出除外）
+        protected = self._protected_holds(
+            cur_df, new_codes | force_exit_codes, trade_date, int(min_hold_days)
+        )
+        if force_exit_codes:
+            if not kept.empty:
+                kept = kept[~kept["code"].isin(force_exit_codes)]
+            if not protected.empty:
+                protected = protected[~protected["code"].isin(force_exit_codes)]
+
+        additions = new_df[~new_df['code'].isin(kept_codes)].copy()
+        if force_exit_codes and not additions.empty:
+            additions = additions[~additions["code"].isin(force_exit_codes)]
 
         # 新增候选必须显著优于 cur 最低分
         min_cur_score = float(cur_df['score'].dropna().min()) if cur_df['score'].notna().any() else None
@@ -123,25 +133,26 @@ class TurnoverController:
                 else min_cur_score + abs(min_cur_score) * buffer_threshold
             )
 
-        additions = new_df[~new_df['code'].isin(kept_codes)].copy()
         if not additions.empty:
             if additions['score'].notna().any():
-                additions = additions[additions['score'] >= threshold_score]
+                if fill_open_slots:
+                    target_cap = len(new_df)
+                    n_retained = len(kept) + len(protected)
+                    open_slots = max(0, target_cap - n_retained)
+                    if open_slots > 0:
+                        additions = additions.sort_values(by='score', ascending=False)
+                        direct_adds = additions.iloc[:open_slots]
+                        compete_adds = additions.iloc[open_slots:]
+                        if not compete_adds.empty:
+                            compete_adds = compete_adds[compete_adds['score'] >= threshold_score]
+                        additions = pd.concat([direct_adds, compete_adds], ignore_index=True)
+                    else:
+                        additions = additions[additions['score'] >= threshold_score]
+                else:
+                    additions = additions[additions['score'] >= threshold_score]
             else:
                 logger.warning("⚠️ 新增候选全部无评分(score=NaN)，拒绝换入，仅保留已有持仓")
                 additions = additions.iloc[0:0]
-
-        # 最短持有：不在新目标中、但未满持有期的旧仓继续保留（强制退出除外）
-        protected = self._protected_holds(
-            cur_df, new_codes | force_exit_codes, trade_date, int(min_hold_days)
-        )
-        if force_exit_codes:
-            if not kept.empty:
-                kept = kept[~kept["code"].isin(force_exit_codes)]
-            if not additions.empty:
-                additions = additions[~additions["code"].isin(force_exit_codes)]
-            if not protected.empty:
-                protected = protected[~protected["code"].isin(force_exit_codes)]
 
         # 合并：kept 的权重用 new_holdings 里的最新权重
         if not kept.empty:
@@ -182,7 +193,7 @@ class TurnoverController:
             code = row['code']
             if code in new_codes:
                 continue
-            held = _trading_days_between(row.get('entry_date'), trade_date)
+            held = self._trading_days_between(row.get('entry_date'), trade_date)
             if held < min_hold_days:
                 rows.append(row)
         if not rows:
@@ -193,6 +204,16 @@ class TurnoverController:
             f"{list(out['code'])}"
         )
         return out
+
+    @staticmethod
+    def _trading_days_between(start: str, end: str) -> int:
+        """粗略按日历日差估算持有天数（回测交易日序列更准，此处作保护下限）。"""
+        try:
+            a = datetime.strptime(str(start)[:10], "%Y-%m-%d")
+            b = datetime.strptime(str(end)[:10], "%Y-%m-%d")
+            return max(0, (b - a).days)
+        except (TypeError, ValueError):
+            return 0
 
     @staticmethod
     def _normalize(df: pd.DataFrame) -> pd.DataFrame:
@@ -220,7 +241,7 @@ class TurnoverController:
             new[['code', 'weight']].rename(columns={'weight': 'w_new'}),
             on='code', how='outer',
         )
-        merged = merged.infer_objects(copy=False).fillna(0.0)
+        merged = merged.infer_objects().fillna(0.0)
         turnover = 0.5 * float((merged['w_new'] - merged['w_old']).abs().sum())
         cost_pct = turnover * self.fee_rate
         return {
@@ -228,19 +249,4 @@ class TurnoverController:
             'cost_pct': cost_pct,
             'cost_amount': cost_pct * total_capital,
             'fee_rate': self.fee_rate,
-        }
-
-    @staticmethod
-    def generate_final_positions(
-        holdings_df: pd.DataFrame,
-        trade_date: Optional[str] = None,
-    ) -> Dict:
-        """把 holdings_df 打包成目标持仓 dict，用于持久化/对账。"""
-        td = trade_date or datetime.now().strftime('%Y-%m-%d')
-        if holdings_df is None or holdings_df.empty:
-            return {'trade_date': td, 'holdings': [], 'count': 0}
-        return {
-            'trade_date': td,
-            'holdings': holdings_df.to_dict(orient='records'),
-            'count': len(holdings_df),
         }

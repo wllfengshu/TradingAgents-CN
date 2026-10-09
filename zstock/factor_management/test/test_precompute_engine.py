@@ -69,25 +69,26 @@ def test_worker_budget_and_sort_helpers(hs300_ohlcv, monkeypatch):
             raise RuntimeError("critical")
 
 
-def test_compute_engine_requires_filters(hs300_ohlcv):
-    with pytest.raises(ValueError, match="filtered_sectors"):
-        FactorComputeEngine.compute_all_factors_raw_sync(
-            trade_date="2024-01-02",
-            all_stocks=["399300"],
-            stock_infos={},
-            stock_ohlcv={},
-            stock_flow_recent={},
-            sectors=[],
-            sector_stocks={},
-            index_ohlcv={"399300": hs300_ohlcv},
-            assume_sorted=False,
-        )
+def test_compute_engine_defaults_to_full_universe(hs300_ohlcv):
+    raw = FactorComputeEngine.compute_all_factors_raw_sync(
+        trade_date="2024-01-02",
+        all_stocks=["399300"],
+        stock_infos={},
+        stock_ohlcv={},
+        stock_flow_recent={},
+        sectors=[],
+        sector_stocks={},
+        index_ohlcv={"399300": hs300_ohlcv},
+        assume_sorted=False,
+    )
+    assert raw["trade_date"] == "2024-01-02"
+    assert raw["market_raw"]
 
 
 def test_compute_all_factors_on_live_calc():
     members, ohlcv, flow, idx = _live_payload()
-    filtered_stocks = {c for codes in members.values() for c in codes if c in ohlcv}
-    filtered_sectors = [{"sector_code": k, "sector_name": k} for k in members]
+    compute_universe = {c for codes in members.values() for c in codes if c in ohlcv}
+    compute_sectors = [{"sector_code": k, "sector_name": k} for k in members]
     infos = {
         c: {"code": c, "name": c, "is_mainboard": True, "is_st": False}
         for c in ohlcv
@@ -98,12 +99,12 @@ def test_compute_all_factors_on_live_calc():
         stock_infos=infos,
         stock_ohlcv=ohlcv,
         stock_flow_recent=flow,
-        sectors=filtered_sectors,
+        sectors=compute_sectors,
         sector_stocks=members,
         index_ohlcv={"399300": idx},
         assume_sorted=False,
-        filtered_sectors=filtered_sectors,
-        filtered_stocks_set=filtered_stocks,
+        compute_sectors=compute_sectors,
+        compute_universe=compute_universe,
         quiet=True,
     )
     assert raw["trade_date"] == "2024-01-02"
@@ -141,8 +142,8 @@ async def test_slice_and_store_with_live_preload():
         "sectors": [{"sector_code": k} for k in members],
         "sector_stocks": members,
         "index_name": "沪深 300",
-        "filtered_sectors": [{"sector_code": k} for k in members],
-        "filtered_stocks_set": set(ohlcv),
+        "compute_sectors": [{"sector_code": k} for k in members],
+        "compute_universe": set(ohlcv),
     }
     sliced = FactorPrecomputeService.slice_preloaded_data(preload, "2024-01-02", 90)
     assert sliced["trade_date"] == "2024-01-02"
@@ -152,8 +153,8 @@ async def test_slice_and_store_with_live_preload():
     raw = FactorComputeEngine.compute_all_factors_raw_sync(
         **sliced,
         assume_sorted=True,
-        filtered_sectors=preload["filtered_sectors"],
-        filtered_stocks_set=preload["filtered_stocks_set"],
+        compute_sectors=preload["compute_sectors"],
+        compute_universe=preload["compute_universe"],
         quiet=True,
     )
     svc = FactorPrecomputeService.__new__(FactorPrecomputeService)
@@ -165,3 +166,33 @@ async def test_slice_and_store_with_live_preload():
     assert counts["force"] >= 1
     empty = await svc._store_all("2024-01-02", {}, {})
     assert empty == {"market": 0, "sector": 0, "dragon": 0, "force": 0}
+
+
+@pytest.mark.asyncio
+async def test_store_force_drops_score_fields():
+    from zstock.data_management.query_service import COL_FACTOR_FORCE
+
+    svc = FactorPrecomputeService.__new__(FactorPrecomputeService)
+    svc.database_service = FakeDatabaseService({COL_FACTOR_FORCE: []})
+    n = await svc._store_force(
+        "2024-01-02",
+        {
+            "force_raw": [
+                {
+                    "code": "601921",
+                    "sector_code": "SW2出版",
+                    "fcoop1_main_net_ratio": 0.12,
+                    "strategy_signal_score": 99.0,
+                    "force_composite_score": 80.0,
+                    "dragon_composite_score": 70.0,
+                }
+            ]
+        },
+        {"601921": {"name": "x"}},
+    )
+    assert n == 1
+    stored = svc.database_service.db[COL_FACTOR_FORCE].docs[0]
+    assert stored["fcoop1_main_net_ratio"] == 0.12
+    assert "strategy_signal_score" not in stored
+    assert "force_composite_score" not in stored
+    assert "dragon_composite_score" not in stored

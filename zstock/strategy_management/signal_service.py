@@ -4,8 +4,8 @@
 与回测共用同一条信号链路：
   CrossSectionStrategyPipeline.score_signals()  → StrategyPipeline.execute_full_pipeline()
 
-API 路径通过 SignalGenerator.generate_signals() 调用 score_signals（预计算优先）。
-一致性校验对比「回测直调 score_signals」与「API/SignalGenerator」及完整管道输出。
+API 路径通过 StrategyPipeline._generate_signals() 调用 compute_signals（预计算优先）。
+一致性校验对比「回测直调 score_signals」与「API/_generate_signals」及完整管道输出。
 """
 
 from __future__ import annotations
@@ -22,33 +22,38 @@ from zstock.common.config.strategy_config import (
 )
 from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
 from zstock.strategy_management.pipeline import StrategyPipeline
-from zstock.strategy_management.signal_generator import SignalGenerator
 
 logger = logging.getLogger(__name__)
-
-_SIGNAL_COLUMNS = (
-    "code",
-    "sector_code",
-    "rank",
-    "signal_type",
-    "final_score",
-    "dragon_score",
-    "force_composite_score",
-    "market_grade",
-    "position_scale",
-    "trade_date",
-)
 
 
 class StrategySignalService:
     """策略信号查询与回测一致性校验。"""
 
+    _instance: Optional["StrategySignalService"] = None
+    _SIGNAL_COLUMNS = (
+        "code",
+        "sector_code",
+        "rank",
+        "signal_type",
+        "final_score",
+        "dragon_score",
+        "force_composite_score",
+        "market_grade",
+        "position_scale",
+        "trade_date",
+    )
+
     def __init__(self) -> None:
         self._factor_pipeline: Optional[CrossSectionStrategyPipeline] = None
-        self._signal_generator: Optional[SignalGenerator] = None
         self._strategy_pipeline: Optional[StrategyPipeline] = None
         self._params_cache: Optional[Dict[str, Any]] = None
         self._runtime_config_cache: Optional[Dict[str, Dict]] = None
+
+    @classmethod
+    def instance(cls) -> "StrategySignalService":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
 
     @property
     def factor_pipeline(self) -> CrossSectionStrategyPipeline:
@@ -57,15 +62,9 @@ class StrategySignalService:
         return self._factor_pipeline
 
     @property
-    def signal_generator(self) -> SignalGenerator:
-        if self._signal_generator is None:
-            self._signal_generator = SignalGenerator(self.factor_pipeline)
-        return self._signal_generator
-
-    @property
     def strategy_pipeline(self) -> StrategyPipeline:
         if self._strategy_pipeline is None:
-            self._strategy_pipeline = StrategyPipeline(self.signal_generator)
+            self._strategy_pipeline = StrategyPipeline(factor_pipeline=self.factor_pipeline)
         return self._strategy_pipeline
 
     def load_strategy_params(self) -> Dict[str, Any]:
@@ -109,7 +108,7 @@ class StrategySignalService:
         td = trade_date
         source = "precomputed"
         try:
-            signals_df = await self.signal_generator.generate_signals(
+            signals_df = await self.strategy_pipeline._generate_signals(
                 trade_date=td,
                 prefer_precomputed=prefer_precomputed,
             )
@@ -117,7 +116,7 @@ class StrategySignalService:
             if not prefer_precomputed:
                 raise
             source = "live"
-            signals_df = await self.signal_generator.generate_signals(
+            signals_df = await self.strategy_pipeline._generate_signals(
                 trade_date=td,
                 prefer_precomputed=False,
             )
@@ -155,6 +154,29 @@ class StrategySignalService:
 
         return payload
 
+    async def execute_orders(
+        self,
+        trade_date: str,
+        *,
+        allow_mock: bool = False,
+        prefer_precomputed: bool = True,
+    ) -> Dict[str, Any]:
+        """目标持仓 → OrderManagementPipeline。allow_mock 默认 False。"""
+        from zstock.order_management.pipeline import OrderManagementPipeline
+
+        payload = await self.get_daily_signals(
+            trade_date,
+            include_targets=True,
+            prefer_precomputed=prefer_precomputed,
+        )
+        holdings = pd.DataFrame(payload.get("targets") or [])
+        pipe = OrderManagementPipeline(allow_mock=allow_mock)
+        execution = await pipe.execute_full_pipeline(
+            target_positions=holdings,
+            trade_date=trade_date,
+        )
+        return {"signals": payload, "execution": execution}
+
     async def validate_consistency(
         self,
         trade_date: str,
@@ -166,14 +188,14 @@ class StrategySignalService:
         """
         回测一致性校验：
         1. backtest_path: factor_pipeline.score_signals()（回测快路径）
-        2. api_path: SignalGenerator.generate_signals()（API 路径）
+        2. api_path: StrategyPipeline._generate_signals()（API 路径）
         3. pipeline: execute_full_pipeline(precomputed) vs execute_full_pipeline(内部 generate)
         """
         td = trade_date
         runtime_cfg = self._load_runtime_config(self.load_strategy_params())
 
         backtest_df = await self.factor_pipeline.score_signals(td)
-        api_df = await self.signal_generator.generate_signals(
+        api_df = await self.strategy_pipeline._generate_signals(
             trade_date=td,
             prefer_precomputed=prefer_precomputed,
         )
@@ -261,7 +283,7 @@ class StrategySignalService:
     def _dataframe_to_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
         if df is None or df.empty:
             return []
-        cols = [c for c in _SIGNAL_COLUMNS if c in df.columns]
+        cols = [c for c in StrategySignalService._SIGNAL_COLUMNS if c in df.columns]
         out = df[cols].copy()
         out = out.replace({np.nan: None})
         records = out.to_dict(orient="records")
@@ -397,13 +419,3 @@ class StrategySignalService:
                 _add(f"pipeline.weight.{code}", bt_w.get(code), api_w.get(code))
 
         return diffs
-
-
-_strategy_signal_service: Optional[StrategySignalService] = None
-
-
-def get_strategy_signal_service() -> StrategySignalService:
-    global _strategy_signal_service
-    if _strategy_signal_service is None:
-        _strategy_signal_service = StrategySignalService()
-    return _strategy_signal_service

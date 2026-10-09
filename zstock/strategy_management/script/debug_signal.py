@@ -17,6 +17,7 @@ async def debug(trade_date: str, code: str | None = None) -> None:
     from zstock.data_management.query_service import get_data_query_service
     from zstock.factor_management.dragon_factors import DragonFactors
     from zstock.factor_management.force_factors import ForceFactors
+    from zstock.common.utils.common_utils import select_top_k
     from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
     from zstock.factor_management.sector_factors import SectorFactors
 
@@ -58,7 +59,7 @@ async def debug(trade_date: str, code: str | None = None) -> None:
             in_sec = [d for d in dragon_docs if d.get("sector_code") == sector_code]
             sm = {d["code"]: d for d in in_sec}
             m3_scores = DragonFactors.scores_from_raw(sm, regime=regime, active_factors=active)
-            cands = pipe._top_by_score(m3_scores, top_per)
+            cands = select_top_k(m3_scores, top_per)
             print(f"\n=== M3 {sector_code} top{top_per} (pool={len(in_sec)}) ===")
             for c, sc in cands:
                 print(f"  {c} {sm[c].get('stock_name', '')}: {sc:.2f}")
@@ -78,7 +79,7 @@ async def debug(trade_date: str, code: str | None = None) -> None:
             if fd is None:
                 dropped.append((c["code"], "no M4"))
                 continue
-            if not ForceFactors.passes_precomputed_m4_gate(fd, thr):
+            if not ForceFactors._passes_m4_inflow_gate(fd, thr):
                 dropped.append((c["code"], f"M4 gate fcoop1={fd.get('fcoop1_main_net_ratio')}"))
                 continue
             filtered.append(c)

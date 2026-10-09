@@ -41,6 +41,12 @@ class DailySignalsData(BaseModel):
     pipeline_summary: Optional[Dict[str, Any]] = None
 
 
+class ExecuteOrdersRequest(BaseModel):
+    trade_date: str = Field(..., description="交易日 YYYY-MM-DD")
+    allow_mock: bool = Field(False, description="允许 Mock 客户端下单（纸面测试）")
+    prefer_precomputed: bool = Field(True, description="优先 Mongo 预计算因子")
+
+
 class ConsistencyCheckRequest(BaseModel):
     trade_date: str = Field(..., description="交易日 YYYY-MM-DD")
     score_tolerance: float = Field(1e-6, ge=0.0, description="分数/权重容差")

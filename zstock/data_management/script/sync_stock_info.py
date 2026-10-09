@@ -114,7 +114,7 @@ async def _persist_sector_stocks(sector_code: str, codes: List[str]) -> None:
             {'$set': {'stocks': codes, 'stocks_updated_at': datetime.now(timezone.utc)}},
             upsert=True,
         )
-        logger.info(f"💾 落库 {COL_SECTOR}({sector_code}/xtquant) stocks: {len(codes)} 只")
+        logger.debug(f"💾 落库 {COL_SECTOR}({sector_code}/xtquant) stocks: {len(codes)} 只")
     except Exception as e:
         logger.error(f"sector stocks 落库失败: {e}")
 
@@ -142,29 +142,26 @@ async def main():
     logger.info(f"  ✓ 全市场 {len(all_codes)} 只")
 
     # ── 表3: sector ──
-    # logger.info("▶ [3/3] sector — 板块 + 成分股")
-    # sectors = dtu.fetch_sector_list()
-    # await _persist_sector_meta(sectors)
-    # logger.info(f"  元数据 {len(sectors)} 个板块，开始拉取成分股...")
-    # total_stocks = 0
-    # for i, s in enumerate(sectors, 1):
-    #     try:
-    #         stocks = dtu.fetch_sector_stocks(s['sector_code'], sector_name=s.get('sector_name', ''))
-    #         if stocks:
-    #             await _persist_sector_stocks(s['sector_code'], stocks)
-    #             total_stocks += len(stocks)
-    #     except Exception as e:
-    #         logger.warning(f"  ✗ 板块 {s['sector_code']}: {e}")
-    #     if i % 50 == 0:
-    #         logger.info(f"  进度 {i}/{len(sectors)}  累计成分股 {total_stocks}")
-    # logger.info(f"  ✓ sector {len(sectors)} 个板块，{total_stocks} 条成分股")
+    logger.info("▶ [3/3] sector — 板块 + 成分股")
+    sectors = xtu.fetch_sectors_with_stocks()
+    await _persist_sector_meta(sectors)
+    logger.info(f"  元数据 {len(sectors)} 个板块，开始写入成分股...")
+    total_stocks = 0
+    for i, s in enumerate(sectors, 1):
+        stocks = s.get('stocks') or []
+        if stocks:
+            await _persist_sector_stocks(s['sector_code'], stocks)
+            total_stocks += len(stocks)
+        if i % 50 == 0:
+            logger.info(f"  进度 {i}/{len(sectors)}  累计成分股 {total_stocks}")
+    logger.info(f"  ✓ sector {len(sectors)} 个板块，{total_stocks} 条成分股")
 
     # ── 汇总 ──
     elapsed = (datetime.now() - t0).total_seconds()
     logger.info("=" * 50)
     logger.info(f"同步完成  耗时 {elapsed:.1f}s")
     logger.info(f"  stock_info : {len(all_codes)} 只")
-    # logger.info(f"  sector     : {len(sectors)} 个板块 / {total_stocks} 条成分股")
+    logger.info(f"  sector     : {len(sectors)} 个板块 / {total_stocks} 条成分股")
     logger.info("=" * 50)
 
     await db_module.db_manager.close_connections()
@@ -173,4 +170,6 @@ async def main():
 
 
 if __name__ == '__main__':
+    from zstock.data_management.script.qmt_subprocess_bridge import patch_xtquant_data_utils
+    patch_xtquant_data_utils()
     asyncio.run(main())

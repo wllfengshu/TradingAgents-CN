@@ -6,9 +6,9 @@
 流程编排：M0(数据) → M1(情绪) → M2(主线) → M3(龙头) → M4(合力) → M5(合成) → M6(输出)
 因子公式委托给各自 Factor 类（MarketFactors / SectorFactors / DragonFactors / ForceFactors）。
 
-两条入口：
-1. run_pipeline / score_signals_live —— 现场计算 OHLCV+资金流（实时选股）
-2. score_signals —— 从 MongoDB 读预计算原始值，用当前权重打分（回测/网格搜索快路径）
+现场与预计算走同一套 _run_funnel（M1→M6），只换 raw 数据源：
+- score_signals_live / run_pipeline：OHLCV+资金流现场算因子
+- score_signals：Mongo 预计算原始值（改权重无需重算）
 
 M0  数据装载     OHLCV + 资金流 + 板块映射
 M1  市场情绪     5因子 → 仓位系数（红/黄/绿）
@@ -21,12 +21,12 @@ M6  输出         TopK → buy/watch 信号
 
 from __future__ import annotations
 
-import json
 import logging
 import asyncio
+import copy
+from collections import defaultdict
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -35,14 +35,19 @@ from .force_factors import ForceFactors
 from .market_factors import MarketFactors
 from .prefilters import PreFilters
 from .sector_factors import SectorFactors
-from .style_detector import StyleDetector
+from zstock.common.config.strategy_config import (
+    get_neutral_style,
+    load_strategy_params,
+    resolve_active_factors,
+)
+from zstock.common.utils.common_utils import (
+    get_index_ohlcv_df,
+    normalize_date,
+    select_top_k,
+)
 from zstock.data_management.query_service import get_data_query_service
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_CONFIG_PATH = (
-    Path(__file__).parent.parent / "common" / "config" / "strategy_params.json"
-)
 
 
 class CrossSectionStrategyPipeline:
@@ -92,19 +97,12 @@ class CrossSectionStrategyPipeline:
          └─ 返回 DataFrame（trade_date, code, scores, signal_type, ...）
 
     ═══════════════════════════════════════════════════════════════════
-    两条入口
+    两条入口，同一漏斗
     ═══════════════════════════════════════════════════════════════════
 
-    1. 现场计算路径（预计算用）
-       run_pipeline() → _execute_pipeline_core()
-       → compute_all_factor_raw()  ← M0→M4 全流程现场计算
-       → 写入 MongoDB zstock_factor_* 集合
-
-    2. 预计算打分路径（回测/网格搜索用）
-       score_signals()
-       → 从 MongoDB 读预计算原始值
-       → 用当前权重/门槛重新打分
-       → 不加载 OHLCV/资金流（改权重无需重跑预计算）
+    score_signals_live / run_pipeline  现场 OHLCV → _run_funnel(source=live)
+    score_signals                      Mongo raw → _run_funnel(source=precomputed)
+    打分、门禁、TopK、M6 输出只写一遍。
     """
 
     def __init__(
@@ -114,35 +112,31 @@ class CrossSectionStrategyPipeline:
     ):
         """
         Args:
-            config_path: 策略配置文件路径
+            config_path: 备用策略参数文件；None 则用 strategy_config 生产 SSOT
             config_override: 覆盖配置（改权重/门槛/topK，供网格搜索）
         """
-        if config_path is None:
-            config_path = str(_DEFAULT_CONFIG_PATH)
-        self.config = self._load_config(str(config_path))
+        if config_path:
+            self.config = load_strategy_params(config_path)
+        else:
+            self.config = copy.deepcopy(load_strategy_params())
         if config_override:
             self._merge_config(config_override)
-        config_dir = Path(config_path).parent
-        self.prefilters = PreFilters(config_dir=str(config_dir))
+        self.prefilters = PreFilters()
         self._query_service = get_data_query_service()
-        self._precomputed_cache: Optional["PrecomputedFactorCache"] = None
+        self._reset_precomputed()
         self._all_stocks_cache: Optional[List[Dict[str, Any]]] = None
         self._sectors_cache: Optional[List[Dict[str, Any]]] = None
+        self._style_cache: Dict[str, Dict[str, object]] = {}
+        self._fund_provider = None
+        self._fund_provider_tried = False
         logger.info("✅ 策略管道初始化完成")
 
-    def _load_config(self, config_path: str) -> Dict:
-        """加载策略配置（JSON 格式）"""
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-            logger.info(f"✅ 加载配置文件: {config_path}")
-            return config
-        except Exception as e:
-            logger.error(f"❌ 加载配置文件失败: {e}")
-            raise
+    # ----- 配置读取（编排旋钮，不下沉）-----
+    # 分层查找 / by_regime 是 pipeline 取「这一层取几个、怎么加权」的入口。
+    # 不放进 strategy_config：那边是 JSON→派生结构，这边是当日编排读数。
 
     def _merge_config(self, override: Dict) -> None:
-        """合并配置覆盖。"""
+        """网格搜索用：浅合并一层 dict，不递归。"""
         for k, v in override.items():
             if (
                 k in self.config
@@ -183,10 +177,57 @@ class CrossSectionStrategyPipeline:
         cfg = self._cfg_from_layered_config("final_score", "weights", {}) or {}
         return {**default, **cfg}
 
+    def _cfg_layer_gates(self, layer_key: str) -> Optional[List[Dict[str, Any]]]:
+        """sector_layer / dragon_layer 的 gates；缺省键则返回 None（走 legacy φ）。"""
+        layer = self.config.get(layer_key) or {}
+        if "gates" not in layer:
+            return None
+        gates = layer.get("gates")
+        return list(gates) if gates is not None else []
+
+    def _market_selection(self) -> Dict[str, Any]:
+        return self.config.get("market_selection") or {}
+
+    def _factor_stops_on_red(self) -> bool:
+        ms = self._market_selection()
+        if "factor_pipeline_stops_on_red" in ms:
+            return bool(ms["factor_pipeline_stops_on_red"])
+        return True
+
+    def _allow_new_open_in_signals(self, grade: str) -> bool:
+        if str(grade).lower() != "red":
+            return True
+        ms = self._market_selection()
+        if ms.get("strategy_blocks_new_on_red", True):
+            return False
+        return not self._factor_stops_on_red()
+
+    def _output_position_scale(
+        self, grade: str, m1_scale: float, regime: str = "neutral"
+    ) -> float:
+        """因子层仓位系数。
+
+        策略层还有 target_equity 与红灯强制 0。此处在
+        position_scale_applied_in=strategy 时输出 1.0，把仓位交给组合层。
+        """
+        ms = self._market_selection()
+        if str(ms.get("position_scale_applied_in", "factor")).strip().lower() == "strategy":
+            return 1.0
+        return self._resolve_position_scale(grade, m1_scale, regime)
+
+    def _resolve_m4_gate_settings(
+        self,
+        coop_cfg: Dict[str, Any],
+        regime: str,
+        grade: str,
+    ) -> Tuple[float, str]:
+        # 门禁规则在 ForceFactors；pipeline 只传入当日 cooperative_force 配置。
+        return ForceFactors.resolve_gate_settings(coop_cfg, regime, grade)
+
     def _resolve_position_scale(
         self, grade: str, scale: float, regime: str = "neutral"
     ) -> float:
-        """strategy_params.market_overlay 可覆盖 M1 默认黄/绿灯仓位系数；支持 by_regime。"""
+        """market_overlay 覆盖 M1 默认黄/绿灯仓位；支持 by_regime。"""
         overlay = self.config.get("market_overlay") or {}
         by_regime = overlay.get("by_regime") or {}
         sub = by_regime.get(regime) or by_regime.get(str(regime))
@@ -207,28 +248,103 @@ class CrossSectionStrategyPipeline:
             return float(overlay[key])
         return float(scale)
 
-    def _get_active_factors(self, regime: str = "neutral") -> Dict[str, Any]:
-        from zstock.factor_management.factor_decay import apply_factor_decay
+    def _get_active_factors(
+        self, regime: str = "neutral", grade: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return resolve_active_factors(self.config, regime, grade)
 
-        base = self.config.get("active_factors") or {}
-        return apply_factor_decay(
-            base, self.config.get("factor_decay") or {}, regime=regime
-        )
+    # ----- 预计算内存索引（回测 I/O，不是因子）-----
+    # 不下沉到 Factor 类：因子不算数据、不碰 query_service。
+    # 也不单独成类：生命周期就是本 pipeline 实例的一次回测区间。
+
+    def _reset_precomputed(self) -> None:
+        """清空 M1~M4 预计算内存索引（未预加载时 score_signals 逐日查库）。"""
+        self._pc_market: Dict[str, Dict[str, Any]] = {}
+        self._pc_sectors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self._pc_dragons: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self._pc_forces: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self._pc_range: Optional[Tuple[str, str]] = None
 
     async def preload_precomputed_factors(
         self, start_date: str, end_date: str
     ) -> None:
         """回测前批量加载 M1~M4 预计算因子，后续 score_signals 走内存。"""
-        from .precomputed_cache import PrecomputedFactorCache
+        qs = self._query_service
+        start = normalize_date(start_date)
+        end = normalize_date(end_date)
+        market_docs, sector_docs, dragon_docs, force_docs = await asyncio.gather(
+            qs.get_factor_market_range(start, end),
+            qs.get_factor_sectors_range(start, end),
+            qs.get_factor_dragons_range(start, end),
+            qs.get_factor_forces_range(start, end),
+        )
 
-        if self._precomputed_cache is None:
-            self._precomputed_cache = PrecomputedFactorCache()
-        await self._precomputed_cache.preload(
-            self._query_service, start_date, end_date
+        self._reset_precomputed()
+        for doc in market_docs or []:
+            td = normalize_date(doc.get("trade_date", ""))
+            if td:
+                self._pc_market[td] = doc
+        for doc in sector_docs or []:
+            td = normalize_date(doc.get("trade_date", ""))
+            if td:
+                self._pc_sectors[td].append(doc)
+        for doc in dragon_docs or []:
+            td = normalize_date(doc.get("trade_date", ""))
+            if td:
+                self._pc_dragons[td].append(doc)
+        for doc in force_docs or []:
+            td = normalize_date(doc.get("trade_date", ""))
+            if td:
+                self._pc_forces[td].append(doc)
+        self._pc_range = (start, end)
+        logger.info(
+            "📦 因子区间预加载 %s~%s: M1=%d 天, M2=%d 天, M3=%d 天, M4=%d 天",
+            start, end,
+            len(self._pc_market), len(self._pc_sectors),
+            len(self._pc_dragons), len(self._pc_forces),
         )
         if self._all_stocks_cache is None:
-            docs, _ = await self._query_service.get_all_stocks()
+            docs, _ = await qs.get_all_stocks()
             self._all_stocks_cache = docs
+
+    def _cached_factor_market(self, trade_date: str) -> Optional[Dict[str, Any]]:
+        return self._pc_market.get(normalize_date(trade_date))
+
+    def _cached_factor_sectors(self, trade_date: str) -> List[Dict[str, Any]]:
+        return list(self._pc_sectors.get(normalize_date(trade_date), []))
+
+    def _cached_factor_dragons(
+        self,
+        trade_date: str,
+        sector_codes: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        dragons = self._pc_dragons.get(normalize_date(trade_date), [])
+        if sector_codes is None:
+            return list(dragons)
+        sec_set = set(sector_codes)
+        return [d for d in dragons if d.get("sector_code") in sec_set]
+
+    def dragon_field_by_code(
+        self,
+        trade_date: str,
+        field: str,
+        codes: Optional[Any] = None,
+    ) -> Dict[str, float]:
+        """预计算龙头文档字段 → {code: float}。未 preload 时返回空（策略层退出用）。"""
+        want = {str(c) for c in codes} if codes is not None else None
+        out: Dict[str, float] = {}
+        for d in self._cached_factor_dragons(trade_date):
+            code = str(d.get("code") or "")
+            if not code or (want is not None and code not in want):
+                continue
+            try:
+                out[code] = float(d.get(field, float("nan")))
+            except (TypeError, ValueError):
+                out[code] = float("nan")
+        return out
+
+    def _cached_factor_forces(self, trade_date: str) -> List[Dict[str, Any]]:
+        return list(self._pc_forces.get(normalize_date(trade_date), []))
 
     async def _get_all_stocks_cached(self) -> List[Dict[str, Any]]:
         if self._all_stocks_cache is None:
@@ -242,42 +358,42 @@ class CrossSectionStrategyPipeline:
             self._sectors_cache = sector_list or []
         return self._sectors_cache
 
-    async def _detect_style(self, trade_date: str) -> Dict[str, object]:
-        """检测当日市场风格（动量/反转/中性），带缓存。
+    async def _load_precomputed(self, method: str, trade_date: str, **kwargs):
+        """优先走区间缓存，否则查 query_service。"""
+        if self._pc_range is not None:
+            getter = {
+                "get_factor_market": self._cached_factor_market,
+                "get_factor_sectors": self._cached_factor_sectors,
+                "get_factor_dragons": self._cached_factor_dragons,
+                "get_factor_forces": self._cached_factor_forces,
+            }[method]
+            return getter(trade_date, **kwargs)
+        return await getattr(self._query_service, method)(trade_date, **kwargs)
 
-        style_switching=false 时跳过检测直接返回中性，
-        避免每个再平衡日多余的沪深300指数查询。
-        """
+    async def _detect_style(
+        self,
+        trade_date: str,
+        index_ohlcv: Optional[pd.DataFrame] = None,
+    ) -> Dict[str, object]:
+        """编排：取指数行情 → MarketFactors.detect_style。分类公式不在这里。"""
         if not self.config.get("style_switching", True):
-            return {
-                "regime": "neutral",
-                "momentum_weight": 0.5,
-                "reversal_weight": 0.5,
-            }
-        cache_key = f"_style_{trade_date}"
-        if hasattr(self, cache_key):
-            return getattr(self, cache_key)
+            return get_neutral_style()
+        if trade_date in self._style_cache:
+            return self._style_cache[trade_date]
         try:
-            detector = StyleDetector()
-            result = await detector.detect_from_mongo(trade_date)
+            df = index_ohlcv
+            if df is None:
+                end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
+                start_date = (end_dt - timedelta(days=120)).strftime("%Y-%m-%d")
+                df, _ = await self._query_service.get_ohlcv(
+                    "399300", start_date, trade_date, period="daily"
+                )
+            result = MarketFactors.detect_style(df, trade_date)
         except Exception as e:
             logger.warning(f"风格检测失败，使用中性默认: {e}")
-            result = {
-                "regime": "neutral",
-                "momentum_weight": 0.5,
-                "reversal_weight": 0.5,
-            }
-        setattr(self, cache_key, result)
+            result = get_neutral_style()
+        self._style_cache[trade_date] = result
         return result
-
-    def _top_by_score(
-        self,
-        scores_dict: Dict[str, float],
-        top_k: int,
-        reverse: bool = True,
-    ) -> List[Tuple[str, float]]:
-        """按得分排序并取前 K 个"""
-        return sorted(scores_dict.items(), key=lambda x: x[1], reverse=reverse)[:top_k]
 
     @staticmethod
     def _make_candidate(
@@ -286,7 +402,7 @@ class CrossSectionStrategyPipeline:
         dragon_score: float,
         **extra_fields
     ) -> Dict:
-        """构建候选股票字典"""
+        """M3→M4 候选字典（编排胶水，不是因子）。"""
         return {
             'code': code,
             'sector_code': sector_code,
@@ -314,7 +430,7 @@ class CrossSectionStrategyPipeline:
                 best[code] = c
         return [best[code] for code in order]
 
-    # ===================== 数据装载 =====================
+    # ----- M0 现场取数（编排 query_service，因子类禁止查库）-----
 
     async def load_real_data(
         self,
@@ -346,9 +462,7 @@ class CrossSectionStrategyPipeline:
             - index_ohlcv: 指数 OHLCV 数据（沪深 300）
             - index_name: 指数名称
         """
-        from zstock.data_management.query_service import get_data_query_service
-
-        qs = get_data_query_service()
+        qs = self._query_service or get_data_query_service()
 
         # 1. 确定交易日期
         td = trade_date or datetime.now().strftime('%Y-%m-%d')
@@ -423,208 +537,350 @@ class CrossSectionStrategyPipeline:
             'index_name': index_name,
         }
 
-    # ===================== 主流程 =====================
+    # ===================== 主流程（现场 / 预计算共用）=====================
+    # 唯一编排：M1 红灯 → 风格 → 宇宙过滤 → M2 → M3 → M4/M5。
+    # source 只决定 raw 从哪来（OHLCV 现场算 vs Mongo 预计算文档），打分/门禁/TopK 同一套。
 
-    async def _execute_pipeline_core(
+    async def _run_funnel(
         self,
         trade_date: str,
+        sentiment: Dict[str, Any],
+        *,
+        source: str,
+        index_df: Optional[pd.DataFrame] = None,
         all_stocks: List[str],
         stock_infos: Dict[str, Dict],
-        stock_ohlcv: Dict[str, pd.DataFrame],
-        stock_flow_recent: Dict[str, List[Dict]],
         sectors: List[Dict],
-        sector_stocks: Dict[str, List[str]],
-        index_ohlcv: Dict[str, pd.DataFrame],
-        index_name: str = '沪深 300',
-        collect_raw: bool = False,
+        stock_ohlcv: Optional[Dict[str, pd.DataFrame]] = None,
+        sector_stocks: Optional[Dict[str, List[str]]] = None,
+        stock_flow_recent: Optional[Dict[str, List[Dict]]] = None,
     ) -> Dict[str, Any]:
-        """
-        统一的 M1→M6 策略核心流程（单一事实来源 SSOT）。
+        """M1→M5 共用漏斗。返回 early_exit / ranked_all / funnel，由入口转 DataFrame 或 list。"""
+        td = trade_date
+        grade = str(sentiment.get("market_risk_level") or "yellow")
+        m1_scale = float(sentiment.get("position_scale_factor", 1.0))
 
-        Args:
-            collect_raw: True 时收集 M2/M3/M4 的原始因子数据，用于预计算存储；
-                        False 时仅保留必要的评分结果。
-
-        Returns:
-            包含所有中间结果的字典，由调用方（run_pipeline_raw/run_pipeline）适配返回值。
-        """
-        logger.info(f"🚀 开始执行策略管道核心流程: trade_date={trade_date}, collect_raw={collect_raw}")
-
-        # ===== M1: 市场情绪评估 =====
-        idx_df = self._get_index_df(index_ohlcv)
-        index_code = list(index_ohlcv.keys())[0] if index_ohlcv else ""
-        market_sentiment = MarketFactors.calculate_market_sentiment(
-            idx_df,
-            index_name=index_name,
-            trade_date=trade_date,
-        )
-        market_raw = market_sentiment.get('detail', {}) if collect_raw else {}
-        logger.info(
-            f"📊 M1 市场情绪评估完成: score={market_sentiment.get('market_composite_score', 0):.2f} "
-            f"grade={market_sentiment.get('market_risk_level')}"
-        )
-
-        # M1 红灯判定 - 早期返回
-        if not market_sentiment.get("allow_new_open", True):
-            logger.info(f"🔴 {trade_date} 市场红灯，管道终止")
+        if grade == "red" and self._factor_stops_on_red():
+            scale = self._output_position_scale(grade, m1_scale, regime="neutral")
+            logger.info(f"🔴 {td} 市场红灯，因子链终止")
             return {
-                'early_exit': True,
-                'exit_reason': 'market_red_light',
-                'trade_date': trade_date,
-                'market_raw': market_raw,
-                'index_code': index_code,
-                'index_name': index_name,
-                'market_risk_level': market_sentiment.get('market_risk_level', 'red'),
-                'position_scale_factor': market_sentiment.get('position_scale_factor', 0.0),
-                'market_composite_score': market_sentiment.get('market_composite_score', 0.0),
+                "early_exit": True,
+                "exit_reason": "market_red_light",
+                "trade_date": td,
+                "market_risk_level": grade,
+                "position_scale_factor": scale,
+                "regime": "neutral",
+                "market_composite_score": float(sentiment.get("market_composite_score", 0.0)),
+                "ranked_all": [],
+                "funnel": {"n_m3": 0, "n_m4": 0, "n_buy": 0, "stop": "red", "regime": "neutral"},
             }
 
-        # ★ P4 风格自适应：检测市场风格，传递给 M2/M3 层
-        style_info = await self._detect_style(trade_date)
-        regime = style_info["regime"]
+        style_info = await self._detect_style(td, index_df)
+        regime = str(style_info.get("regime") or "neutral")
+        scale = self._output_position_scale(grade, m1_scale, regime=regime)
+        active = self._get_active_factors(regime, grade)
         logger.info(
-            f"🎨 {trade_date} 市场风格: {regime} | "
-            f"autocorr={style_info.get('autocorr', 0):.3f}"
+            f"🎨 {td} 市场风格: {regime} | "
+            f"autocorr={style_info.get('autocorr', 0):.3f} "
+            f"momentum_w={style_info.get('momentum_weight', 0.5):.2f} "
+            f"reversal_w={style_info.get('reversal_weight', 0.5):.2f}"
         )
 
-        # ===== M2.1-M3.2: 宇宙过滤（技术过滤 + 黑名单）=====
-        filtered_stocks_set, filtered_sectors, blacklisted_codes = await self._apply_universe_filters(
-            all_stocks, stock_ohlcv, stock_infos, sectors
+        universe_res = self.prefilters.filter_universe(
+            all_stocks,
+            stock_infos=stock_infos,
+            sectors=sectors,
+            stock_data=stock_ohlcv or {},
+            apply_main_board=True,
+            apply_bollinger=False,
         )
-        logger.info(f"🔍 M2.1 黑名单过滤: {len(sectors)} → {len(filtered_sectors)} 个板块")
+        filtered_stocks = set(universe_res["stocks"])
+        filtered_sectors = universe_res["sectors"]
         logger.info(
-            f"🔍 M3.1-M3.2 个股过滤: {len(all_stocks)} → {len(filtered_stocks_set)} 只股票"
+            f"🔍 宇宙过滤: 股 {len(all_stocks)}→{len(filtered_stocks)} "
+            f"板块 {len(sectors or [])}→{len(filtered_sectors)}"
         )
 
-        # ===== M2: 板块筛选 =====
-        market_sector_ohlcv = self._compute_market_sector_ohlcv(
-            None, sector_stocks, stock_ohlcv, stock_flow_recent
-        )
-        sector_raw = SectorFactors.calculate_all_sector_factors_raw(
-            filtered_sectors,
-            sector_stocks,
-            stock_ohlcv,
-            stock_flow_recent,
-            market_sector_ohlcv=market_sector_ohlcv,
-            trade_date=trade_date,
-            eligible_codes=filtered_stocks_set,
+        # ----- M2 -----
+        sector_raw = await self._load_sector_raw(
+            source=source,
+            trade_date=td,
+            filtered_sectors=filtered_sectors,
+            sector_stocks=sector_stocks,
+            stock_ohlcv=stock_ohlcv,
+            stock_flow_recent=stock_flow_recent,
+            filtered_stocks=filtered_stocks,
         )
         m2_scores = SectorFactors.scores_from_raw(
             sector_raw,
             regime=regime,
-            active_factors=self._get_active_factors(regime),
+            active_factors=active,
             top_n=self._cfg_top_sectors(),
+            gates=self._cfg_layer_gates("sector_layer"),
         )
-        if not collect_raw:
-            sector_raw = {}
-        logger.info(f"📊 M2.2 板块得分计算完成: {len(m2_scores)} 个板块")
+        top_sectors = select_top_k(m2_scores, self._cfg_top_sectors())
+        logger.info(f"✅ M2 Top {self._cfg_top_sectors()} 板块: {[s[0] for s in top_sectors]}")
 
-        top_k = self._cfg_top_sectors()
-        top_sectors = self._top_by_score(m2_scores, top_k)
-        logger.info(f"✅ M2.3 选出 Top {top_k} 板块: {[s[0] for s in top_sectors]}")
-
-        # ===== M3: 龙头股筛选 =====
-        all_candidates = []
-        m3_scores_by_sector: Dict[str, Dict[str, float]] = {}
-        dragon_raw_by_sector: Dict[str, Dict] = {}
-        top_per_sector = self._cfg_top_per_sector()
-
+        # ----- M3 -----
+        dragon_by_sector = await self._load_dragon_raw_by_sector(
+            source=source,
+            trade_date=td,
+            top_sectors=top_sectors,
+            sector_stocks=sector_stocks,
+            stock_ohlcv=stock_ohlcv,
+            filtered_stocks=filtered_stocks,
+        )
+        top_per = self._cfg_top_per_sector()
+        all_candidates: List[Dict] = []
         for sector_code, _ in top_sectors:
-            sector_stock_list = [
-                s for s in sector_stocks.get(sector_code, []) if s in filtered_stocks_set
-            ]
-            if not sector_stock_list:
-                continue
-
-            m3_scores, dragon_raw = await self._compute_dragon_scores_for_sector(
-                sector_code,
-                sector_stock_list,
-                stock_ohlcv,
-                blacklisted_codes=blacklisted_codes,
-                trade_date=trade_date,
-                regime=regime,
-            )
+            dragon_raw = dragon_by_sector.get(sector_code) or {}
+            dragon_raw = {k: v for k, v in dragon_raw.items() if k in filtered_stocks}
             if not dragon_raw:
                 continue
-
-            if collect_raw:
-                m3_scores_by_sector[sector_code] = m3_scores
-                dragon_raw_by_sector[sector_code] = dragon_raw
-
-            candidates = self._top_by_score(m3_scores, top_per_sector)
-            for code, m3_score in candidates:
+            m3_scores = DragonFactors.scores_from_raw(
+                dragon_raw,
+                regime=regime,
+                active_factors=active,
+                gates=self._cfg_layer_gates("dragon_layer"),
+            )
+            if not m3_scores:
+                continue
+            for code, m3_score in select_top_k(m3_scores, top_per):
                 all_candidates.append(self._make_candidate(code, sector_code, m3_score))
-
         all_candidates = self._dedupe_candidates_by_code(all_candidates)
-        logger.info(f"✅ M3 龙头股筛选完成: {len(all_candidates)} 只候选")
+        logger.info(f"✅ M3 候选: {len(all_candidates)}")
 
-        # M3 无候选 - 早期返回
         if not all_candidates:
-            logger.warning("⚠️ M3 筛选后无候选股票，返回空结果")
+            logger.warning(f"{td} 无 M3 候选")
             return {
-                'early_exit': True,
-                'exit_reason': 'no_candidates',
-                'trade_date': trade_date,
-                'market_raw': market_raw,
-                'index_code': index_code,
-                'index_name': index_name,
-                'sector_raw': sector_raw,
-                'm3_scores_by_sector': m3_scores_by_sector,
-                'dragon_raw_by_sector': dragon_raw_by_sector,
-                'all_candidates': all_candidates,
-                'ranked_candidates': [],
-                'market_risk_level': market_sentiment.get('market_risk_level', 'neutral'),
-                'position_scale_factor': market_sentiment.get('position_scale_factor', 1.0),
-                'market_composite_score': market_sentiment.get('market_composite_score', 0.0),
+                "early_exit": True,
+                "exit_reason": "no_candidates",
+                "trade_date": td,
+                "market_risk_level": grade,
+                "position_scale_factor": scale,
+                "regime": regime,
+                "market_composite_score": float(sentiment.get("market_composite_score", 0.0)),
+                "ranked_all": [],
+                "funnel": {"n_m3": 0, "n_m4": 0, "n_buy": 0, "stop": "no_m3", "regime": regime},
             }
 
-        # ===== M4+M5: 合力评分 =====
-        force_raw, ranked_candidates = await self._apply_force_factors(
-            all_candidates,
-            top_sectors,
+        # ----- M4 + M5 -----
+        force_map = await self._load_force_docs_map(
+            source=source,
+            trade_date=td,
+            candidates=all_candidates,
             stock_flow_recent=stock_flow_recent,
             stock_ohlcv=stock_ohlcv,
-            trade_date=trade_date,
         )
-        if not collect_raw:
-            force_raw = []
-
-        # ===== M6: 最终选股 =====
-        ranked_all = ranked_candidates or []
-        top_k_final = self._cfg_top_k(regime)
-        signals = ranked_all[:top_k_final]
-        grade = market_sentiment.get('market_risk_level', 'neutral')
-        scale = self._resolve_position_scale(
-            grade, float(market_sentiment.get('position_scale_factor', 1.0)), regime=regime
+        coop_cfg = self.config.get("cooperative_force") or {}
+        m4_threshold, gate_mode = self._resolve_m4_gate_settings(coop_cfg, regime, grade)
+        ranked = ForceFactors.score_and_compose_final(
+            candidates=all_candidates,
+            top_sectors=top_sectors,
+            m5_weights=self._cfg_final_weights(),
+            style_info=style_info,
+            active_factors=active,
+            force_docs_map=force_map,
+            m4_threshold=m4_threshold,
+            gate_mode=gate_mode,
         )
-        for sig in signals:
-            sig['market_risk_level'] = grade
-            sig['position_scale_factor'] = scale
+        logger.info(f"✅ M4+M5 合力后: {len(ranked)}")
 
-        logger.info(f"🎉 策略管道核心流程执行完成: 共选出 {len(signals)} 只股票")
+        if not ranked:
+            logger.warning(f"{td} M4 合力过滤后无候选")
+            return {
+                "early_exit": True,
+                "exit_reason": "m4_empty",
+                "trade_date": td,
+                "market_risk_level": grade,
+                "position_scale_factor": scale,
+                "regime": regime,
+                "market_composite_score": float(sentiment.get("market_composite_score", 0.0)),
+                "ranked_all": [],
+                "funnel": {
+                    "n_m3": len(all_candidates),
+                    "n_m4": 0,
+                    "n_buy": 0,
+                    "stop": "m4_empty",
+                    "regime": regime,
+                },
+            }
 
         return {
-            'early_exit': False,
-            'trade_date': trade_date,
-            'market_raw': market_raw,
-            'index_code': index_code,
-            'index_name': index_name,
-            'sector_raw': sector_raw,
-            'm2_scores': m2_scores,
-            'top_sectors': top_sectors,
-            'filtered_sectors': filtered_sectors,
-            'm3_scores_by_sector': m3_scores_by_sector,
-            'dragon_raw_by_sector': dragon_raw_by_sector,
-            'all_candidates': all_candidates,
-            'force_raw': force_raw,
-            'ranked_candidates': signals,
-            'ranked_all': ranked_all,
-            'market_risk_level': grade,
-            'position_scale_factor': scale,
-            'regime': regime,
-            'market_composite_score': market_sentiment.get('market_composite_score', 0.0),
-            'stock_infos': stock_infos,
+            "early_exit": False,
+            "trade_date": td,
+            "market_risk_level": grade,
+            "position_scale_factor": scale,
+            "regime": regime,
+            "market_composite_score": float(sentiment.get("market_composite_score", 0.0)),
+            "ranked_all": ranked,
+            "funnel": {
+                "n_m3": len(all_candidates),
+                "n_m4": len(ranked),
+                "n_buy": 0,
+                "stop": "ok",
+                "regime": regime,
+            },
         }
+
+    async def _load_sector_raw(
+        self,
+        *,
+        source: str,
+        trade_date: str,
+        filtered_sectors: List[Dict],
+        sector_stocks: Optional[Dict[str, List[str]]],
+        stock_ohlcv: Optional[Dict[str, pd.DataFrame]],
+        stock_flow_recent: Optional[Dict[str, List[Dict]]],
+        filtered_stocks: set,
+    ) -> Dict[str, Dict[str, Any]]:
+        """M2 raw：预计算读文档，现场用 OHLCV 算。"""
+        if source == "precomputed":
+            docs = await self._load_precomputed("get_factor_sectors", trade_date)
+            if not docs:
+                raise ValueError(f"无预计算 M2 数据: {trade_date}")
+            allowed = {
+                s.get("sector_code") for s in filtered_sectors if s.get("sector_code")
+            }
+            if allowed:
+                docs = [d for d in docs if d.get("sector_code") in allowed]
+            return SectorFactors.raw_from_docs(docs)
+        return SectorFactors.calculate_all_sector_factors_raw(
+            filtered_sectors,
+            sector_stocks or {},
+            stock_ohlcv or {},
+            stock_flow_recent or {},
+            trade_date=trade_date,
+            eligible_codes=filtered_stocks,
+        )
+
+    async def _load_dragon_raw_by_sector(
+        self,
+        *,
+        source: str,
+        trade_date: str,
+        top_sectors: List[Tuple[str, float]],
+        sector_stocks: Optional[Dict[str, List[str]]],
+        stock_ohlcv: Optional[Dict[str, pd.DataFrame]],
+        filtered_stocks: set,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """M3 raw：{sector_code: {code: raw}}。预计算读文档，现场用 OHLCV 算。"""
+        if source == "precomputed":
+            codes = [sc for sc, _ in top_sectors]
+            docs = await self._load_precomputed(
+                "get_factor_dragons", trade_date, sector_codes=codes
+            )
+            by: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            for d in docs or []:
+                code = d.get("code")
+                sc = d.get("sector_code", "")
+                if not code or code not in filtered_stocks:
+                    continue
+                by.setdefault(sc, {})[code] = DragonFactors.raw_from_doc(d)
+            return by
+
+        fund_provider = await self._ensure_fund_provider()
+        jobs = []
+        for sc, _ in top_sectors:
+            stocks = [s for s in (sector_stocks or {}).get(sc, []) if s in filtered_stocks]
+            if stocks:
+                jobs.append((sc, stocks))
+        raw_by = (
+            DragonFactors.calculate_all_dragon_factors_raw(
+                jobs,
+                stock_ohlcv or {},
+                trade_date=trade_date,
+                fund_provider=fund_provider,
+            )
+            if jobs
+            else {}
+        )
+        return {sc: (raw_by.get(sc) or {}) for sc, _ in jobs}
+
+    async def _load_force_docs_map(
+        self,
+        *,
+        source: str,
+        trade_date: str,
+        candidates: List[Dict],
+        stock_flow_recent: Optional[Dict[str, List[Dict]]],
+        stock_ohlcv: Optional[Dict[str, pd.DataFrame]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """M4 raw：{code: doc}。预计算读文档，现场用资金流/OHLCV/龙虎榜算。"""
+        if source == "precomputed":
+            docs = await self._load_precomputed("get_factor_forces", trade_date)
+            if not docs:
+                raise ValueError(f"无预计算 M4 数据: {trade_date}")
+            return {d["code"]: d for d in docs if d.get("code")}
+
+        codes = [c.get("code") for c in candidates if c.get("code")]
+        try:
+            stock_lhb_recent = await self._query_service.batch_get_lhb_recent(
+                codes, trade_date, days=10
+            )
+        except Exception as e:
+            logger.warning("龙虎榜加载失败（longhu_board_bonus 将为 0）: %s", e)
+            stock_lhb_recent = {}
+        raw_list = ForceFactors.apply_cooperative_force_raw(
+            candidates,
+            stock_flow_recent=stock_flow_recent,
+            stock_ohlcv=stock_ohlcv,
+            stock_lhb_recent=stock_lhb_recent,
+            trade_date=trade_date,
+        )
+        return {r["code"]: r for r in raw_list if r.get("code")}
+
+    def _result_to_signals_df(self, result: Dict[str, Any]) -> pd.DataFrame:
+        """M6：漏斗结果 → 策略层 signals DataFrame（buy/watch + funnel attrs）。"""
+        td = str(result.get("trade_date") or "")
+        grade = str(result.get("market_risk_level", "unknown"))
+        regime = str(result.get("regime", "neutral"))
+        scale = float(result.get("position_scale_factor", 0.0))
+        funnel = dict(result.get("funnel") or {})
+        if result.get("early_exit"):
+            return self._empty_signals_df(
+                td, market_risk_level=grade, position_scale_factor=scale, funnel=funnel
+            )
+        ranked_all = result.get("ranked_all") or []
+        if not ranked_all:
+            return self._empty_signals_df(
+                td, market_risk_level=grade, position_scale_factor=scale, funnel=funnel
+            )
+        signals = ranked_all[: self._exit_universe_n(regime)]
+        allow_new = self._allow_new_open_in_signals(grade)
+        df = self._ranked_to_signals_df(
+            signals, td, grade, scale, regime=regime, allow_new_open=allow_new
+        )
+        n_buy = (
+            int((df["signal_type"] == "buy").sum())
+            if not df.empty and "signal_type" in df.columns
+            else 0
+        )
+        df.attrs["funnel_n_m3"] = int(funnel.get("n_m3", 0))
+        df.attrs["funnel_n_m4"] = int(funnel.get("n_m4", 0))
+        df.attrs["funnel_n_buy"] = n_buy
+        df.attrs["funnel_stop"] = str(funnel.get("stop", "ok"))
+        return df
+
+    async def _run_funnel_live(self, data: Dict[str, Any], trade_date: str) -> Dict[str, Any]:
+        idx_df = get_index_ohlcv_df(data.get("index_ohlcv") or {})
+        sentiment = MarketFactors.calculate_market_sentiment(
+            idx_df,
+            index_name=data.get("index_name", "沪深 300"),
+            trade_date=trade_date,
+        )
+        return await self._run_funnel(
+            trade_date,
+            sentiment,
+            source="live",
+            index_df=idx_df,
+            all_stocks=data["all_stocks"],
+            stock_infos=data["stock_infos"],
+            sectors=data["sectors"],
+            stock_ohlcv=data.get("stock_ohlcv"),
+            sector_stocks=data.get("sector_stocks"),
+            stock_flow_recent=data.get("stock_flow_recent"),
+        )
 
     async def compute_signals(
         self,
@@ -635,37 +891,14 @@ class CrossSectionStrategyPipeline:
         prebuilt_data: Optional[Dict[str, Any]] = None,
         prefer_precomputed: bool = True,
     ) -> pd.DataFrame:
-        """
-        因子层的唯一公开入口：计算截面信号。
-
-        内部自动选择最优路径：
-        1. prefer_precomputed=True 时，优先尝试 Mongo 预计算（score_signals）
-        2. 预计算不可用或 prefer_precomputed=False，则现场计算（score_signals_live）
-
-        返回统一 schema 的信号 DataFrame，包含 code/rank/final_score/signal_type 等字段。
-
-        Args:
-            trade_date: 交易日，'YYYY-MM-DD'，None 表示今天
-            lookback_days: OHLCV 回看天数（实时计算用）
-            sectors: 关心的板块列表（None 走默认）
-            max_stocks: 限制处理股票数（调试用）
-            prebuilt_data: 已构造的 M0 数据（跳过数据加载）
-            prefer_precomputed: True 时优先尝试 Mongo 预计算
-
-        Returns:
-            信号 DataFrame（code, rank, final_score, signal_type 等）
-        """
+        """对外推荐入口：预计算优先，失败则现场。两条路径都走 _run_funnel。"""
         td = trade_date or datetime.now().strftime("%Y-%m-%d")
-
-        # 路径 1：优先尝试预计算
         if prebuilt_data is None and prefer_precomputed:
             try:
                 logger.info(f"🔍 {td} 尝试预计算信号（Mongo 快速路径）")
                 return await self.score_signals(td)
             except ValueError as e:
                 logger.info(f"预计算不可用，降级到实时计算: {e}")
-
-        # 路径 2：实时计算（现场 M0~M5）
         logger.info(f"📊 {td} 实时计算信号（M0~M5 完整流程）")
         return await self.score_signals_live(
             trade_date=td,
@@ -685,16 +918,31 @@ class CrossSectionStrategyPipeline:
         sectors: List[Dict],
         sector_stocks: Dict[str, List[str]],
         index_ohlcv: Dict[str, pd.DataFrame],
-        index_name: str = '沪深 300',
+        index_name: str = "沪深 300",
     ) -> List[Dict]:
-        """执行完整的截面日频策略流程，返回最终选出的股票列表。"""
-        result = await self._execute_pipeline_core(
-            trade_date, all_stocks, stock_infos, stock_ohlcv, stock_flow_recent,
-            sectors, sector_stocks, index_ohlcv, index_name, collect_raw=False
-        )
-        if result.get('early_exit'):
+        """旧入口：现场漏斗，返回 top_k 候选 list（不是 DataFrame）。"""
+        data = {
+            "trade_date": trade_date,
+            "all_stocks": all_stocks,
+            "stock_infos": stock_infos,
+            "stock_ohlcv": stock_ohlcv,
+            "stock_flow_recent": stock_flow_recent,
+            "sectors": sectors,
+            "sector_stocks": sector_stocks,
+            "index_ohlcv": index_ohlcv,
+            "index_name": index_name,
+        }
+        result = await self._run_funnel_live(data, trade_date)
+        if result.get("early_exit"):
             return []
-        return result['ranked_candidates']
+        regime = str(result.get("regime") or "neutral")
+        grade = str(result.get("market_risk_level") or "unknown")
+        scale = float(result.get("position_scale_factor", 1.0))
+        ranked = (result.get("ranked_all") or [])[: self._cfg_top_k(regime)]
+        for sig in ranked:
+            sig["market_risk_level"] = grade
+            sig["position_scale_factor"] = scale
+        return ranked
 
     async def score_signals_live(
         self,
@@ -704,11 +952,7 @@ class CrossSectionStrategyPipeline:
         max_stocks: Optional[int] = None,
         prebuilt_data: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
-        """
-        实时计算 M0~M5 → 输出与 score_signals() 相同 schema 的 DataFrame。
-
-        供 SignalGenerator / 非预计算回测使用；含 buy/watch 候选池与市场仓位元数据。
-        """
+        """现场路径：M0 OHLCV → _run_funnel(source=live) → signals DataFrame。"""
         td = trade_date
         if prebuilt_data is not None:
             data = prebuilt_data
@@ -719,291 +963,33 @@ class CrossSectionStrategyPipeline:
                 sectors=sectors,
                 max_stocks=max_stocks,
             )
-
-        result = await self._execute_pipeline_core(
-            data["trade_date"],
-            data["all_stocks"],
-            data["stock_infos"],
-            data["stock_ohlcv"],
-            data["stock_flow_recent"],
-            data["sectors"],
-            data["sector_stocks"],
-            data["index_ohlcv"],
-            data.get("index_name", "沪深 300"),
-            collect_raw=False,
-        )
-        grade = str(result.get("market_risk_level", "unknown"))
-        scale = float(result.get("position_scale_factor", 1.0))
-
-        if result.get("early_exit"):
-            logger.info(
-                f"{td} 实时管道终止: {result.get('exit_reason')} grade={grade}"
-            )
-            return self._empty_signals_df(
-                td, market_risk_level=grade, position_scale_factor=scale
-            )
-
-        ranked_all = result.get("ranked_all") or []
-        if not ranked_all:
-            logger.warning(f"{td} 实时管道无候选")
-            return self._empty_signals_df(
-                td, market_risk_level=grade, position_scale_factor=scale
-            )
-
-        regime = str(result.get("regime", "neutral"))
-        signals = ranked_all[: self._exit_universe_n(regime)]
-        return self._ranked_to_signals_df(signals, td, grade, scale, regime=regime)
-
-    # ===================== 预计算打分快路径 =====================
+        result = await self._run_funnel_live(data, data.get("trade_date", td))
+        return self._result_to_signals_df(result)
 
     async def score_signals(self, trade_date: str) -> pd.DataFrame:
-        """
-        从 MongoDB 读预计算原始值 → 用当前权重打分 → signals DataFrame。
-
-        不加载 OHLCV/资金流；改权重/门槛/topK 无需重跑预计算。
-        直接使用 MongoDB 规范字段名（f21_rps_20d 等），无需转换。
-        """
+        """预计算路径：Mongo raw → _run_funnel(source=precomputed) → signals DataFrame。"""
         td = trade_date
-        qs = self._query_service
-        cache = self._precomputed_cache
-
-        if cache is not None and cache.loaded:
-            market_doc = cache.get_factor_market(td)
-        else:
-            market_doc = await qs.get_factor_market(td)
+        market_doc = await self._load_precomputed("get_factor_market", td)
         if market_doc is None:
             raise ValueError(f"无预计算 M1 数据: {td}")
-
-        sentiment = MarketFactors.score_from_raw(
-            mf1_slope_pct=float(market_doc.get("mf1_slope_pct", float("nan"))),
-            mf2_boll_pct=float(market_doc.get("mf2_boll_pct", float("nan"))),
-            mf3_vol_ratio=float(market_doc.get("mf3_vol_ratio", float("nan"))),
-            mf4_momentum_5d=float(market_doc.get("mf4_momentum_5d", float("nan"))),
-            mf5_atr_ratio=float(market_doc.get("mf5_atr_ratio", float("nan"))),
-        )
-        grade = sentiment["market_risk_level"]
-
-        if grade == "red":
-            logger.info(f"🔴 {td} 市场红灯，无信号")
-            return self._empty_signals_df(
-                td, market_risk_level=grade, position_scale_factor=float(
-                    self._resolve_position_scale(
-                        grade, sentiment["position_scale_factor"], regime="neutral"
-                    )
-                )
+        sentiment = MarketFactors.score_from_doc(market_doc)
+        # 红灯在漏斗内就会停；这里先判断，避免无 M2 的测试 QS 还去拉股票列表。
+        if str(sentiment.get("market_risk_level")) == "red" and self._factor_stops_on_red():
+            result = await self._run_funnel(
+                td, sentiment, source="precomputed",
+                all_stocks=[], stock_infos={}, sectors=[],
             )
-
-        # ★ P4 风格自适应：提前检测市场风格，传递给 M2/M3 层及仓位 overlay
-        style_info = await self._detect_style(td)
-        regime = style_info["regime"]
-        position_scale_factor = self._resolve_position_scale(
-            grade, sentiment["position_scale_factor"], regime=regime
-        )
-        logger.info(
-            f"🎨 {td} 市场风格: {regime} | "
-            f"autocorr={style_info.get('autocorr', 0):.3f} "
-            f"momentum_w={style_info['momentum_weight']:.2f} "
-            f"reversal_w={style_info['reversal_weight']:.2f}"
-        )
-
+            return self._result_to_signals_df(result)
         all_stocks_docs = await self._get_all_stocks_cached()
-        all_stocks = [d["code"] for d in all_stocks_docs]
-        stock_infos = {d["code"]: d for d in all_stocks_docs}
-        sector_list = await self._get_sectors_cached()
-
-        tech_filtered = self.prefilters.apply_technical_filters(
-            all_stocks, {}, stock_infos, apply_main_board=True, apply_bollinger=False
+        result = await self._run_funnel(
+            td,
+            sentiment,
+            source="precomputed",
+            all_stocks=[d["code"] for d in all_stocks_docs],
+            stock_infos={d["code"]: d for d in all_stocks_docs},
+            sectors=await self._get_sectors_cached(),
         )
-        blacklist_result = self.prefilters.apply_blacklist_filters(
-            tech_filtered, sectors=sector_list
-        )
-        non_blacklisted = blacklist_result["stocks"]
-        blacklisted_set = set(tech_filtered) - set(non_blacklisted)
-        allowed_sectors = {
-            s.get("sector_code")
-            for s in (blacklist_result.get("sectors") or [])
-            if s.get("sector_code")
-        }
-
-        if cache is not None and cache.loaded:
-            sector_docs = cache.get_factor_sectors(td)
-        else:
-            sector_docs = await qs.get_factor_sectors(td)
-        if not sector_docs:
-            raise ValueError(f"无预计算 M2 数据: {td}")
-        if allowed_sectors:
-            sector_docs = [
-                d for d in sector_docs if d.get("sector_code") in allowed_sectors
-            ]
-
-        # 直接用规范字段名调用 scores_from_raw()，无需 _reconstruct_sector_scores()
-        # P3 新因子 f27/f29/f30 必须传入，否则 scores_from_raw 降级到旧因子路径
-        m2_scores = SectorFactors.scores_from_raw({
-            "f21_rps_20d": {d["sector_code"]: d.get("f21_rps_20d", d.get("f21_rps", float("nan"))) for d in sector_docs},
-            "f21_rps_10d": {d["sector_code"]: d.get("f21_rps_10d", float("nan")) for d in sector_docs},
-            "f21_rps_60d": {d["sector_code"]: d.get("f21_rps_60d", float("nan")) for d in sector_docs},
-            "f22_main_flow": {d["sector_code"]: d.get("f22_main_flow", 0.0) for d in sector_docs},
-            "f23_limit_up_density": {d["sector_code"]: d.get("f23_limit_up_density", 0.0) for d in sector_docs},
-            "f24_max_consecutive": {d["sector_code"]: d.get("f24_max_consecutive", 0.0) for d in sector_docs},
-            "f25_volume_slope_5d": {d["sector_code"]: d.get("f25_volume_slope_5d", d.get("f25_volume_slope", float("nan"))) for d in sector_docs},
-            "f25_volume_slope_3d": {d["sector_code"]: d.get("f25_volume_slope_3d", float("nan")) for d in sector_docs},
-            "f25_volume_slope_10d": {d["sector_code"]: d.get("f25_volume_slope_10d", float("nan")) for d in sector_docs},
-            "f26_volume_growth_5d": {d["sector_code"]: d.get("f26_volume_growth_5d", d.get("f26_volume_growth", float("nan"))) for d in sector_docs},
-            "f26_volume_growth_20d": {d["sector_code"]: d.get("f26_volume_growth_20d", float("nan")) for d in sector_docs},
-            "f27_new_high_ratio": {d["sector_code"]: d.get("f27_new_high_ratio", float("nan")) for d in sector_docs},
-            "f28_consistency": {d["sector_code"]: d.get("f28_consistency", 0) for d in sector_docs},
-            "f29_sector_breadth": {d["sector_code"]: d.get("f29_sector_breadth", float("nan")) for d in sector_docs},
-            "f30_sector_concentration": {d["sector_code"]: d.get("f30_sector_concentration", float("nan")) for d in sector_docs},
-        }, regime=regime, active_factors=self._get_active_factors(regime), top_n=self._cfg_top_sectors())
-
-        top_k_sectors = self._cfg_top_sectors()
-        top_sectors = sorted(m2_scores.items(), key=lambda x: x[1], reverse=True)[
-            :top_k_sectors
-        ]
-
-        top_sector_codes = [sc for sc, _ in top_sectors]
-        if cache is not None and cache.loaded:
-            dragon_docs = cache.get_factor_dragons(td, sector_codes=top_sector_codes)
-        else:
-            dragon_docs = await qs.get_factor_dragons(td, sector_codes=top_sector_codes)
-        if not dragon_docs:
-            logger.warning(f"{td} 无 M3 数据 for top sectors")
-            return self._empty_signals_df(
-                td, market_risk_level=grade, position_scale_factor=float(position_scale_factor)
-            )
-
-        dragon_by_sector: Dict[str, List[Dict]] = {}
-        for doc in dragon_docs:
-            sc = doc.get("sector_code", "")
-            dragon_by_sector.setdefault(sc, []).append(doc)
-
-        top_per_sector = self._cfg_top_per_sector()
-        all_candidates: List[Dict] = []
-
-        for sector_code, _ in top_sectors:
-            sector_dragons = dragon_by_sector.get(sector_code, [])
-            if not sector_dragons:
-                continue
-
-            # 直接用规范字段名调用 scores_from_raw()，无需 _reconstruct_dragon_scores()
-            # P3 新因子 f36/f37 必须传入，否则 scores_from_raw 降级到旧因子路径（f32/f34）
-            dragon_map = {
-                d["code"]: d
-                for d in sector_dragons
-                if d.get("code") and d["code"] not in blacklisted_set
-            }
-            if not dragon_map:
-                continue
-            m3_scores = DragonFactors.scores_from_raw({
-                code: {
-                    "f31b_rps_percentile": d.get("f31b_rps_percentile", float("nan")),
-                    "f31_excess_return_5d": d.get("f31_excess_return_5d", d.get("f31_excess_return", float("nan"))),
-                    "f31_excess_return_10d": d.get("f31_excess_return_10d", float("nan")),
-                    "f31_excess_return_15d": d.get("f31_excess_return_15d", float("nan")),
-                    "f31_excess_return_20d": d.get("f31_excess_return_20d", float("nan")),
-                    "f32_amount": d.get("f32_amount", float("nan")),
-                    "f33_consecutive_boards": d.get("f33_consecutive_boards", 0),
-                    "f34_resonance_pct_5d": d.get("f34_resonance_pct_5d", d.get("f34_resonance_pct", float("nan"))),
-                    "f34_resonance_pct_3d": d.get("f34_resonance_pct_3d", float("nan")),
-                    "f34_resonance_pct_10d": d.get("f34_resonance_pct_10d", float("nan")),
-                    "f35_bollinger_trend": d.get("f35_bollinger_trend", float("nan")),
-                    "f35_bollinger_pass": d.get("f35_bollinger_pass", 0),
-                    "f36_identity_premium": d.get("f36_identity_premium", float("nan")),
-                    "f37_relative_strength": d.get("f37_relative_strength", float("nan")),
-                    "f38_turnover_anomaly": d.get("f38_turnover_anomaly", float("nan")),
-                    # 基本面因子
-                    "f39_pb": d.get("f39_pb", float("nan")),
-                    "f40_holder_change": d.get("f40_holder_change", float("nan")),
-                }
-                for code, d in dragon_map.items()
-            }, regime=regime, active_factors=self._get_active_factors(regime), scoring_method=self.config.get("scoring_method", "linear"))
-
-            if not m3_scores:
-                continue
-            candidates = self._top_by_score(m3_scores, top_per_sector)
-            for code, m3_score in candidates:
-                all_candidates.append(self._make_candidate(code, sector_code, m3_score))
-
-        all_candidates = self._dedupe_candidates_by_code(all_candidates)
-
-        if not all_candidates:
-            logger.warning(f"{td} 无 M3 候选")
-            return self._empty_signals_df(
-                td, market_risk_level=grade, position_scale_factor=float(position_scale_factor)
-            )
-
-        if cache is not None and cache.loaded:
-            force_docs = cache.get_factor_forces(td)
-        else:
-            force_docs = await qs.get_factor_forces(td)
-        if not force_docs:
-            raise ValueError(f"无预计算 M4 数据: {td}")
-
-        # 简化 M4+M5 打分逻辑：与实盘 apply_cooperative_force_and_score 对齐
-        force_map = {d["code"]: d for d in force_docs}
-        m4_threshold = self.config.get("cooperative_force", {}).get(
-            "threshold_pct", 0.03
-        )
-
-        # M4 合力过滤：与 live `_apply_cooperative_force_filter` 对齐
-        # fcoop1 门槛 + fcoop3 必须有限（NaN 在 live 会被拒绝）
-        filtered = []
-        for c in all_candidates:
-            fd = force_map.get(c["code"])
-            if fd is None:
-                continue
-            if not ForceFactors.passes_precomputed_m4_gate(fd, m4_threshold):
-                continue
-            merged = {
-                "code": fd["code"],
-                "sector_code": c.get("sector_code") or fd.get("sector_code", ""),
-                "dragon_composite_score": c["dragon_composite_score"],
-            }
-            # 合并 fcoop 原始字段，供 _composite_force_scores 读取
-            merged.update({k: v for k, v in fd.items() if k not in ("code", "sector_code")})
-            filtered.append(merged)
-
-        if not filtered:
-            logger.warning(f"{td} M4 合力过滤后无候选")
-            return self._empty_signals_df(
-                td, market_risk_level=grade, position_scale_factor=float(position_scale_factor)
-            )
-
-        # ──────── M5 打分：合力因子复合 ────────
-        # 风格检测已在 score_signals 顶部完成，直接使用 style_info/regime
-        adjusted_entries = ForceFactors._adjust_weights_by_style(
-            style_info, active_factors=self._get_active_factors(regime)
-        )
-        composite_scores = ForceFactors._composite_force_scores(filtered, adjusted_entries)
-
-        m5_weights = self._cfg_final_weights()
-        w_sector = m5_weights["sector"]
-        w_dragon = m5_weights["dragon"]
-        w_coop = m5_weights["cooperative"]
-        total_w = max(w_sector + w_dragon + w_coop, 1e-8)
-        sector_rank_map = ForceFactors._normalize_sector_ranks(top_sectors)
-
-        ranked = []
-        for c in filtered:
-            code = c["code"]
-            coop_score = composite_scores.get(code, 50.0)
-            lhb_bonus = float(c.get("longhu_board_bonus", 0.0) or 0.0)
-            coop_score = min(coop_score + lhb_bonus, 100.0)
-            c["force_composite_score"] = coop_score
-            c["longhu_board_bonus"] = lhb_bonus
-            c["strategy_signal_score"] = (
-                w_sector * sector_rank_map.get(c.get("sector_code", ""), 0.0)
-                + w_dragon * c.get("dragon_composite_score", 0.0)
-                + w_coop * coop_score
-            ) / total_w
-            ranked.append(c)
-
-        ranked = sorted(ranked, key=lambda x: x.get("strategy_signal_score", 0), reverse=True)
-
-        top_k_final = self._cfg_top_k(regime)
-        exit_universe_n = self._exit_universe_n(regime)
-        signals = ranked[:exit_universe_n]
-        return self._ranked_to_signals_df(signals, td, grade, position_scale_factor, regime=regime)
+        return self._result_to_signals_df(result)
 
     def _ranked_to_signals_df(
         self,
@@ -1012,8 +998,9 @@ class CrossSectionStrategyPipeline:
         market_risk_level: str,
         position_scale_factor: float,
         regime: str = "neutral",
+        allow_new_open: bool = True,
     ) -> pd.DataFrame:
-        """将 M5 排序候选转为策略层统一 signals DataFrame（与 score_signals 同 schema）。"""
+        """M6 输出契约（策略层 DataFrame schema）。不下沉到因子：这是管道产品，不是因子公式。"""
         td = trade_date
         grade = market_risk_level
         scale = float(position_scale_factor)
@@ -1037,8 +1024,11 @@ class CrossSectionStrategyPipeline:
                     sig.get("dragon_composite_score", sig.get("dragon_score", 0.0)) or 0.0
                 ),
                 "force_composite_score": float(sig.get("force_composite_score", 0.0) or 0.0),
+                "f35_bollinger_trend": float(sig.get("f35_bollinger_trend", float("nan"))),
                 "rank": i,
-                "signal_type": "buy" if i <= top_k_final else "watch",
+                "signal_type": (
+                    "buy" if (allow_new_open and i <= top_k_final) else "watch"
+                ),
                 "market_risk_level": grade,
                 "market_grade": grade,
                 "position_scale_factor": scale,
@@ -1054,221 +1044,46 @@ class CrossSectionStrategyPipeline:
         df.attrs["position_scale"] = scale
         df.attrs["regime"] = regime
         df.attrs["top_k"] = int(top_k_final)
+        df.attrs["m1_allow_new_open"] = allow_new_open
         logger.info(
-            f"✅ {td} 信号 DataFrame: buy={min(len(df), top_k_final)} "
-            f"universe={len(df)} (grade={grade}, scale={scale:.2f})"
+            f"✅ {td} 信号 DataFrame: buy={sum(1 for r in rows if r['signal_type']=='buy')} "
+            f"universe={len(df)} (grade={grade}, scale={scale:.2f}, allow_new={allow_new_open})"
         )
         return df
 
-    def _get_index_df(self, index_ohlcv: Dict[str, pd.DataFrame]) -> Optional[pd.DataFrame]:
-        """【辅助方法】安全获取指数OHLCV数据
-
-        逻辑：
-        1. 优先使用字典中的第一个key
-        2. 如果不存在则尝试 "399300"（沪深300）
-        3. 如果仍不存在则返回 None
-        """
-        if not index_ohlcv:
+    async def _ensure_fund_provider(self):
+        """现场 M3 的 PIT 基本面缓存（预计算文档已含 f39/f40，不走这里）。"""
+        if self._fund_provider_tried:
+            return self._fund_provider
+        self._fund_provider_tried = True
+        self._fund_provider = None
+        qs = self._query_service
+        if qs is None or not hasattr(qs, "get_all_fundamental_pershare"):
             return None
-        index_code = list(index_ohlcv.keys())[0]
-        df = index_ohlcv.get(index_code)
-        if df is None:
-            df = index_ohlcv.get("399300")
-        return df
-
-    async def _apply_universe_filters(
-        self,
-        all_stocks: List[str],  # 全市场股票
-        stock_ohlcv: Dict[str, pd.DataFrame],  # OHLCV 数据
-        stock_infos: Optional[Dict[str, Dict]] = None,  # 股票信息
-        sectors: Optional[List[Dict]] = None,  # 板块列表
-    ) -> Tuple[Set[str], List[Dict], Set[str]]:
-        """【辅助方法】统一的宇宙过滤逻辑
-
-        职责：应用技术过滤 + 黑名单过滤
-
-        Args:
-            all_stocks: 全市场股票代码列表
-            stock_ohlcv: 个股OHLCV数据
-            stock_infos: 股票信息（ST判断）
-            sectors: 板块列表
-
-        Returns:
-            (filtered_stocks_set, filtered_sectors, blacklisted_codes)
-        """
-        # 技术过滤 + 黑名单过滤
-        tech_filtered = self.prefilters.apply_technical_filters(
-            all_stocks, stock_ohlcv, stock_infos, apply_main_board=True, apply_bollinger=False
-        )
-        blacklist_result = self.prefilters.apply_blacklist_filters(tech_filtered, sectors=sectors)
-        non_blacklisted_stocks = blacklist_result["stocks"]
-        filtered_sectors = blacklist_result.get("sectors", sectors) if sectors else []
-        blacklisted_codes = set(tech_filtered) - set(non_blacklisted_stocks)
-        filtered_stocks_set = set(non_blacklisted_stocks)
-
-        logger.info(f"🔍 板块过滤: {len(sectors or [])} → {len(filtered_sectors)}")
-        logger.info(f"🔍 个股过滤: {len(all_stocks)} → {len(filtered_stocks_set)} 只")
-        if blacklisted_codes:
-            logger.debug(f"  黑名单排除: {len(blacklisted_codes)} 只")
-
-        return filtered_stocks_set, filtered_sectors, blacklisted_codes
-
-    def _compute_market_sector_ohlcv(
-        self,
-        sector_ohlcv: Optional[Dict[str, pd.DataFrame]],
-        sector_stocks: Dict[str, List[str]],
-        stock_ohlcv: Dict[str, pd.DataFrame],
-        stock_flow_recent: Optional[Dict[str, List[Dict]]] = None,
-    ) -> Dict[str, pd.DataFrame]:
-        """【辅助方法】计算全市场板块OHLCV（用于F2.8排名计算）
-
-        如果预聚合了sector_ohlcv，直接用；否则从所有股票聚合
-
-        Args:
-            sector_ohlcv: 预聚合的板块OHLCV（可选）
-            sector_stocks: 板块包含的股票
-            stock_ohlcv: 个股OHLCV数据
-            stock_flow_recent: 个股最近资金流向数据
-
-        Returns:
-            全市场板块OHLCV DataFrame
-        """
-        if sector_ohlcv is not None:
-            # 如果预聚合了 sector_ohlcv，直接用该数据作为全市场板块OHLCV
-            return sector_ohlcv
-        else:
-            # 从所有 sectors 聚合全市场板块OHLCV
-            market_sector_ohlcv, _ = SectorFactors._aggregate_sectors_from_stocks(
-                sector_stocks,
-                stock_ohlcv,
-                stock_flow_recent or {},
-            )
-            return market_sector_ohlcv
-
-    async def _compute_dragon_scores_for_sector(
-        self,
-        sector_code: str,
-        sector_stock_list: List[str],
-        stock_ohlcv: Dict[str, pd.DataFrame],
-        blacklisted_codes: Optional[Set[str]] = None,
-        trade_date: str = "",
-        regime: str = "neutral",
-    ) -> Tuple[Dict[str, float], Dict]:
-        """【辅助方法】计算单个板块内的龙头因子分数
-
-        Args:
-            sector_code: 板块代码
-            sector_stock_list: 该板块的股票列表
-            stock_ohlcv: 个股OHLCV数据
-            blacklisted_codes: 黑名单股票集合（用于过滤）
-            trade_date: 交易日期
-
-        Returns:
-            (m3_scores, dragon_raw)：打分后的分数字典和原始因子字典
-        """
-        dragon_raw = DragonFactors.calculate_all_dragon_factors_in_sector_raw(
-            sector_stock_list,
-            stock_ohlcv,
-            trade_date=trade_date,
-        )
-        if not dragon_raw:
-            return {}, {}
-
-        if blacklisted_codes:
-            dragon_raw = {
-                k: v for k, v in dragon_raw.items() if k not in blacklisted_codes
-            }
-            if not dragon_raw:
-                return {}, {}
-
-        m3_scores = DragonFactors.scores_from_raw(
-            dragon_raw,
-            regime=regime,
-            active_factors=self._get_active_factors(regime),
-            scoring_method=self.config.get("scoring_method", "linear"),
-        )
-
-        return m3_scores, dragon_raw
-
-    async def _apply_force_factors(
-        self,
-        all_candidates: List[Dict],
-        top_sectors: List[Tuple[str, float]],
-        stock_flow_recent: Optional[Dict[str, List[Dict]]] = None,
-        stock_ohlcv: Optional[Dict[str, pd.DataFrame]] = None,
-        trade_date: str = "",
-    ) -> Tuple[List[Dict], List[Dict]]:
-        """【辅助方法】应用合力因子（M4+M5）
-
-        依次计算：M4 原始合力因子 → M5 合力评分
-
-        Args:
-            all_candidates: 候选股票列表
-            top_sectors: Top 板块列表
-            stock_flow_recent: 个股最近资金流向数据
-            stock_ohlcv: 个股OHLCV数据
-            trade_date: 交易日期
-
-        Returns:
-            (force_raw, ranked_candidates)
-        """
-        m4_threshold = self.config.get('cooperative_force', {}).get('threshold_pct', 0.03)
-        weights = self._cfg_final_weights()
-
-        # 风格检测
-        style_info = await self._detect_style(trade_date)
-        regime = str(style_info.get("regime") or "neutral")
-        logger.info(
-            f"🎨 市场风格: {regime} | "
-            f"momentum_weight={style_info['momentum_weight']:.2f} "
-            f"reversal_weight={style_info['reversal_weight']:.2f}"
-        )
-
-        # M4：计算原始合力因子值（全部候选，不过滤）
-        codes = [c.get("code") for c in all_candidates if c.get("code")]
         try:
-            stock_lhb_recent = await self._query_service.batch_get_lhb_recent(
-                codes, trade_date, days=10
-            )
+            from zstock.data_management.fundamental_provider import FundamentalDataProvider
+
+            provider = FundamentalDataProvider()
+            await provider.load_from_query_service(qs)
+            if provider.is_loaded:
+                self._fund_provider = provider
+                logger.info(
+                    "基本面因子就绪: BPS=%d, HolderChange=%d",
+                    provider.codes_with_pb(),
+                    provider.codes_with_holder(),
+                )
         except Exception as e:
-            logger.warning("龙虎榜加载失败（longhu_board_bonus 将为 0）: %s", e)
-            stock_lhb_recent = {}
-
-        force_raw = ForceFactors.apply_cooperative_force_raw(
-            all_candidates,
-            stock_flow_recent=stock_flow_recent,
-            stock_ohlcv=stock_ohlcv,
-            stock_lhb_recent=stock_lhb_recent,
-            trade_date=trade_date,
-        )
-        logger.info(f"✅ M4 原始合力因子收集完成: {len(force_raw)} 只候选")
-
-        # M5：计算合力评分+最终合成（用于信号生成）
-        ranked_candidates = ForceFactors.apply_cooperative_force_and_score(
-            all_candidates,
-            top_sectors,
-            m4_threshold=m4_threshold,
-            w_sector=weights['sector'],
-            w_dragon=weights['dragon'],
-            w_coop=weights['cooperative'],
-            stock_flow_recent=stock_flow_recent,
-            stock_ohlcv=stock_ohlcv,
-            stock_lhb_recent=stock_lhb_recent,
-            trade_date=trade_date,
-            style_info=style_info,
-            active_factors=self._get_active_factors(regime),
-            force_raw=force_raw,
-        )
-        logger.info(f"✅ M4+M5 合力评分完成: {len(ranked_candidates)} 只候选")
-
-        return force_raw, ranked_candidates
+            logger.warning("基本面因子加载失败，f39/f40 将为 NaN: %s", e)
+        return self._fund_provider
 
     @staticmethod
     def _empty_signals_df(
         trade_date: str,
         market_risk_level: str = "red",
         position_scale_factor: float = 0.0,
+        funnel: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
+        """空信号表，列与 attrs 与 _ranked_to_signals_df 对齐。"""
         grade = market_risk_level
         scale = float(position_scale_factor)
         df = pd.DataFrame(
@@ -1295,4 +1110,11 @@ class CrossSectionStrategyPipeline:
         df.attrs["position_scale_factor"] = scale
         df.attrs["position_scale"] = scale
         df.attrs["top_k"] = 0
+        extra = funnel or {}
+        df.attrs["funnel_n_m3"] = int(extra.get("n_m3", 0))
+        df.attrs["funnel_n_m4"] = int(extra.get("n_m4", 0))
+        df.attrs["funnel_n_buy"] = int(extra.get("n_buy", 0))
+        df.attrs["funnel_stop"] = str(extra.get("stop", "empty"))
+        if extra.get("regime") is not None:
+            df.attrs["regime"] = extra.get("regime")
         return df

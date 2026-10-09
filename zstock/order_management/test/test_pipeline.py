@@ -13,7 +13,6 @@ from zstock.order_management.test.conftest import FakeQMT, make_position
 
 def _pipe(price_map, fake_db, positions=None, capital=10_000_000, allow_mock=True, mock_mode=None):
     gen = OrderGenerator()
-    gen._database_service = fake_db
     exe = XtQuantExecutor(
         qmt_util=FakeQMT(price_map, positions=positions or [], capital=capital),
         allow_mock=allow_mock,
@@ -27,6 +26,7 @@ def _pipe(price_map, fake_db, positions=None, capital=10_000_000, allow_mock=Tru
         trade_settlement=TradeSettlement(),
         execution_strategy=ExecutionStrategy(twap_interval_seconds=0),
         allow_mock=allow_mock,
+        database_service=fake_db,
     )
 
 
@@ -78,15 +78,14 @@ async def test_twap_happy_path_from_empty_broker(target_holdings, real_price_map
 
 @pytest.mark.asyncio
 async def test_no_orders_when_already_aligned(target_holdings, real_price_map, fake_db, initial_capital):
-    from zstock.order_management.order_generator import OrderGenerator
-
     row = target_holdings.iloc[0]
     code = str(row["code"])
-    vol = OrderGenerator._row_to_volume(
-        pd.Series({"stock_code": code, "weight": float(row["weight"])}),
+    lots = OrderGenerator().lots_from_positions(
+        pd.DataFrame([{"code": code, "weight": float(row["weight"])}]),
         real_price_map,
         initial_capital,
     )
+    vol = int(lots.iloc[0]["volume"])
     pipe = _pipe(
         real_price_map,
         fake_db,
@@ -150,7 +149,6 @@ async def test_broker_positions_none_stops(target_holdings, real_price_map, fake
             return None
 
     gen = OrderGenerator()
-    gen._database_service = fake_db
     exe = XtQuantExecutor(qmt_util=NonePos(real_price_map), allow_mock=True)
     exe._db_service = fake_db
     pipe = OrderManagementPipeline(
@@ -159,6 +157,7 @@ async def test_broker_positions_none_stops(target_holdings, real_price_map, fake
         trade_settlement=TradeSettlement(),
         execution_strategy=ExecutionStrategy(twap_interval_seconds=0),
         allow_mock=True,
+        database_service=fake_db,
     )
     out = await pipe.execute_full_pipeline(target_holdings, trade_date="2024-01-02")
     assert out["status"] == "failed"
@@ -176,5 +175,5 @@ def test_default_ctor_uses_injected_deps(monkeypatch, real_price_map, fake_db):
         ),
     )
     pipe = OrderManagementPipeline(allow_mock=True)
-    assert pipe.order_generator is not None
-    assert pipe.xtquant_executor is not None
+    assert pipe._order_generator is not None
+    assert pipe._xtquant_executor is not None

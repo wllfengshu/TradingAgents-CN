@@ -70,15 +70,12 @@ def signals_from_payload(payload: Dict[str, Any]) -> pd.DataFrame:
 @pytest.fixture(autouse=True)
 def _clear_strategy_caches():
     from zstock.strategy_management.pipeline import StrategyPipeline
-    from zstock.strategy_management.risk_manager import _load_risk_limits_from_config
     from zstock.common.config import strategy_config
 
     StrategyPipeline._config_cache = None
-    _load_risk_limits_from_config._cache = None
     strategy_config._clear_cache()
     yield
     StrategyPipeline._config_cache = None
-    _load_risk_limits_from_config._cache = None
     strategy_config._clear_cache()
 
 
@@ -276,20 +273,22 @@ def _try_fetch_ohlcv_from_mongo(codes: list[str], start: str, end: str) -> Optio
         return None
 
 
-class DummySignalGenerator:
-    """不连 Mongo 的信号入口，供 StrategyPipeline / Backtester 离线构造。"""
+class DummyFactorPipeline:
+    """不连 Mongo 的因子管道，供 StrategyPipeline / Backtester 离线构造。"""
 
     def __init__(self, df: Optional[pd.DataFrame] = None):
         self._df = df
-        self.signals_history: Dict[str, pd.DataFrame] = {}
 
-    async def generate_signals(self, **kwargs):
+    async def compute_signals(self, **kwargs):
         if self._df is not None:
             return self._df
         from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
 
         td = kwargs.get("trade_date") or "2024-01-02"
         return CrossSectionStrategyPipeline._empty_signals_df(str(td), "red", 0.0)
+
+    async def score_signals(self, trade_date: str) -> pd.DataFrame:
+        return await self.compute_signals(trade_date=trade_date)
 
 
 class ReplayFactorPipeline:
@@ -301,17 +300,40 @@ class ReplayFactorPipeline:
     async def preload_precomputed_factors(self, *args, **kwargs):
         return None
 
+    def _reset_precomputed(self):
+        return None
+
+    async def compute_signals(self, trade_date: str = None, **kwargs) -> pd.DataFrame:
+        return await self.score_signals(str(trade_date or kwargs.get("trade_date") or ""))
+
     async def score_signals(self, trade_date: str) -> pd.DataFrame:
         payload = (self.bundle.get("days") or {}).get(trade_date)
         if payload is None:
             raise ValueError(f"无预计算 M1 数据: {trade_date}")
         return signals_from_payload(payload)
 
+    def dragon_field_by_code(self, trade_date: str, field: str, codes=None):
+        payload = (self.bundle.get("days") or {}).get(trade_date) or {}
+        recs = payload.get("records") or []
+        want = {str(c) for c in codes} if codes is not None else None
+        out: Dict[str, float] = {}
+        for row in recs:
+            code = str(row.get("code") or "")
+            if not code or (want is not None and code not in want):
+                continue
+            if field not in row:
+                continue
+            try:
+                out[code] = float(row[field])
+            except (TypeError, ValueError):
+                out[code] = float("nan")
+        return out
+
 
 def make_offline_pipeline(signals: Optional[pd.DataFrame] = None):
     from zstock.strategy_management.pipeline import StrategyPipeline
 
-    return StrategyPipeline(signal_generator=DummySignalGenerator(signals))  # type: ignore[arg-type]
+    return StrategyPipeline(factor_pipeline=DummyFactorPipeline(signals))  # type: ignore[arg-type]
 
 
 @pytest.fixture

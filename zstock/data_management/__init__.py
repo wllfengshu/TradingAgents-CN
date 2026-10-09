@@ -8,9 +8,11 @@ DatabaseService 负责管理 MongoDB 的访问。
 # 核心类
 from .query_service import DataQueryService
 from .database_service import DatabaseService
+from .fundamental_provider import FundamentalDataProvider
 
 __all__ = [
     # 核心类
     'DataQueryService',
     'DatabaseService',
+    'FundamentalDataProvider',
 ]

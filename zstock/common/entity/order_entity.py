@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 class Order:
@@ -15,8 +15,9 @@ class Order:
         self.status = 'pending'
         self.filled_volume = 0
         self.filled_price = None
-        self.created_at = datetime.utcnow().isoformat()
-        self.updated_at = datetime.utcnow().isoformat()
+        now_str = datetime.now(timezone.utc).isoformat()
+        self.created_at = now_str
+        self.updated_at = now_str
 
     def to_dict(self) -> Dict:
         return {

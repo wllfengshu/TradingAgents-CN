@@ -60,16 +60,8 @@ def test_dragon_live_raw_on_auto_parts(live_bundle, strategy_params):
         raw,
         regime="momentum",
         active_factors=strategy_params["active_factors"],
-        scoring_method="linear",
     )
     assert scores
-    tree_scores = DragonFactors.scores_from_raw(
-        raw,
-        regime="momentum",
-        active_factors=strategy_params["active_factors"],
-        scoring_method="tree",
-    )
-    assert tree_scores or tree_scores == {}
 
 
 def test_force_live_raw_and_score(live_bundle, strategy_params, signal_names_raw):
@@ -89,33 +81,16 @@ def test_force_live_raw_and_score(live_bundle, strategy_params, signal_names_raw
     )
     assert raw
     assert "fcoop1_main_net_ratio" in raw[0]
-    ranked = ForceFactors.apply_cooperative_force_and_score(
+    ranked = ForceFactors.score_and_compose_final(
         candidates,
         top_sectors=[(c["sector_code"], 80.0) for c in candidates],
+        m5_weights={"sector": 0.4, "dragon": 0.35, "cooperative": 0.25},
         m4_threshold=float(strategy_params["cooperative_force"]["threshold_pct"]),
-        w_sector=0.4,
-        w_dragon=0.35,
-        w_coop=0.25,
-        stock_flow_recent=flow,
-        stock_ohlcv=ohlcv,
-        stock_lhb_recent={},
-        trade_date="2024-01-02",
         style_info={"regime": "momentum", "momentum_weight": 0.7, "reversal_weight": 0.3},
         active_factors=strategy_params["active_factors"],
         force_raw=raw,
     )
     assert isinstance(ranked, list)
-    ranked_live = ForceFactors.apply_cooperative_force_and_score(
-        candidates,
-        top_sectors=[(c["sector_code"], 80.0) for c in candidates],
-        m4_threshold=float(strategy_params["cooperative_force"]["threshold_pct"]),
-        stock_flow_recent=flow,
-        stock_ohlcv=ohlcv,
-        trade_date="2024-01-02",
-        style_info={"regime": "momentum", "momentum_weight": 0.7, "reversal_weight": 0.3},
-        active_factors=strategy_params["active_factors"],
-    )
-    assert isinstance(ranked_live, list)
 
 
 def test_sector_live_raw(live_bundle, strategy_params):
@@ -200,20 +175,15 @@ async def test_score_signals_live_with_prebuilt(live_bundle, hs300_ohlcv, strate
         async def get_capital_flow_recent_days(self, codes, end_date, days=5, period=None):
             return {c: flow.get(c, []) for c in codes}
 
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        "zstock.data_management.query_service.get_data_query_service",
-        lambda: _LoadQS(),
-    )
-    try:
-        loaded = await pipe.load_real_data("2024-01-02", lookback_days=90, max_stocks=20)
-        assert loaded["trade_date"] == "2024-01-02"
-        assert loaded["stock_ohlcv"]
-    finally:
-        monkeypatch.undo()
+    pipe._query_service = _LoadQS()
+    loaded = await pipe.load_real_data("2024-01-02", lookback_days=90, max_stocks=20)
+    assert loaded["trade_date"] == "2024-01-02"
+    assert loaded["stock_ohlcv"]
 
-    empty_idx = pipe._get_index_df({})
+    from zstock.common.utils.common_utils import get_index_ohlcv_df
+
+    empty_idx = get_index_ohlcv_df({})
     assert empty_idx is None
-    idx = pipe._get_index_df({"399300": hs300_ohlcv})
+    idx = get_index_ohlcv_df({"399300": hs300_ohlcv})
     assert idx is not None
     assert len(idx) == len(hs300_ohlcv)

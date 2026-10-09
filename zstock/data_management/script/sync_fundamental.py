@@ -9,11 +9,13 @@
 用法：
     python -m zstock.data_management.script.sync_fundamental
     python -m zstock.data_management.script.sync_fundamental --start 2023-01-01 --end 2026-12-31
+    python -m zstock.data_management.script.sync_fundamental --start 2000-01-01 --end 2022-12-31
 """
 import argparse
 import asyncio
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -89,6 +91,13 @@ def _parse_args() -> argparse.Namespace:
         "--end", default=datetime.now().strftime("%Y-%m-%d"),
         help="结束日期 YYYY-MM-DD，默认今天",
     )
+    parser.add_argument("--code-batch", type=int, default=60, help="每批股票数，默认 60")
+    parser.add_argument("--sleep", type=float, default=0.4, help="批次间隔秒，默认 0.4")
+    parser.add_argument(
+        "--drop",
+        action="store_true",
+        help="全量重建：先清空两张基本面表（会删掉已有数据，历史回补不要加）",
+    )
     return parser.parse_args()
 
 
@@ -114,48 +123,77 @@ async def main():
     xt_codes = [xtu.to_xt_code(c) for c in all_codes]
     logger.info(f"全市场 {len(xt_codes)} 只股票")
 
-    # ── 先 drop 旧表 (全量同步, 无需 upsert) ──
-    await db[COL_FUNDAMENTAL_PERSHARE].drop()
-    await db[COL_FUNDAMENTAL_HOLDER].drop()
-    logger.info("已清空旧表 (全量同步模式)")
+    if args.drop:
+        await db[COL_FUNDAMENTAL_PERSHARE].drop()
+        await db[COL_FUNDAMENTAL_HOLDER].drop()
+        logger.info("已清空旧表 (--drop 全量同步模式)")
+    else:
+        logger.info("增量 upsert 模式（保留已有记录）")
 
     t0 = datetime.now()
+    code_batch = max(1, int(args.code_batch))
+    pause = max(0.0, float(args.sleep))
+    n_batches = (len(xt_codes) + code_batch - 1) // code_batch if xt_codes else 0
+
+    from pymongo import UpdateOne
+
+    async def _upsert_docs(col_name: str, docs: list, keys: list[str]) -> None:
+        if not docs:
+            return
+        ops = [
+            UpdateOne(
+                {k: d[k] for k in keys},
+                {"$set": d},
+                upsert=True,
+            )
+            for d in docs
+        ]
+        batch = 5000
+        for i in range(0, len(ops), batch):
+            await db[col_name].bulk_write(ops[i:i + batch], ordered=False)
 
     # ══════════════════════════════════════════════
     # [1] Pershareindex → 全字段 (EPS/BPS/ROE/增长/负债率/毛利率)
     # ══════════════════════════════════════════════
     logger.info("▶ [1/2] Pershareindex — 每股指标 (EPS/BPS/ROE/增长/负债率/毛利率)")
 
-    xtdata.download_financial_data2(
-        xt_codes, table_list=["Pershareindex"],
-        start_time=start, end_time=end,
-    )
-    fin_data = xtdata.get_financial_data(
-        xt_codes, table_list=["Pershareindex"],
-        start_time=start, end_time=end,
-        report_type="announce_time",
-    )
-
     pershare_docs = []
-    for xt_code, tables in fin_data.items():
-        psh = tables.get("Pershareindex")
-        if psh is None or len(psh) == 0:
+    for bi, i in enumerate(range(0, len(xt_codes), code_batch), 1):
+        chunk = xt_codes[i:i + code_batch]
+        logger.info(f"  Pershare 批 {bi}/{n_batches} ({len(chunk)} 只)")
+        try:
+            xtdata.download_financial_data2(
+                chunk, table_list=["Pershareindex"],
+                start_time=start, end_time=end,
+            )
+            fin_data = xtdata.get_financial_data(
+                chunk, table_list=["Pershareindex"],
+                start_time=start, end_time=end,
+                report_type="announce_time",
+            ) or {}
+        except Exception as e:
+            logger.error(f"  ✗ Pershare 批 {bi} 失败: {e}")
             continue
-        code = _from_xt_code(xt_code)
-        for _, row in psh.iterrows():
-            ann_date = _parse_date_str(row.get("m_anntime", ""))
-            if ann_date is None:
+        for xt_code, tables in fin_data.items():
+            psh = tables.get("Pershareindex")
+            if psh is None or len(psh) == 0:
                 continue
-            # 至少需要一个有效字段
-            doc: dict = {"code": code, "ann_date": ann_date}
-            has_any = False
-            for xt_field, mongo_field in PERSHARE_FIELDS.items():
-                val = _safe_float(row.get(xt_field))
-                if val is not None:
-                    doc[mongo_field] = val
-                    has_any = True
-            if has_any:
-                pershare_docs.append(doc)
+            code = _from_xt_code(xt_code)
+            for _, row in psh.iterrows():
+                ann_date = _parse_date_str(row.get("m_anntime", ""))
+                if ann_date is None:
+                    continue
+                doc: dict = {"code": code, "ann_date": ann_date}
+                has_any = False
+                for xt_field, mongo_field in PERSHARE_FIELDS.items():
+                    val = _safe_float(row.get(xt_field))
+                    if val is not None:
+                        doc[mongo_field] = val
+                        has_any = True
+                if has_any:
+                    pershare_docs.append(doc)
+        if pause:
+            time.sleep(pause)
 
     codes_with_data = len(set(d["code"] for d in pershare_docs)) if pershare_docs else 0
     logger.info(f"  Pershareindex: {len(pershare_docs)} 条记录, {codes_with_data} 只股票")
@@ -167,9 +205,7 @@ async def main():
             logger.info(f"    {mongo_field}: {n}/{len(pershare_docs)} ({100*n//max(len(pershare_docs),1)}%)")
 
     if pershare_docs:
-        BATCH = 5000
-        for i in range(0, len(pershare_docs), BATCH):
-            await db[COL_FUNDAMENTAL_PERSHARE].insert_many(pershare_docs[i:i+BATCH], ordered=False)
+        await _upsert_docs(COL_FUNDAMENTAL_PERSHARE, pershare_docs, ["code", "ann_date"])
         logger.info(f"  ✓ 落库 {COL_FUNDAMENTAL_PERSHARE}: {len(pershare_docs)} 条")
 
     # ══════════════════════════════════════════════
@@ -177,49 +213,54 @@ async def main():
     # ══════════════════════════════════════════════
     logger.info("▶ [2/2] Holdernum — 股东数")
 
-    xtdata.download_financial_data2(
-        xt_codes, table_list=["Holdernum"],
-        start_time=start, end_time=end,
-    )
-    holder_data = xtdata.get_financial_data(
-        xt_codes, table_list=["Holdernum"],
-        start_time=start, end_time=end,
-        report_type="announce_time",
-    )
-
     holder_docs = []
-    for xt_code, tables in holder_data.items():
-        hld = tables.get("Holdernum")
-        if hld is None or len(hld) == 0:
+    for bi, i in enumerate(range(0, len(xt_codes), code_batch), 1):
+        chunk = xt_codes[i:i + code_batch]
+        logger.info(f"  Holdernum 批 {bi}/{n_batches} ({len(chunk)} 只)")
+        try:
+            xtdata.download_financial_data2(
+                chunk, table_list=["Holdernum"],
+                start_time=start, end_time=end,
+            )
+            holder_data = xtdata.get_financial_data(
+                chunk, table_list=["Holdernum"],
+                start_time=start, end_time=end,
+                report_type="announce_time",
+            ) or {}
+        except Exception as e:
+            logger.error(f"  ✗ Holdernum 批 {bi} 失败: {e}")
             continue
-        code = _from_xt_code(xt_code)
-        for _, row in hld.iterrows():
-            ann_date = _parse_date_str(row.get("declareDate", ""))
-            end_date = _parse_date_str(row.get("endDate", ""))
-            if ann_date is None or end_date is None:
+        for xt_code, tables in holder_data.items():
+            hld = tables.get("Holdernum")
+            if hld is None or len(hld) == 0:
                 continue
-            sh = _safe_float(row.get("shareholder"))
-            if sh is None or sh <= 0:
-                continue
-            doc = {
-                "code": code,
-                "ann_date": ann_date,       # 公告日 (PIT-safe) "YYYY-MM-DD"
-                "end_date": end_date,       # 报告期 "YYYY-MM-DD"
-                "shareholder": sh,
-            }
-            # 如果有股东数细分 (A股/H股), 也记录
-            sh_a = _safe_float(row.get("shareholderA"))
-            if sh_a is not None and sh_a > 0:
-                doc["shareholder_a"] = sh_a
-            holder_docs.append(doc)
+            code = _from_xt_code(xt_code)
+            for _, row in hld.iterrows():
+                ann_date = _parse_date_str(row.get("declareDate", ""))
+                end_date = _parse_date_str(row.get("endDate", ""))
+                if ann_date is None or end_date is None:
+                    continue
+                sh = _safe_float(row.get("shareholder"))
+                if sh is None or sh <= 0:
+                    continue
+                doc = {
+                    "code": code,
+                    "ann_date": ann_date,       # 公告日 (PIT-safe) "YYYY-MM-DD"
+                    "end_date": end_date,       # 报告期 "YYYY-MM-DD"
+                    "shareholder": sh,
+                }
+                sh_a = _safe_float(row.get("shareholderA"))
+                if sh_a is not None and sh_a > 0:
+                    doc["shareholder_a"] = sh_a
+                holder_docs.append(doc)
+        if pause:
+            time.sleep(pause)
 
     codes_with_holder = len(set(d["code"] for d in holder_docs)) if holder_docs else 0
     logger.info(f"  Holdernum: {len(holder_docs)} 条记录, {codes_with_holder} 只股票")
 
     if holder_docs:
-        BATCH = 5000
-        for i in range(0, len(holder_docs), BATCH):
-            await db[COL_FUNDAMENTAL_HOLDER].insert_many(holder_docs[i:i+BATCH], ordered=False)
+        await _upsert_docs(COL_FUNDAMENTAL_HOLDER, holder_docs, ["code", "ann_date", "end_date"])
         logger.info(f"  ✓ 落库 {COL_FUNDAMENTAL_HOLDER}: {len(holder_docs)} 条")
 
     # ── 汇总 ──
@@ -241,4 +282,6 @@ async def main():
 
 
 if __name__ == "__main__":
+    from zstock.data_management.script.qmt_subprocess_bridge import patch_xtquant_data_utils
+    patch_xtquant_data_utils()
     asyncio.run(main())

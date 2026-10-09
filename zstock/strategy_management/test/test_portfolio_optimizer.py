@@ -110,3 +110,21 @@ def test_uncapped_renormalize_when_below_cap(real_signals):
     )
     assert out["status"] == "success"
     assert float(out["invested_weight"]) == pytest.approx(1.0)
+
+
+def test_rescale_to_target_fill_and_cap():
+    df = pd.DataFrame(
+        [
+            {"code": "000001", "weight": 0.10, "score": 80},
+            {"code": "000002", "weight": 0.10, "score": 70},
+        ]
+    )
+    out = PortfolioOptimizer.rescale_to_target(df, cap=0.12, fill_full=True, single_cap=0.40)
+    assert float(out["weight"].sum()) == pytest.approx(0.80)
+    assert float(out["weight"].max()) <= 0.40 + 1e-12
+
+
+def test_rescale_to_target_noop_when_already_at_target():
+    df = pd.DataFrame([{"code": "000001", "weight": 0.12}, {"code": "000002", "weight": 0.12}])
+    out = PortfolioOptimizer.rescale_to_target(df, cap=0.12, fill_full=False)
+    assert out is df or float(out["weight"].sum()) == pytest.approx(0.24)

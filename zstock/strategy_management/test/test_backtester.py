@@ -14,7 +14,6 @@ from zstock.strategy_management.script.backtester import (
     make_signal_provider_from_pipeline_data,
 )
 from zstock.strategy_management.test.conftest import (
-    DummySignalGenerator,
     ReplayFactorPipeline,
     make_offline_pipeline,
 )
@@ -341,13 +340,13 @@ def test_configure_cli_logging():
 
 @pytest.mark.asyncio
 async def test_run_raises_when_pipeline_errors(ohlcv_by_code, strategy_params):
-    class _BoomSG:
-        async def generate_signals(self, **kwargs):
+    class _BoomFP:
+        async def compute_signals(self, **kwargs):
             raise RuntimeError("signal boom")
 
     from zstock.strategy_management.pipeline import StrategyPipeline
 
-    pipe = StrategyPipeline(signal_generator=_BoomSG())  # type: ignore[arg-type]
+    pipe = StrategyPipeline(factor_pipeline=_BoomFP())  # type: ignore[arg-type]
     bt = Backtester(strategy_pipeline=pipe, fee_rate=0.0015, initial_capital=1_000_000)
     result = await bt.run(
         start_date="2024-01-02",
@@ -363,7 +362,7 @@ async def test_run_raises_when_pipeline_errors(ohlcv_by_code, strategy_params):
 @pytest.mark.asyncio
 async def test_run_real_data_uses_exported_codes(monkeypatch, ohlcv_by_code, signals_bundle):
     """用导出的 9 只真实票替代全市场主板列表，走 run_real_data 装载循环。"""
-    from zstock.strategy_management.test.conftest import DummySignalGenerator, ReplayFactorPipeline
+    from zstock.strategy_management.test.conftest import ReplayFactorPipeline
 
     class _QS:
         async def get_all_stocks(self):
@@ -376,10 +375,6 @@ async def test_run_real_data_uses_exported_codes(monkeypatch, ohlcv_by_code, sig
     monkeypatch.setattr(
         "zstock.data_management.query_service.get_data_query_service",
         lambda: _QS(),
-    )
-    monkeypatch.setattr(
-        "zstock.strategy_management.pipeline.SignalGenerator",
-        DummySignalGenerator,
     )
     bt = Backtester(
         strategy_pipeline=make_offline_pipeline(),
@@ -417,11 +412,13 @@ async def test_run_cli_success_prints_recorded_summary(monkeypatch, overnight_re
         print(canned.summary())
         return canned
 
+    from zstock.strategy_management.test.conftest import DummyFactorPipeline
+
     monkeypatch.setattr("zstock.common.utils.db_utils.init_zstock_database", _ok)
     monkeypatch.setattr("zstock.common.utils.db_utils.close_zstock_database", _ok)
     monkeypatch.setattr(
-        "zstock.strategy_management.pipeline.SignalGenerator",
-        DummySignalGenerator,
+        "zstock.strategy_management.pipeline.CrossSectionStrategyPipeline",
+        lambda *a, **k: DummyFactorPipeline(),
     )
     monkeypatch.setattr(Backtester, "run_real_data", _canned)
     rc = await Backtester.run_cli(

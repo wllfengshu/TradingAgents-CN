@@ -15,7 +15,7 @@
 1. 订单生成：目标持仓 → 订单列表（自动补行情/持仓/资金）
 2. 策略执行：根据时间选择执行策略
 3. 订单提交：通过 XtQuant 提交订单
-4. 对账：目标持仓 vs 券商实际持仓
+4. 对账：目标股数 vs 券商实际持仓
 """
 
 import logging
@@ -38,10 +38,9 @@ class OrderManagementPipeline:
         trade_settlement=None,
         execution_strategy=None,
         allow_mock: bool = False,
+        database_service=None,
     ):
         if order_generator is None:
-            from .order_generator import OrderGenerator
-
             order_generator = OrderGenerator()
 
         if xtquant_executor is None:
@@ -60,13 +59,29 @@ class OrderManagementPipeline:
             execution_strategy = ExecutionStrategy()
 
         self.allow_mock = allow_mock
-        self.order_generator = order_generator
-        self.xtquant_executor = xtquant_executor
-        self.trade_settlement = trade_settlement
-        self.execution_strategy = execution_strategy
-        self.pipeline_result: Dict = {}
+        self._database_service = database_service
+        self._order_generator = order_generator
+        self._xtquant_executor = xtquant_executor
+        self._trade_settlement = trade_settlement
+        self._execution_strategy = execution_strategy
+        self._pipeline_result: Dict = {}
 
         logger.info("OrderManagementPipeline 初始化完成")
+
+    @staticmethod
+    def _codes_from_frame(df: Optional[pd.DataFrame]) -> List[str]:
+        if df is None or df.empty:
+            return []
+        for col in ("stock_code", "code"):
+            if col not in df.columns:
+                continue
+            out: List[str] = []
+            for v in df[col].tolist():
+                if v is None or str(v) in ("", "nan", "None"):
+                    continue
+                out.append(str(v))
+            return out
+        return []
 
     async def execute_full_pipeline(
         self,
@@ -88,19 +103,17 @@ class OrderManagementPipeline:
         logger.info("=" * 60)
 
         results: Dict = {}
-        target_positions = OrderGenerator.normalize_positions_df(target_positions)
-
-        if target_positions.empty:
+        if target_positions is None or target_positions.empty:
             return {"status": "no_target", "error": "目标持仓为空"}
 
         try:
-            if getattr(self.xtquant_executor, "mock_mode", False) and not self.allow_mock:
+            if getattr(self._xtquant_executor, "mock_mode", False) and not self.allow_mock:
                 return {
                     "status": "failed",
                     "error": "当前为 Mock 客户端，拒绝下单。纸面测试请 OrderManagementPipeline(allow_mock=True)",
                 }
 
-            account_info = self.xtquant_executor.get_account_info() or {}
+            account_info = self._xtquant_executor.get_account_info() or {}
             if total_capital is None:
                 raw_capital = account_info.get("total_value") or account_info.get("cash")
                 try:
@@ -113,50 +126,48 @@ class OrderManagementPipeline:
                         "error": "无法获取有效账户资金，拒绝用默认资金下单",
                     }
 
-            broker_positions = self.xtquant_executor.get_positions()
+            broker_positions = self._xtquant_executor.get_positions()
             if broker_positions is None:
                 return {
                     "status": "failed",
                     "error": "无法获取券商持仓，拒绝当成空仓下单",
                 }
-            if current_positions is not None:
-                current_positions = OrderGenerator.normalize_positions_df(current_positions)
             if current_positions is None or current_positions.empty:
                 if current_positions is not None:
                     logger.warning("传入的 current_positions 为空，改用券商持仓，避免当成空仓全买")
-                current_positions = OrderGenerator.normalize_positions_df(
-                    pd.DataFrame(
-                        [{"stock_code": p["code"], "volume": p["volume"]} for p in broker_positions]
-                    )
+                current_positions = pd.DataFrame(
+                    [{"code": p["code"], "volume": p["volume"]} for p in broker_positions]
                 )
 
             if price_map is None:
-                codes = target_positions["stock_code"].astype(str).tolist()
-                if not current_positions.empty and "stock_code" in current_positions.columns:
-                    codes.extend(current_positions["stock_code"].astype(str).tolist())
-                price_map = self.xtquant_executor.get_price_map(list(dict.fromkeys(codes)))
+                codes = self._codes_from_frame(target_positions)
+                codes.extend(self._codes_from_frame(current_positions))
+                price_map = self._xtquant_executor.get_price_map(list(dict.fromkeys(codes)))
 
-            self.trade_settlement.sync_positions_from_broker(broker_positions)
+            self._trade_settlement.sync_positions_from_broker(broker_positions)
 
             logger.info("\n" + "=" * 60)
             logger.info("第一步：📋 订单生成")
             logger.info("=" * 60)
 
-            orders = self.order_generator.generate_orders(
+            orders = self._order_generator.generate_orders(
                 target_positions=target_positions,
                 current_positions=current_positions,
                 trade_date=trade_date,
                 price_map=price_map,
                 total_capital=total_capital,
             )
+            target_lots = self._order_generator.lots_from_positions(
+                target_positions,
+                price_map=price_map,
+                total_capital=total_capital,
+            )
 
             if not orders:
                 logger.warning("⚠️ 未生成任何订单（可能已对齐目标）")
-                reconcile = self.trade_settlement.reconcile_target_vs_broker(
-                    target_positions,
+                reconcile = self._trade_settlement.reconcile_target_vs_broker(
+                    target_lots,
                     broker_positions,
-                    price_map=price_map,
-                    total_capital=total_capital,
                 )
                 return {
                     "status": "no_orders",
@@ -170,13 +181,13 @@ class OrderManagementPipeline:
                 }
 
             results["orders"] = orders
-            await self.order_generator.save_orders_to_db(orders)
+            await self._order_generator.persist_orders(orders, self._database_service)
 
             logger.info("\n" + "=" * 60)
             logger.info("第二步：🎯 策略执行")
             logger.info("=" * 60)
 
-            current_strategy = strategy or self.execution_strategy.get_current_strategy()
+            current_strategy = strategy or self._execution_strategy.get_current_strategy()
             logger.info(f"   当前策略: {current_strategy}")
             if current_strategy == "closed":
                 return {
@@ -189,9 +200,9 @@ class OrderManagementPipeline:
                     },
                 }
 
-            exec_report = await self.execution_strategy.execute_with_strategy(
+            exec_report = await self._execution_strategy.execute_with_strategy(
                 orders=orders,
-                executor=self.xtquant_executor,
+                executor=self._xtquant_executor,
                 strategy=current_strategy,
             )
             submitted_count = int(exec_report.get("submitted", 0))
@@ -201,13 +212,13 @@ class OrderManagementPipeline:
             results["deferred_count"] = deferred_count
             results["failed_count"] = failed_count
             results["execution_report"] = exec_report
-            results["submitted_orders"] = await self.xtquant_executor.query_all_orders()
+            results["submitted_orders"] = await self._xtquant_executor.query_all_orders()
 
             logger.info("\n" + "=" * 60)
             logger.info("第三步：📊 账户查询")
             logger.info("=" * 60)
 
-            account_info = self.xtquant_executor.get_account_info()
+            account_info = self._xtquant_executor.get_account_info()
             if account_info:
                 logger.info(f"   现金: {account_info['cash']:.0f}")
                 logger.info(f"   总资产: {account_info['total_value']:.0f}")
@@ -220,7 +231,7 @@ class OrderManagementPipeline:
             logger.info("第四步：💼 持仓查询")
             logger.info("=" * 60)
 
-            positions = self.xtquant_executor.get_positions()
+            positions = self._xtquant_executor.get_positions()
             if positions is None:
                 logger.error("提交后无法刷新券商持仓")
                 positions = []
@@ -231,11 +242,9 @@ class OrderManagementPipeline:
             logger.info("第五步：🔍 目标 vs 券商对账")
             logger.info("=" * 60)
 
-            reconcile_result = self.trade_settlement.reconcile_target_vs_broker(
-                target_positions,
+            reconcile_result = self._trade_settlement.reconcile_target_vs_broker(
+                target_lots,
                 positions,
-                price_map=price_map,
-                total_capital=total_capital,
             )
             results["reconciliation"] = reconcile_result
 
@@ -288,7 +297,7 @@ class OrderManagementPipeline:
                 f"对账 {summary['statistics']['reconciliation_status']}"
             )
 
-            self.pipeline_result = summary
+            self._pipeline_result = summary
             return summary
 
         except Exception as e:

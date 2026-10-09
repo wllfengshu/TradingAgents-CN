@@ -3,11 +3,12 @@
 import pandas as pd
 
 from zstock.strategy_management.portfolio_optimizer import PortfolioOptimizer
-from zstock.strategy_management.risk_manager import RiskManager, _load_risk_limits_from_config
+from zstock.common.config.strategy_config import build_risk_limits
+from zstock.strategy_management.risk_manager import RiskManager
 
 
 def test_limits_loaded_from_ssot(strategy_params):
-    limits = _load_risk_limits_from_config()
+    limits = build_risk_limits()
     top_k = int(strategy_params["final_score"]["top_k"])
     assert limits["top_k"] == top_k
     assert limits["max_weight_per_stock"] == float(strategy_params["portfolio"]["max_weight_per_stock"])
@@ -18,7 +19,7 @@ def test_limits_loaded_from_ssot(strategy_params):
 
 def test_empty_holdings_warning():
     rm = RiskManager()
-    out = rm.check_compliance(pd.DataFrame())
+    out = rm._check_compliance(pd.DataFrame())
     assert out["status"] == "warning"
     assert out["issues"] == ["empty holdings"]
 
@@ -29,7 +30,7 @@ def test_optimized_real_holdings_within_stock_cap(real_signals, strategy_params)
         real_signals, min_holdings=1, max_holdings=5, max_weight_per_stock=cap
     )
     rm = RiskManager()
-    compliance = rm.check_compliance(opt["holdings_df"], real_signals)
+    compliance = rm._check_compliance(opt["holdings_df"], real_signals)
     assert compliance["metrics"]["max_weight"] <= cap + 1e-6
     # 允许现金时权重和 ∈ [0,1]
     assert -1e-6 <= compliance["metrics"]["weight_sum"] <= 1.0 + 1e-3
@@ -40,7 +41,7 @@ def test_corrects_overweight_on_real_name(real_signals, strategy_params):
     code = str(real_signals.iloc[0]["code"])
     holdings = pd.DataFrame([{"code": code, "weight": cap + 0.15, "score": float(real_signals.iloc[0]["final_score"])}])
     rm = RiskManager()
-    before = rm.check_compliance(holdings, real_signals)
+    before = rm._check_compliance(holdings, real_signals)
     assert any("单股权重" in x for x in before["issues"])
     compliance, corrected = rm.apply_corrections(holdings, real_signals)
     assert float(corrected["weight"].max()) <= cap + 1e-9
@@ -75,7 +76,7 @@ def test_corrects_sector_exposure_with_two_real_publishers(signals_bundle, strat
         ]
     )
     rm = RiskManager()
-    before = rm.check_compliance(holdings)
+    before = rm._check_compliance(holdings)
     assert any("板块" in x for x in before["issues"])
     _, corrected = rm.apply_corrections(holdings)
     expo = float(corrected.groupby("sector_code")["weight"].sum().iloc[0])
@@ -99,7 +100,7 @@ def test_disallow_cash_flags_partial_invest(real_signals, strategy_params):
         real_signals, min_holdings=1, max_holdings=3, max_weight_per_stock=cap, weighting="equal"
     )
     rm = RiskManager(risk_limits={"allow_cash": False})
-    out = rm.check_compliance(opt["holdings_df"])
+    out = rm._check_compliance(opt["holdings_df"])
     if abs(out["metrics"]["weight_sum"] - 1.0) > 1e-3:
         assert out["status"] == "warning"
         assert any("权重和" in x for x in out["issues"])

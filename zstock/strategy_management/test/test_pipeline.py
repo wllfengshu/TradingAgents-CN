@@ -22,6 +22,17 @@ def test_default_config_matches_ssot(strategy_params):
         strategy_params["exit_rules"]["hard_stop_loss_pct"]
     )
     assert cfg["exit_rules"]["no_signal_action"] == "hold"
+    for key in (
+        "weak_regime_protection",
+        "adaptive_rebalance",
+        "market_selection",
+        "target_equity",
+        "market_overlay",
+        "final_score",
+        "portfolio",
+    ):
+        assert key in cfg
+        assert cfg[key] == (strategy_params.get(key) or {})
 
 
 def test_resolve_effective_top_k(strategy_params):
@@ -56,10 +67,16 @@ async def test_real_jan_signals_success_and_yellow_scale(real_signals, real_trad
     )
     assert out["status"] == "success"
     assert out["market_grade"] == "yellow"
-    assert out["statistics"]["position_scale"] == pytest.approx(0.5)
+    expected_scale = float(real_signals.attrs.get("position_scale", 0.5))
+    if strategy_params.get("target_equity", {}).get("enabled"):
+        regime = str(real_signals.attrs.get("regime", "momentum"))
+        expected_scale = strategy_params["target_equity"]["by_context"].get(
+            f"{regime}_yellow", expected_scale
+        )
+    assert out["statistics"]["position_scale"] == pytest.approx(expected_scale)
     holdings = out["results"]["final_holdings"]
     assert not holdings.empty
-    assert float(holdings["weight"].sum()) <= 0.5 + 1e-6
+    assert float(holdings["weight"].sum()) <= expected_scale + 1e-6
     assert set(holdings["code"]) <= set(real_signals["code"].astype(str))
 
 
@@ -78,6 +95,24 @@ async def test_reversal_yellow_reduce_only_blocks_new_entry(
     assert out["status"] == "success"
     assert out["reduce_only"] is True
     assert out["effective_top_k"] == 3
+    assert out["results"]["final_holdings"].empty
+
+
+@pytest.mark.asyncio
+async def test_reduce_only_with_runtime_config_only(reversal_yellow_signals):
+    """API/隔夜只拿 build_runtime_config 时，reversal+yellow 仍须只减不加。"""
+    runtime = StrategyPipeline._default_config()
+    assert runtime.get("weak_regime_protection")
+    td = str(reversal_yellow_signals.iloc[0]["trade_date"])
+    pipe = make_offline_pipeline()
+    out = await pipe.execute_full_pipeline(
+        trade_date=td,
+        precomputed_signals=reversal_yellow_signals,
+        current_positions=None,
+        config=runtime,
+    )
+    assert out["status"] == "success"
+    assert out["reduce_only"] is True
     assert out["results"]["final_holdings"].empty
 
 
@@ -105,7 +140,7 @@ async def test_optimization_failure_status(real_signals, real_trade_date):
             raise RuntimeError("opt boom")
 
     pipe = StrategyPipeline(
-        signal_generator=make_offline_pipeline().signal_generator,
+        factor_pipeline=make_offline_pipeline()._factor_pipeline,
         portfolio_optimizer=_Boom(),  # type: ignore[arg-type]
     )
     out = await pipe.execute_full_pipeline(trade_date=real_trade_date, precomputed_signals=real_signals)

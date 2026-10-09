@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -34,6 +34,7 @@ class PortfolioOptimizer:
         max_weight_per_stock: float = 0.12,
         weighting: str = 'score',  # 'equal' | 'score' | 'softmax'
         softmax_temperature: float = 1.0,
+        **kwargs,
     ) -> Dict:
         """
         Args:
@@ -131,3 +132,44 @@ class PortfolioOptimizer:
             'max_weight_actual': float(w.max()),
             'invested_weight': float(w.sum()),
         }
+
+    @staticmethod
+    def rescale_to_target(
+        holdings: pd.DataFrame,
+        *,
+        cap: float,
+        fill_full: bool = False,
+        single_cap: Optional[float] = None,
+    ) -> pd.DataFrame:
+        """按单股 cap 把权重量放到 n*cap（或 fill_full 时的 single_cap）之内。
+
+        现场管道在换手/风控之后调用，避免把这段循环留在编排层。
+        """
+        if holdings is None or holdings.empty or "weight" not in holdings.columns:
+            return holdings
+        n_eff = int(len(holdings))
+        w = holdings["weight"].astype(float).to_numpy(copy=True)
+        wsum = float(w.sum())
+        cap = float(cap)
+        eff_cap = float(single_cap) if (fill_full and single_cap is not None) else cap
+        if fill_full:
+            target_sum = min(1.0, n_eff * eff_cap)
+        else:
+            target_sum = min(1.0, n_eff * cap) if cap > 0 else 1.0
+        if wsum <= 1e-9 or abs(wsum - target_sum) <= 1e-4:
+            return holdings
+        w = w / w.sum() * target_sum
+        for _ in range(8):
+            over = w > eff_cap + 1e-12
+            if not over.any():
+                break
+            excess = float((w[over] - eff_cap).sum())
+            w[over] = eff_cap
+            under = ~over
+            if not under.any() or float(w[under].sum()) <= 0:
+                break
+            w[under] = w[under] + excess * (w[under] / w[under].sum())
+        w = np.clip(w, 0.0, eff_cap)
+        out = holdings.copy()
+        out["weight"] = w
+        return out

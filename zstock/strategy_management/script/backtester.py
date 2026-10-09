@@ -48,7 +48,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from zstock.strategy_management.pipeline import StrategyPipeline
-from zstock.strategy_management.adaptive_rebalance import resolve_rebalance_freq
 from zstock.common.config.strategy_config import (
     build_runtime_config,
     load_strategy_params,
@@ -77,11 +76,17 @@ def _get_default_config() -> Dict[str, Dict]:
 
 
 def load_runtime_config(override: Optional[Dict] = None) -> Dict[str, Dict]:
-    """加载策略配置（backtester 脚本专用）。"""
+    """加载策略配置（backtester 脚本专用）。
+
+    传入完整 strategy_params 时走 build_runtime_config，与隔夜/API 同一派生路径。
+    只传某几段覆盖时再浅合并到默认 runtime。
+    """
     import copy
-    base = copy.deepcopy(_get_default_config())
     if not override:
-        return base
+        return copy.deepcopy(_get_default_config())
+    if "portfolio" in override and "final_score" in override:
+        return build_runtime_config(override)
+    base = copy.deepcopy(_get_default_config())
     for k, v in override.items():
         if k in base and isinstance(v, dict) and isinstance(base[k], dict):
             base[k] = {**base[k], **v}
@@ -304,7 +309,7 @@ class Backtester:
         initial_capital: Optional[float] = None,
         factor_pipeline: Optional["CrossSectionStrategyPipeline"] = None,
     ):
-        self.strategy = strategy_pipeline or StrategyPipeline()
+        self.strategy = strategy_pipeline or StrategyPipeline(factor_pipeline=factor_pipeline)
         if fee_rate is None or initial_capital is None:
             bt_cfg = (load_strategy_params() or {}).get("backtest") or {}
             fee_rate = fee_rate if fee_rate is not None else float(bt_cfg.get("fee_rate", 0.0015))
@@ -315,9 +320,8 @@ class Backtester:
             )
         self.fee_rate = fee_rate
         self.initial_capital = initial_capital
-        self.factor_pipeline = factor_pipeline
-        # 同步 fee_rate 到 turnover_controller，保持成本估算一致
-        self.strategy.turnover_controller.fee_rate = fee_rate
+        self.factor_pipeline = factor_pipeline or self.strategy._factor_pipeline
+        self.strategy._turnover_controller.fee_rate = fee_rate
         logger.info(f"✅ Backtester 初始化完成: fee={fee_rate} init_capital={initial_capital}")
 
     # ============================== 真实数据 / CLI ==============================
@@ -330,6 +334,62 @@ class Backtester:
             return int(params.get("backtest", {}).get("rebalance_freq", 5))
         except Exception:
             return 5
+
+    @staticmethod
+    def _resolve_rebalance_freq(
+        cfg: Optional[Dict[str, Any]],
+        *,
+        regime: str = "neutral",
+        market_grade: str = "green",
+        default_freq: int = 5,
+    ) -> int:
+        """根据 regime 与灯号决定下一次再平衡间隔（交易日）。"""
+        if not cfg or not cfg.get("enabled"):
+            return max(1, int(default_freq))
+
+        base = int(cfg.get("default_freq", default_freq))
+        by_regime = cfg.get("by_regime") or {}
+        by_grade = cfg.get("by_market_grade") or {}
+
+        r_freq = int(by_regime.get(regime, by_regime.get("neutral", base)))
+        g_freq = int(by_grade.get(market_grade, by_grade.get("green", base)))
+
+        if cfg.get("use_min_freq", True):
+            freq = min(r_freq, g_freq)
+        else:
+            freq = max(r_freq, g_freq)
+
+        lo = int(cfg.get("min_freq", 3))
+        hi = int(cfg.get("max_freq", 8))
+        return max(lo, min(hi, freq))
+
+    @staticmethod
+    def _compute_drawdown_scale(
+        equity_series: List[float],
+        cfg: Optional[Dict[str, Any]],
+    ) -> float:
+        """根据近期峰值回撤计算仓位乘数。"""
+        root = cfg or {}
+        if not root.get("enabled", False):
+            return 1.0
+        dt = root.get("drawdown_throttle") or {}
+        if not dt.get("enabled", False):
+            return 1.0
+        if not equity_series:
+            return 1.0
+
+        lookback = int(dt.get("lookback_days", 20))
+        threshold = float(dt.get("drawdown_threshold", 0.10))
+        scale = float(dt.get("scale_factor", 0.7))
+        window = equity_series[-lookback:] if lookback > 0 else equity_series
+        peak = max(window)
+        current = equity_series[-1]
+        if peak <= 0:
+            return 1.0
+        dd = current / peak - 1.0
+        if dd <= -threshold:
+            return max(0.0, min(1.0, scale))
+        return 1.0
 
     @staticmethod
     def _configure_cli_logging() -> None:
@@ -427,7 +487,12 @@ class Backtester:
         ohlcv_data: Dict[str, pd.DataFrame] = {}
         chunk_size = 500
         ohlcv_batch_size = 80
-        ohlcv_query_concurrency = 6
+        import os
+
+        cpu = os.cpu_count() or 4
+        ohlcv_query_concurrency = int(
+            os.environ.get("ZSTOCK_OHLCV_CONCURRENCY", str(min(12, max(6, cpu))))
+        )
         total_chunks = (len(mainboard_codes) + chunk_size - 1) // chunk_size
         failed_chunks = 0
 
@@ -462,6 +527,7 @@ class Backtester:
         if not ohlcv_data:
             raise RuntimeError("无 OHLCV 数据，无法回测")
 
+        self._ohlcv_full = ohlcv_data
         ohlcv_provider = make_ohlcv_provider_from_dict(ohlcv_data)
 
         if verbose:
@@ -621,10 +687,13 @@ class Backtester:
             if strategy_config is not None
             else load_runtime_config()
         )
-        hard_stop_pct = float(
-            (cfg_runtime.get("risk_management") or {}).get("hard_stop_loss_pct", -0.08)
-        )
         exit_cfg = cfg_runtime.get("exit_rules") or {}
+        hard_stop_pct = float(
+            exit_cfg.get(
+                "hard_stop_loss_pct",
+                (cfg_runtime.get("risk_management") or {}).get("hard_stop_loss_pct", -0.08),
+            )
+        )
         flat_after_bad_days = int(exit_cfg.get("flat_after_bad_days", 5))
         no_signal_action = str(exit_cfg.get("no_signal_action", "hold"))
         no_signal_reduce_scale = float(exit_cfg.get("no_signal_reduce_scale", 0.5))
@@ -694,6 +763,20 @@ class Backtester:
                     day_cost += stop_cost
                     day_turnover += stop_turnover
 
+            prev_td = trade_dates[i - 1] if i > 0 else None
+            if last_holdings is not None and not last_holdings.empty:
+                last_holdings, tr_t, tr_c = self._apply_trend_exits(
+                    last_holdings,
+                    td,
+                    prev_td,
+                    exit_cfg,
+                    regime=last_regime,
+                )
+                if tr_c > 0:
+                    equity *= (1.0 - tr_c)
+                    day_cost += tr_c
+                    day_turnover += tr_t
+
             # === 第二步：决定今天要不要再平衡 ===
             if use_adaptive:
                 do_rebalance = days_since_rebalance >= target_freq
@@ -716,17 +799,20 @@ class Backtester:
                             "error": str(e),
                         }
                     else:
+                        extra = self._pipeline_market_kwargs(td, prev_td, last_holdings)
                         summary = await self.strategy.execute_full_pipeline(
                             trade_date=td,
                             current_positions=last_holdings,
                             total_capital=equity,
                             config=cfg_runtime,
                             precomputed_signals=precomputed_signals,
+                            **extra,
                         )
                 else:
                     # ── 原有路径：实时计算 ──
                     prebuilt = signal_provider(td) if signal_provider else None
                     try:
+                        extra = self._pipeline_market_kwargs(td, prev_td, last_holdings)
                         summary = await self.strategy.execute_full_pipeline(
                             trade_date=td,
                             current_positions=last_holdings,
@@ -735,6 +821,7 @@ class Backtester:
                             sectors=sectors,
                             max_stocks=max_stocks,
                             prebuilt_data=prebuilt,
+                            **extra,
                         )
                     except Exception as e:
                         logger.error(f"{td} strategy pipeline 失败: {e}")
@@ -752,7 +839,7 @@ class Backtester:
                     last_regime = str(summary.get("regime"))
                 last_market_grade = market_grade if market_grade != "unknown" else last_market_grade
                 if use_adaptive:
-                    target_freq = resolve_rebalance_freq(
+                    target_freq = self._resolve_rebalance_freq(
                         adaptive_cfg,
                         regime=last_regime,
                         market_grade=last_market_grade,
@@ -789,7 +876,7 @@ class Backtester:
                         reduce_scale=no_signal_reduce_scale,
                         force_exit_codes=None,
                     )
-                    costs = self.strategy.turnover_controller.estimate_trading_costs(
+                    costs = self.strategy._turnover_controller.estimate_trading_costs(
                         current_holdings=last_holdings,
                         new_holdings=new_holdings,
                         total_capital=equity,
@@ -852,9 +939,7 @@ class Backtester:
                                 f"{sorted(force_out)}"
                             )
                             if not new_holdings.empty:
-                                new_holdings = self.strategy.turnover_controller._normalize(
-                                    new_holdings
-                                )
+                                new_holdings = self._clip_weights(new_holdings)
                     # 若仍处于坏环境连击且达到清仓阈值（防御：成功但红灯）
                     if bad_streak >= flat_after_bad_days and market_grade == "red":
                         new_holdings = pd.DataFrame(columns=["code", "weight", "score"])
@@ -862,11 +947,7 @@ class Backtester:
                             f"🛑 {td} 连续{bad_streak}日坏环境，强制清仓"
                         )
 
-                    from zstock.strategy_management.weak_regime_protection import (
-                        compute_drawdown_scale,
-                    )
-
-                    dd_scale = compute_drawdown_scale(
+                    dd_scale = self._compute_drawdown_scale(
                         equity_records + [equity],
                         cfg_runtime.get("weak_regime_protection"),
                     )
@@ -886,7 +967,7 @@ class Backtester:
 
                     costs = summary['results'].get('trading_costs', {})
                     # 若因 force_out / 清仓改变了目标，重算成本
-                    costs = self.strategy.turnover_controller.estimate_trading_costs(
+                    costs = self.strategy._turnover_controller.estimate_trading_costs(
                         current_holdings=last_holdings,
                         new_holdings=new_holdings,
                         total_capital=equity,
@@ -1064,7 +1145,7 @@ class Backtester:
         if action == "hold":
             if df.empty:
                 return empty, "flat_force_exit"
-            return self.strategy.turnover_controller._normalize(df), "hold_no_signals"
+            return self._clip_weights(df), "hold_no_signals"
 
         # reduce_then_flat：未达清仓阈值前按比例减仓
         scale = float(np.clip(reduce_scale, 0.0, 1.0))
@@ -1074,6 +1155,17 @@ class Backtester:
         df["weight"] = df["weight"].astype(float) * scale
         # 不归一化回 1，保留现金
         return df.reset_index(drop=True), "reduce_no_signals"
+
+    @staticmethod
+    def _clip_weights(df: pd.DataFrame) -> pd.DataFrame:
+        """权重和>1 时向下归一，保留现金。"""
+        if df is None or df.empty or "weight" not in df.columns:
+            return df
+        out = df.copy()
+        total = float(out["weight"].sum())
+        if total > 1.0 + 1e-9:
+            out["weight"] = out["weight"] / total
+        return out.reset_index(drop=True)
 
     def _commit_holdings(
         self,
@@ -1148,6 +1240,76 @@ class Backtester:
         out = pd.DataFrame(keep_rows).reset_index(drop=True)
         # 不把剩余权重归一化回 1，现金降低风险敞口
         return out, stop_turnover, stop_cost
+
+    def _apply_trend_exits(
+        self,
+        last_holdings: pd.DataFrame,
+        trade_date: str,
+        prev_trade_date: Optional[str],
+        exit_cfg: Dict[str, Any],
+        regime: Optional[str] = None,
+    ) -> tuple:
+        empty = last_holdings.iloc[0:0]
+        if not StrategyPipeline._trend_exit_enabled(exit_cfg, regime=regime) or last_holdings is None or last_holdings.empty:
+            return last_holdings, 0.0, 0.0
+
+        held = set(last_holdings["code"].astype(str))
+        f35_map: Dict[str, float] = {}
+        prev_f35: Dict[str, float] = {}
+        fp = self.factor_pipeline
+        field_fn = getattr(fp, "dragon_field_by_code", None) if fp else None
+        if field_fn is not None:
+            if trade_date:
+                f35_map.update(field_fn(trade_date, "f35_bollinger_trend", held))
+            if prev_trade_date:
+                prev_f35.update(field_fn(prev_trade_date, "f35_bollinger_trend", held))
+
+        full = getattr(self, "_ohlcv_full", None) or {}
+        ohlcv_by = {c: full[c] for c in held if c in full}
+        force = StrategyPipeline._trend_force_exit_codes(
+            held,
+            trade_date,
+            exit_cfg,
+            ohlcv_by_code=ohlcv_by,
+            f35_by_code=f35_map,
+            prev_f35_by_code=prev_f35,
+            regime=regime,
+        )
+        if not force:
+            return last_holdings, 0.0, 0.0
+
+        df = last_holdings[~last_holdings["code"].astype(str).isin(force)].copy()
+        if not df.empty:
+            df = self._clip_weights(df)
+        costs = self.strategy._turnover_controller.estimate_trading_costs(
+            current_holdings=last_holdings,
+            new_holdings=df,
+            total_capital=1.0,
+        )
+        logger.info(f"🚪 {trade_date} 趋势退出: {sorted(force)}")
+        return df, float(costs.get("turnover", 0.0)), float(costs.get("cost_pct", 0.0))
+
+    def _pipeline_market_kwargs(
+        self,
+        trade_date: str,
+        prev_trade_date: Optional[str],
+        last_holdings: Optional[pd.DataFrame],
+    ) -> Dict[str, Any]:
+        """把日线 / 昨日 f35 交给现场管道，避免 require_both 时趋势退出空转。"""
+        held: set = set()
+        if last_holdings is not None and not last_holdings.empty and "code" in last_holdings.columns:
+            held = set(last_holdings["code"].astype(str))
+        full = getattr(self, "_ohlcv_full", None) or {}
+        ohlcv_by = {c: full[c] for c in held if c in full}
+        prev_f35: Dict[str, float] = {}
+        fp = self.factor_pipeline
+        field_fn = getattr(fp, "dragon_field_by_code", None) if fp else None
+        if field_fn is not None and prev_trade_date and held:
+            prev_f35 = field_fn(prev_trade_date, "f35_bollinger_trend", held)
+        return {
+            "ohlcv_by_code": ohlcv_by,
+            "prev_f35_by_code": prev_f35,
+        }
 
     @staticmethod
     def _attach_entry_meta(

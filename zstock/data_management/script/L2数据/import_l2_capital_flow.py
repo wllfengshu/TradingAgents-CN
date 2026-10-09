@@ -234,15 +234,18 @@ def main():
                         help='只导入 >= 该日期的文件')
     parser.add_argument('--end',      type=str, default='', metavar='YYYYMMDD',
                         help='只导入 <= 该日期的文件')
+    parser.add_argument('--data-dir', type=str, default='',
+                        help='只扫描该目录（默认 work/ 及其子目录）')
     args = parser.parse_args()
 
-    if not DATA_DIR.exists():
-        logger.error(f"数据目录不存在: {DATA_DIR}")
+    data_dir = Path(args.data_dir) if args.data_dir else DATA_DIR
+    if not data_dir.exists():
+        logger.error(f"数据目录不存在: {data_dir}")
         sys.exit(1)
 
     # 递归扫描 work/ 及其子目录（xiazai、xiazai2 等）
-    all_xls = sorted(DATA_DIR.rglob('*.xls'))
-    logger.info(f"扫描到 {len(all_xls)} 个 .xls 文件，目录: {DATA_DIR}")
+    all_xls = sorted(data_dir.rglob('*.xls'))
+    logger.info(f"扫描到 {len(all_xls)} 个 .xls 文件，目录: {data_dir}")
 
     start_key = to_yyyymmdd(args.start) if args.start else ""
     end_key = to_yyyymmdd(args.end) if args.end else ""
@@ -253,7 +256,7 @@ def main():
     for path in all_xls:
         d = parse_filename(path.name)  # YYYYMMDD
         if not d:
-            logger.warning(f"  跳过（文件名无法解析）: {path.relative_to(DATA_DIR)}")
+            logger.warning(f"  跳过（文件名无法解析）: {path.relative_to(data_dir)}")
             continue
         if start_key and d < start_key:
             continue
@@ -261,8 +264,8 @@ def main():
             continue
         if d in date_to_path:
             logger.warning(
-                f"  日期 {d} 重复，跳过: {path.relative_to(DATA_DIR)} "
-                f"(已用 {date_to_path[d].relative_to(DATA_DIR)})"
+                f"  日期 {d} 重复，跳过: {path.relative_to(data_dir)} "
+                f"(已用 {date_to_path[d].relative_to(data_dir)})"
             )
             continue
         date_to_path[d] = path
@@ -305,7 +308,7 @@ def main():
 
     for i, (date_key, filepath) in enumerate(file_with_dates, 1):
         trade_date = normalize_date(date_key)
-        rel = filepath.relative_to(DATA_DIR)
+        rel = filepath.relative_to(data_dir)
         if not args.dry_run and trade_date in existing_dates:
             skipped_existing += 1
             if skipped_existing <= 5 or skipped_existing % 50 == 0:

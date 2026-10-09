@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Sequence, Union
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -94,10 +95,53 @@ def make_offline_pipeline(config: Dict[str, Any], qs=None):
     pipe.config = config
     pipe.prefilters = PreFilters()
     pipe._query_service = qs
-    pipe._precomputed_cache = None
+    pipe._reset_precomputed()
     pipe._all_stocks_cache = None
     pipe._sectors_cache = None
+    pipe._fund_provider = None
+    pipe._fund_provider_tried = False
+    pipe._style_cache = {}
     return pipe
+
+
+def make_ohlcv(
+    n: int,
+    close: Union[float, Sequence[float]] = 10.0,
+    *,
+    volume: Union[float, Sequence[float]] = 1_000_000.0,
+    amount: Optional[Union[float, Sequence[float]]] = None,
+    turnover: Optional[Union[float, Sequence[float]]] = None,
+    start: str = "2023-10-09",
+) -> pd.DataFrame:
+    """构造升序日线，供因子公式 UT 用。"""
+    dates = pd.bdate_range(start, periods=n).strftime("%Y-%m-%d").tolist()
+    c = np.full(n, float(close), dtype=float) if np.isscalar(close) else np.asarray(close, dtype=float)
+    if len(c) != n:
+        raise ValueError("close 长度必须等于 n")
+    vol = np.full(n, float(volume), dtype=float) if np.isscalar(volume) else np.asarray(volume, dtype=float)
+    amt = (c * vol) if amount is None else (
+        np.full(n, float(amount), dtype=float) if np.isscalar(amount) else np.asarray(amount, dtype=float)
+    )
+    high = np.maximum(c * 1.01, c)
+    low = np.minimum(c * 0.99, c)
+    out = pd.DataFrame(
+        {
+            "trade_date": dates,
+            "open": c,
+            "high": high,
+            "low": low,
+            "close": c,
+            "volume": vol,
+            "amount": amt,
+        }
+    )
+    if turnover is not None:
+        out["turnover"] = (
+            np.full(n, float(turnover), dtype=float)
+            if np.isscalar(turnover)
+            else np.asarray(turnover, dtype=float)
+        )
+    return out
 
 
 def docs_to_field_map(docs: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str, Any]]:

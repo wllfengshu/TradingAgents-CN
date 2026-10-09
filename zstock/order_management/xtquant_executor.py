@@ -7,7 +7,7 @@ XtQuant 执行接口模块
 
 import logging
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from zstock.common.entity.order_entity import Order
 from zstock.common.utils.common_utils import normalize_code
@@ -23,28 +23,27 @@ class XtQuantExecutor:
     """XtQuant 执行器：提交/查询/撤单，代码统一转为 QMT 格式。"""
 
     def __init__(self, qmt_util=None, allow_mock: bool = False):
-        from .qmt_client_factory import create_qmt_util, is_mock_client
+        from .qmt_client_factory import QMTClientFactory
 
         self._db_service = None
         self.allow_mock = allow_mock
 
         if qmt_util is None:
-            qmt_util = create_qmt_util(prefer_real=True, allow_mock=allow_mock)
+            qmt_util = QMTClientFactory.create(prefer_real=True, allow_mock=allow_mock)
 
-        self.qmt_util = qmt_util
-        self.mock_mode = is_mock_client(qmt_util)
+        self._qmt_util = qmt_util
+        self.mock_mode = QMTClientFactory.is_mock(qmt_util)
         if self.mock_mode:
             logger.warning("XtQuantExecutor 处于 Mock 模式（allow_mock=%s）", allow_mock)
         logger.info("XtQuantExecutor 初始化完成 (Mock=%s)", self.mock_mode)
 
-    @property
-    def db_service(self):
+    def _db(self):
         if self._db_service is None:
             self._db_service = get_database_service()
         return self._db_service
 
     @staticmethod
-    def to_broker_code(stock_code: str) -> str:
+    def _to_broker_code(stock_code: str) -> str:
         """6 位或任意格式 → QMT 代码（如 600000.SH）。"""
         return to_xt_code(normalize_code(stock_code))
 
@@ -61,7 +60,7 @@ class XtQuantExecutor:
         """
         try:
             # 幂等：查 DB
-            existing = await self.db_service.query_one(
+            existing = await self._db().query_one(
                 _ORDERS_COLLECTION, {"order_id": order.order_id}
             )
             if existing:
@@ -75,7 +74,7 @@ class XtQuantExecutor:
                     xt_id = existing.get("xt_order_id")
                     return int(xt_id) if xt_id else None
 
-            broker_code = self.to_broker_code(order.stock_code)
+            broker_code = self._to_broker_code(order.stock_code)
             logger.info(
                 f"📤 提交订单: {order.order_id} {broker_code} "
                 f"{order.direction} x{order.volume}"
@@ -84,7 +83,7 @@ class XtQuantExecutor:
             if order.direction == "buy":
                 xt_order_id = self._buy(order, broker_code)
             elif order.direction == "sell":
-                xt_order_id = self.qmt_util.sell(
+                xt_order_id = self._qmt_util.sell(
                     code=broker_code,
                     volume=order.volume,
                     price=order.price,
@@ -96,14 +95,14 @@ class XtQuantExecutor:
 
             # xt_order_id 语义：QMT 侧成功返回正整数；0 或 None / 负值视为失败。
             if xt_order_id is not None and int(xt_order_id) > 0:
-                # 与 order_generator.save_orders_to_db 共享同一 zstock_orders 集合，
+                # 与 OrderGenerator.persist_orders 共享同一 zstock_orders 集合，
                 # 按 order_id 幂等——这里必须用 upsert 而不是 insert_one：
                 # 1) generator 侧可能已经把该 order_id 写为 status="created"，
                 #    再 insert_one 会 DuplicateKey；
                 # 2) TWAP 分批下 submit_order 会对同一 order_id 反复调用（网络重试
                 #    等场景），insert_one 会造成同一订单在库里出现多条。
-                now_iso = datetime.utcnow().isoformat()
-                await self.db_service.update_one(
+                now_iso = datetime.now(timezone.utc).isoformat()
+                await self._db().update_one(
                     _ORDERS_COLLECTION,
                     {"order_id": order.order_id},
                     {
@@ -139,7 +138,7 @@ class XtQuantExecutor:
         price = order.price
         if price is None:
             try:
-                quote = self.qmt_util.get_realtime_quote([broker_code]) or {}
+                quote = self._qmt_util.get_realtime_quote([broker_code]) or {}
                 tick = quote.get(broker_code, {})
                 price = float(tick.get("lastPrice", 0.0) or 0.0)
             except Exception as e:
@@ -149,8 +148,8 @@ class XtQuantExecutor:
             logger.error(f"❌ {broker_code} 无法取得有效价格，跳过买入")
             return None
 
-        buy_fn = self.qmt_util.buy
-        if _accepts_volume(buy_fn):
+        buy_fn = self._qmt_util.buy
+        if self._accepts_volume(buy_fn):
             return buy_fn(
                 code=broker_code,
                 amount=order.volume * price,
@@ -167,7 +166,7 @@ class XtQuantExecutor:
         )
 
     async def query_order(self, order_id: str) -> Optional[Dict]:
-        doc = await self.db_service.query_one(
+        doc = await self._db().query_one(
             _ORDERS_COLLECTION, {"order_id": order_id}
         )
         if not doc:
@@ -176,7 +175,7 @@ class XtQuantExecutor:
 
     async def query_all_orders(self, status: Optional[str] = None) -> List[Dict]:
         query = {"status": status} if status else {}
-        return await self.db_service.query(_ORDERS_COLLECTION, query)
+        return await self._db().query(_ORDERS_COLLECTION, query)
 
     async def cancel_order(self, order_id: str) -> bool:
         """请求撤单（不立即改 status=cancelled）。
@@ -196,7 +195,7 @@ class XtQuantExecutor:
         """
         logger.info(f"🚫 撤单请求: {order_id}")
 
-        doc = await self.db_service.query_one(
+        doc = await self._db().query_one(
             _ORDERS_COLLECTION, {"order_id": order_id}
         )
         if not doc:
@@ -215,7 +214,7 @@ class XtQuantExecutor:
         if xt_order_id:
             try:
                 # cancel_order 底层可能返回 None / bool / int，各家 QMT 略有不同
-                ret = self.qmt_util.cancel_order(xt_order_id)
+                ret = self._qmt_util.cancel_order(xt_order_id)
                 # 只要没有异常，就认为撤单请求已发到 broker，具体成败等回报
                 cancel_ok = ret is not False
             except Exception as e:
@@ -223,12 +222,12 @@ class XtQuantExecutor:
                 cancel_ok = False
 
         # 只标 pending_cancel，等 on_order_status 回调把状态推到 cancelled/filled/partial
-        await self.db_service.update_one(
+        await self._db().update_one(
             _ORDERS_COLLECTION,
             {"order_id": order_id},
             {
                 "status": "pending_cancel" if cancel_ok else "cancel_failed",
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
         logger.info(
@@ -276,7 +275,7 @@ class XtQuantExecutor:
             logger.warning("未识别的 broker_status: %s (xt=%s)", broker_status, xt_order_id)
             return False
 
-        doc = await self.db_service.query_one(
+        doc = await self._db().query_one(
             _ORDERS_COLLECTION, {"xt_order_id": xt_order_id}
         )
         if not doc:
@@ -292,13 +291,13 @@ class XtQuantExecutor:
 
         update: Dict = {
             "status": new_status,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if filled_volume:
             update["filled_volume"] = int(filled_volume)
         if rejection_reason:
             update["rejection_reason"] = rejection_reason
-        await self.db_service.update_one(
+        await self._db().update_one(
             _ORDERS_COLLECTION,
             {"xt_order_id": xt_order_id},
             update,
@@ -319,7 +318,7 @@ class XtQuantExecutor:
         必须传入以支持幂等——QMT 在断线重连/轮询模式下会对同一成交回调多次，
         本地账本必须去重，否则 current_positions 会重复累加。
         """
-        doc = await self.db_service.query_one(
+        doc = await self._db().query_one(
             _ORDERS_COLLECTION, {"xt_order_id": xt_order_id}
         )
         if not doc:
@@ -340,7 +339,7 @@ class XtQuantExecutor:
             "broker_trade_id": broker_trade_id,
             "filled_price": float(filled_price),
             "filled_volume": int(filled_volume),
-            "trade_time": trade_time or datetime.utcnow().isoformat(),
+            "trade_time": trade_time or datetime.now(timezone.utc).isoformat(),
         }
         total_filled = int(doc.get("filled_volume") or 0) + int(filled_volume)
         target_volume = int(doc.get("volume") or 0)
@@ -352,14 +351,14 @@ class XtQuantExecutor:
         else:
             new_status = "partial_filled"
 
-        await self.db_service.update_one(
+        await self._db().update_one(
             _ORDERS_COLLECTION,
             {"xt_order_id": xt_order_id},
             {
                 "$set": {
                     "status": new_status,
                     "filled_volume": total_filled,
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
                 "$push": {"fills": fill},
             },
@@ -368,7 +367,7 @@ class XtQuantExecutor:
 
     def get_account_info(self) -> Optional[Dict]:
         try:
-            info = self.qmt_util.get_account_info()
+            info = self._qmt_util.get_account_info()
             return {
                 "cash": info.cash,
                 "total_value": info.total_value,
@@ -381,14 +380,14 @@ class XtQuantExecutor:
     def get_positions(self) -> Optional[List[Dict]]:
         """返回 6 位 code 格式的持仓列表。查询失败返回 None（不是空列表）。"""
         try:
-            positions = self.qmt_util.get_positions()
+            positions = self._qmt_util.get_positions()
             if positions is None:
                 logger.error("券商持仓查询返回 None")
                 return None
             return [
                 {
                     "code": normalize_code(p.code),
-                    "broker_code": self.to_broker_code(p.code),
+                    "broker_code": self._to_broker_code(p.code),
                     "volume": p.volume,
                     "cost_price": p.cost_price,
                     "current_price": p.current_price,
@@ -403,9 +402,9 @@ class XtQuantExecutor:
         """批量获取最新价 {6位code: price}。"""
         if not codes:
             return {}
-        broker_codes = [self.to_broker_code(c) for c in codes]
+        broker_codes = [self._to_broker_code(c) for c in codes]
         try:
-            quotes = self.qmt_util.get_realtime_quote(broker_codes) or {}
+            quotes = self._qmt_util.get_realtime_quote(broker_codes) or {}
         except Exception as e:
             logger.error(f"❌ 批量行情失败: {e}")
             return {}
@@ -425,7 +424,7 @@ class XtQuantExecutor:
         connected 属性），退回到私有 _connected 属性做兜底——避免因对方
         重命名内部字段而静默失联。
         """
-        util = self.qmt_util
+        util = self._qmt_util
         # 1) 公共方法
         fn = getattr(util, "is_connected", None)
         if callable(fn):
@@ -442,11 +441,16 @@ class XtQuantExecutor:
                     continue
         return False
 
+    @staticmethod
+    def _accepts_volume(fn) -> bool:
+        """QMT buy 有的只收金额 amount，有的额外收股数 volume。
 
-def _accepts_volume(fn) -> bool:
-    import inspect
+        能传 volume 时按整手股数下单，避免 amount/price 反算股数被四舍五入。
+        签名探测失败则当不支持，只走金额路径。
+        """
+        import inspect
 
-    try:
-        return "volume" in inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
+        try:
+            return "volume" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False

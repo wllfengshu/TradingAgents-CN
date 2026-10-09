@@ -1,9 +1,9 @@
-"""SignalGenerator：回放 Mongo 导出的真实截面，验证预计算优先与 live 回退。"""
+"""StrategyPipeline._generate_signals：回放真实截面，验证预计算优先与 live 回退。"""
 
 import pandas as pd
 import pytest
 
-from zstock.strategy_management.signal_generator import SignalGenerator
+from zstock.strategy_management.pipeline import StrategyPipeline
 
 
 class _ReplayPipeline:
@@ -16,8 +16,6 @@ class _ReplayPipeline:
     async def compute_signals(
         self, trade_date: str = None, prebuilt_data=None, prefer_precomputed: bool = True, **kwargs
     ) -> pd.DataFrame:
-        """因子层的唯一入口 (mock 版本)。"""
-        # 如果提供了 prebuilt_data，直接跳过预计算
         if prebuilt_data is None and prefer_precomputed:
             try:
                 return await self.score_signals(trade_date)
@@ -38,32 +36,31 @@ class _ReplayPipeline:
 
 @pytest.mark.asyncio
 async def test_prefers_precomputed(real_signals, real_trade_date):
-    pipe = _ReplayPipeline(real_signals)
-    gen = SignalGenerator(factor_pipeline=pipe)  # type: ignore[arg-type]
-    df = await gen.generate_signals(trade_date=real_trade_date)
+    fp = _ReplayPipeline(real_signals)
+    pipe = StrategyPipeline(factor_pipeline=fp)  # type: ignore[arg-type]
+    df = await pipe._generate_signals(trade_date=real_trade_date)
     assert df is real_signals
-    assert pipe.score_calls == 1
-    assert pipe.live_calls == 0
-    assert real_trade_date in gen.signals_history
+    assert fp.score_calls == 1
+    assert fp.live_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_falls_back_to_live_on_missing_precompute(real_signals, real_trade_date):
-    pipe = _ReplayPipeline(real_signals, fail_precomputed=True)
-    gen = SignalGenerator(factor_pipeline=pipe)  # type: ignore[arg-type]
-    df = await gen.generate_signals(trade_date=real_trade_date, prefer_precomputed=True)
+    fp = _ReplayPipeline(real_signals, fail_precomputed=True)
+    pipe = StrategyPipeline(factor_pipeline=fp)  # type: ignore[arg-type]
+    df = await pipe._generate_signals(trade_date=real_trade_date, prefer_precomputed=True)
     assert df is real_signals
-    assert pipe.score_calls == 1
-    assert pipe.live_calls == 1
+    assert fp.score_calls == 1
+    assert fp.live_calls == 1
 
 
 @pytest.mark.asyncio
 async def test_prebuilt_skips_precomputed(real_signals, real_trade_date):
-    pipe = _ReplayPipeline(real_signals)
-    gen = SignalGenerator(factor_pipeline=pipe)  # type: ignore[arg-type]
-    df = await gen.generate_signals(
+    fp = _ReplayPipeline(real_signals)
+    pipe = StrategyPipeline(factor_pipeline=fp)  # type: ignore[arg-type]
+    df = await pipe._generate_signals(
         trade_date=real_trade_date, prebuilt_data={"trade_date": real_trade_date}
     )
     assert df is real_signals
-    assert pipe.score_calls == 0
-    assert pipe.live_calls == 1
+    assert fp.score_calls == 0
+    assert fp.live_calls == 1

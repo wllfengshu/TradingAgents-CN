@@ -5,6 +5,8 @@ from zstock.factor_management.prefilters import PreFilters
 
 def test_stock_blacklist_hits_real_codes():
     pf = PreFilters()
+    pf.stock_blacklist = {"000981.SZ": {}, "600001.SH": {}}
+    pf._normalized_stock_blacklist = {"000981", "600001"}
     stocks = ["603201", "000060", "000981", "000981.SZ", "600001", "600001.SH"]
     out = pf.apply_blacklist_filters(stocks)
     kept = set(out["stocks"])
@@ -18,6 +20,7 @@ def test_stock_blacklist_hits_real_codes():
 
 def test_sector_glob_blacklist():
     pf = PreFilters()
+    pf.sector_blacklist = {"*房地产*", "*光伏*", "*ST*", "*借壳*", "*退市*"}
     sectors = [
         {"sector_code": "SW2汽车零部件", "sector_name": "SW2汽车零部件"},
         {"sector_code": "SW2房地产", "sector_name": "SW2房地产开发"},
@@ -54,3 +57,16 @@ def test_bollinger_filter_on_real_ohlcv(stock_ohlcv_by_code):
     n = len(pf._normalized_stock_blacklist)
     pf._reload_blacklists()
     assert len(pf._normalized_stock_blacklist) == n
+
+
+def test_filter_universe_blackbox(signal_names_raw):
+    pf = PreFilters()
+    infos = signal_names_raw["stock_infos"]
+    codes = list(infos.keys())
+    sectors = [{"sector_code": "SW2出版", "sector_name": "SW2出版"}]
+    res = pf.filter_universe(codes, stock_infos=infos, sectors=sectors)
+    assert "stocks" in res
+    assert "sectors" in res
+    assert isinstance(res["stocks"], list)
+    assert len(res["sectors"]) == 1
+

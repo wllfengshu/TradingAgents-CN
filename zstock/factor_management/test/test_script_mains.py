@@ -20,15 +20,12 @@ from zstock.data_management.query_service import (
     PERIOD_L2_DAILY,
 )
 from zstock.data_management.test.conftest import FakeDatabaseService
-from zstock.factor_management.prefilters import PreFilters
 from zstock.factor_management.script.precompute_factors import (
     FactorComputeEngine,
     FactorPrecomputeService,
     _compute_day_sync,
     _compute_sliced_payload,
 )
-from zstock.factor_management.test.conftest import make_offline_pipeline
-
 LIVE = Path(__file__).resolve().parent / "fixtures" / "live_calc_20240102.json"
 HS300 = Path(__file__).resolve().parent / "fixtures" / "hs300_ohlcv.json"
 
@@ -118,9 +115,7 @@ def _svc_from_live(strategy_params):
                 return ohlcv[code], "fixture"
             return pd.DataFrame(), "fixture"
 
-    pipe = make_offline_pipeline(strategy_params, qs=QS())
     svc = FactorPrecomputeService.__new__(FactorPrecomputeService)
-    svc.pipeline = pipe
     svc.database_service = ds
     svc.query_service = QS()
     svc.compute_workers = 1
@@ -128,6 +123,7 @@ def _svc_from_live(strategy_params):
     svc.query_workers = 1
     svc.resource_budget = SimpleNamespace(resource_fraction=0.25, total_memory_gb=8, cpu_cores=4)
     svc.fund_provider = None
+    svc._load_fundamentals = False
     return svc, members, ohlcv, flow, idx, infos, ds
 
 
@@ -153,8 +149,8 @@ def test_compute_helpers_on_live_slice(strategy_params):
         "sectors": [{"sector_code": k} for k in members],
         "sector_stocks": members,
         "index_name": "沪深 300",
-        "filtered_sectors": [{"sector_code": k} for k in members],
-        "filtered_stocks_set": set(ohlcv),
+        "compute_sectors": [{"sector_code": k} for k in members],
+        "compute_universe": set(ohlcv),
         "fund_provider": None,
     }
     raw = _compute_day_sync(preload, "2024-01-02", 90, quiet=True)
@@ -163,8 +159,8 @@ def test_compute_helpers_on_live_slice(strategy_params):
     out = _compute_sliced_payload(
         {
             "data": sliced,
-            "filtered_sectors": preload["filtered_sectors"],
-            "filtered_stocks_set": preload["filtered_stocks_set"],
+            "compute_sectors": preload["compute_sectors"],
+            "compute_universe": preload["compute_universe"],
             "fund_provider": None,
         }
     )
@@ -175,27 +171,10 @@ def test_compute_helpers_on_live_slice(strategy_params):
 async def test_precompute_service_paths(strategy_params, monkeypatch):
     svc, members, ohlcv, flow, idx, infos, ds = _svc_from_live(strategy_params)
 
-    class Pipe:
-        prefilters = PreFilters()
-
-        async def load_real_data(self, trade_date, lookback_days=120):
-            return {
-                "trade_date": trade_date,
-                "all_stocks": list(ohlcv),
-                "stock_infos": infos,
-                "stock_ohlcv": ohlcv,
-                "stock_flow_recent": flow,
-                "sectors": [{"sector_code": k, "sector_name": k} for k in members],
-                "sector_stocks": members,
-                "index_ohlcv": {"399300": idx},
-                "index_name": "沪深 300",
-            }
-
-    svc.pipeline = Pipe()
     counts = await svc.precompute_single_date("2024-01-02", lookback_days=90)
     assert counts["market"] == 1
 
-    # 交易日筛选：同一日复制真实 399300 行到 1000 个 code，只测 >=1000 门槛
+    # 交易日：写入当日 OHLCV，确认 _gen_trade_dates 收录该日
     template = dict(idx.iloc[-1]) if "trade_date" in idx.columns else {}
     td = "2024-01-02"
     docs = []
@@ -245,18 +224,18 @@ async def test_precompute_init_and_main(strategy_params, monkeypatch):
     monkeypatch.setattr(
         "zstock.data_management.query_service.get_data_query_service", lambda: QS()
     )
+    async def _skip_fund(self, qs):
+        return None
+
     monkeypatch.setattr(
-        "zstock.factor_management.pipeline.get_data_query_service", lambda: QS()
-    )
-    monkeypatch.setattr(
-        "zstock.factor_management.fundamental_factors.FundamentalDataProvider.load_from_mongodb",
-        lambda self: None,
+        "zstock.data_management.fundamental_provider.FundamentalDataProvider.load_from_query_service",
+        _skip_fund,
     )
     svc = FactorPrecomputeService(
         load_fundamentals=False, compute_workers=1, load_workers=1, query_workers=1, resource_fraction=0.2
     )
     assert svc.compute_workers >= 1
-    svc._init_fundamental_provider()
+    await svc._ensure_fundamental_provider()
 
     class FakeSvc:
         def __init__(self, **kwargs):
@@ -756,7 +735,6 @@ async def test_style_compare_and_report(hs300_ohlcv, factor_eval_2024_csv, tmp_p
         _run_detection,
         main as style_main,
     )
-    from zstock.factor_management.style_detector import StyleDetector
     from zstock.factor_management.script.因子测评.run_compare_eval import (
         async_main as compare_async_main,
         run_all_jobs,

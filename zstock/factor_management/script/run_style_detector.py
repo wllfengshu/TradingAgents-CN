@@ -69,7 +69,7 @@ async def _run_detection(
 ) -> Tuple[pd.DataFrame, List[dict]]:
     """逐日运行风格检测"""
     from zstock.data_management.query_service import get_data_query_service
-    from zstock.factor_management.style_detector import StyleDetector
+    from zstock.factor_management.market_factors import MarketFactors
 
     qs = get_data_query_service()
 
@@ -85,11 +85,10 @@ async def _run_detection(
     trading_dates = _get_trading_dates(start_date, end_date, df)
     logger.info(f"交易日范围: {start_date} ~ {end_date}, 共 {len(trading_dates)} 个交易日")
 
-    detector = StyleDetector()
     results = []
 
     for i, td in enumerate(trading_dates):
-        result = detector.detect(df, td)
+        result = MarketFactors.detect_style(df, td)
         result["trade_date"] = td
         results.append(result)
 

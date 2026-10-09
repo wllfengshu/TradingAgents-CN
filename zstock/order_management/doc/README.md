@@ -56,8 +56,9 @@ zstock/order_management/
 ├── trade_settlement.py
 ├── execution_strategy.py
 ├── pipeline.py
-├── test_order_management.py
-├── verify.py
+├── qmt_client_factory.py
+├── test/
+│   └── test_*.py
 └── doc/
     └── README.md
 ```
@@ -69,10 +70,9 @@ zstock/order_management/
 **作用**：比较目标持仓与当前持仓，生成买卖订单。
 
 **关键能力**：
-- 持仓差异计算（卖出、买入、调仓）
-- 订单序列号管理
-- 订单状态更新
-- 多格式导出（`DataFrame` / `List` / `Dict`）
+- `generate_orders`：目标/当前持仓 → 买卖单（纯计算）
+- `lots_from_positions`：weight / target_shares → 目标股数
+- `persist_orders`：订单落库
 
 **示例**：
 
@@ -84,10 +84,10 @@ orders = gen.generate_orders(
     target_positions=target_positions,
     current_positions=current_positions,
     trade_date='2024-01-01',
+    price_map=price_map,
+    total_capital=total_capital,
 )
-
-gen.update_order_status(orders[0].order_id, 'filled')
-orders_df = gen.export_orders(format='dataframe')
+lots = gen.lots_from_positions(target_positions, price_map, total_capital)
 ```
 
 ### 2) `XtQuantExecutor`
@@ -118,11 +118,8 @@ executor.cancel_order(order.order_id)
 **作用**：处理成交回报，更新本地持仓，并执行对账。
 
 **关键能力**：
-- 成交回报处理
-- 持仓自动更新
-- 成交记录留存
-- 本地 vs XtQuant 持仓对账
-- 滑点计算
+- `sync_positions_from_broker`：用券商持仓初始化本地账本
+- `reconcile_target_vs_broker`：目标股数 vs 券商持仓
 
 **示例**：
 
@@ -130,16 +127,8 @@ executor.cancel_order(order.order_id)
 from zstock.order_management import TradeSettlement
 
 settlement = TradeSettlement()
-settlement.handle_trade_report(
-    order_id='20240101001',
-    filled_volume=1000,
-    filled_price=10.5,
-    order_direction='buy',
-    stock_code='SH600000',
-)
-
-reconcile_result = settlement.reconcile_positions(xtquant_positions)
-slippage = settlement.calculate_slippage(order_price=10.0, filled_price=10.05)
+settlement.sync_positions_from_broker(broker_positions)
+reconcile_result = settlement.reconcile_target_vs_broker(target_lots, broker_positions)
 ```
 
 ### 4) `ExecutionStrategy`
@@ -168,7 +157,6 @@ submitted_count = strategy.execute_with_strategy(
     executor=executor,
     strategy=None,  # None 表示自动按当前时段选择
 )
-stats = strategy.get_strategy_stats()
 ```
 
 ### 5) `OrderManagementPipeline`
@@ -218,44 +206,22 @@ executor = XtQuantExecutor()
 for order in orders:
     executor.submit_order(order)
 
-# 3) 处理成交
+# 3) 对账（只比较股数）
+lots = OrderGenerator().lots_from_positions(target_positions, price_map, total_capital)
 settlement = TradeSettlement()
-settlement.handle_trade_report(
-    order_id=orders[0].order_id,
-    filled_volume=1000,
-    filled_price=10.5,
-    order_direction='buy',
-    stock_code='SH600000',
-)
-
-# 4) 对账
 positions = executor.get_positions()
-result = settlement.reconcile_positions(positions)
+result = settlement.reconcile_target_vs_broker(lots, positions)
 ```
 
 ## 测试与验证
 
 ### 单元测试
 
-当前用例覆盖：
-- `TestOrderGenerator`（2 个）
-- `TestXtQuantExecutor`（3 个）
-- `TestTradeSettlement`（2 个）
-- `TestExecutionStrategy`（1 个）
-- `TestOrderManagementPipeline`（1 个）
-
-合计 **9 个测试**。
-
-运行方式：
+用例在 `zstock/order_management/test/`（pytest）。
 
 ```bash
-cd zstock/order_management
-python test_order_management.py
+.venv/Scripts/pytest.exe zstock/order_management/test -q
 ```
-
-### 验证脚本
-
-`verify.py` 可用于演示完整的订单生成、执行、成交处理和对账流程，并输出执行统计。
 
 ## 与上下游集成
 

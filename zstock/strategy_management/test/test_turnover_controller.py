@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from zstock.strategy_management.portfolio_optimizer import PortfolioOptimizer
-from zstock.strategy_management.turnover_controller import TurnoverController, _trading_days_between
+from zstock.strategy_management.turnover_controller import TurnoverController
 
 
 def _optimize(signals, strategy_params):
@@ -15,8 +15,8 @@ def _optimize(signals, strategy_params):
 
 
 def test_trading_days_between():
-    assert _trading_days_between("2024-01-02", "2024-01-05") == 3
-    assert _trading_days_between("bad", "2024-01-05") == 0
+    assert TurnoverController._trading_days_between("2024-01-02", "2024-01-05") == 3
+    assert TurnoverController._trading_days_between("bad", "2024-01-05") == 0
 
 
 def test_first_entry_adopts_new(real_signals, strategy_params):
@@ -103,8 +103,3 @@ def test_estimate_costs_and_positions(real_signals, strategy_params):
     costs = ctrl.estimate_trading_costs(None, new_h, total_capital=1e7)
     assert costs["turnover"] == pytest.approx(0.5 * float(new_h["weight"].abs().sum()), abs=1e-9)
     assert costs["cost_pct"] == pytest.approx(costs["turnover"] * 0.0015, abs=1e-12)
-    pos = ctrl.generate_final_positions(new_h, trade_date="2024-01-02")
-    assert pos["count"] == len(new_h)
-    assert pos["trade_date"] == "2024-01-02"
-    empty = ctrl.generate_final_positions(pd.DataFrame(), trade_date="2024-01-02")
-    assert empty["count"] == 0

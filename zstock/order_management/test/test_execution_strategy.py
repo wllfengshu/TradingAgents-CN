@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from zstock.order_management.execution_strategy import ExecutionStrategy, _lot_batches
+from zstock.order_management.execution_strategy import ExecutionStrategy
 from zstock.common.entity.order_entity import Order
 
 
@@ -25,10 +25,10 @@ def _order(oid, code, direction, volume):
 
 
 def test_lot_batches_real_round_lots():
-    assert _lot_batches(0, 5) == []
-    assert _lot_batches(80, 5) == []
-    assert _lot_batches(150, 5) == []
-    batches = _lot_batches(1000, 5)
+    assert ExecutionStrategy._lot_batches(0, 5) == []
+    assert ExecutionStrategy._lot_batches(80, 5) == []
+    assert ExecutionStrategy._lot_batches(150, 5) == []
+    batches = ExecutionStrategy._lot_batches(1000, 5)
     assert batches
     assert sum(batches) == 1000
     assert all(b % 100 == 0 and b > 0 for b in batches)
@@ -55,7 +55,7 @@ async def test_twap_buy_splits_lots_then_submits():
     exe = StubExecutor()
     report = await strat.execute_with_strategy([sell, buy], exe, strategy="twap_buy")
     assert report["failed"] == 0
-    assert report["submitted"] == 1 + len(_lot_batches(1000, 5))
+    assert report["submitted"] == 1 + len(ExecutionStrategy._lot_batches(1000, 5))
     assert any(o.order_id.endswith("_B0") for o in exe.submitted)
 
 
@@ -98,7 +98,7 @@ def test_get_current_strategy_is_one_of_known():
 def test_stats_reset():
     strat = ExecutionStrategy()
     strat.execution_stats["twap_buy_count"] = 3
-    stats = strat.get_strategy_stats()
+    stats = strat._get_strategy_stats()
     assert stats["twap_buy_count"] == 3
-    strat.reset_stats()
-    assert strat.get_strategy_stats()["twap_buy_count"] == 0
+    strat._reset_stats()
+    assert strat._get_strategy_stats()["twap_buy_count"] == 0
