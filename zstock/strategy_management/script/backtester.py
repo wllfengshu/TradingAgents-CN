@@ -368,7 +368,12 @@ class Backtester:
         equity_series: List[float],
         cfg: Optional[Dict[str, Any]],
     ) -> float:
-        """根据近期峰值回撤计算仓位乘数。"""
+        """根据窗口内峰值回撤计算仓位乘数。
+
+        单档：drawdown_threshold + scale_factor。
+        多档：tiers=[{drawdown_threshold, scale_factor}, ...]，命中最深档（scale 取最小）。
+        lookback_days<=0 表示用全部净值序列当峰值窗口。
+        """
         root = cfg or {}
         if not root.get("enabled", False):
             return 1.0
@@ -379,17 +384,66 @@ class Backtester:
             return 1.0
 
         lookback = int(dt.get("lookback_days", 20))
-        threshold = float(dt.get("drawdown_threshold", 0.10))
-        scale = float(dt.get("scale_factor", 0.7))
         window = equity_series[-lookback:] if lookback > 0 else equity_series
         peak = max(window)
         current = equity_series[-1]
         if peak <= 0:
             return 1.0
         dd = current / peak - 1.0
+
+        tiers = dt.get("tiers") or []
+        if tiers:
+            scale = 1.0
+            hit = False
+            for tier in tiers:
+                threshold = abs(float(tier.get("drawdown_threshold", 0.0)))
+                if threshold <= 0:
+                    continue
+                if dd <= -threshold:
+                    hit = True
+                    scale = min(scale, float(tier.get("scale_factor", 1.0)))
+            if hit:
+                return max(0.0, min(1.0, scale))
+            return 1.0
+
+        threshold = abs(float(dt.get("drawdown_threshold", 0.10)))
+        scale = float(dt.get("scale_factor", 0.7))
         if dd <= -threshold:
             return max(0.0, min(1.0, scale))
         return 1.0
+
+    @staticmethod
+    def _compute_vol_scale(
+        equity_series: List[float],
+        cfg: Optional[Dict[str, Any]],
+    ) -> float:
+        """按实现波动缩放仓位：scale=clip(target/realized, floor, cap)。
+
+        地板默认 0.25，不会因波动目标空仓。样本不足或波动近 0 时返回 1.0。
+        """
+        vt = (cfg or {}).get("vol_target") or {}
+        if not vt.get("enabled", False):
+            return 1.0
+        if len(equity_series) < 3:
+            return 1.0
+        lookback = int(vt.get("lookback_days", 40))
+        target = float(vt.get("target_vol", 0.12))
+        floor = float(vt.get("scale_floor", 0.25))
+        ceiling = float(vt.get("scale_cap", 1.25))
+        min_obs = int(vt.get("min_obs", 20))
+        rets: List[float] = []
+        for i in range(1, len(equity_series)):
+            prev = float(equity_series[i - 1])
+            if prev > 0:
+                rets.append(float(equity_series[i]) / prev - 1.0)
+        window = rets[-lookback:] if lookback > 0 else rets
+        if len(window) < min_obs:
+            return 1.0
+        std = float(np.std(window, ddof=1)) if len(window) > 1 else 0.0
+        realized = std * float(np.sqrt(252))
+        if realized <= 1e-8 or target <= 0:
+            return 1.0
+        return max(floor, min(ceiling, target / realized))
 
     @staticmethod
     def _configure_cli_logging() -> None:
@@ -947,21 +1001,22 @@ class Backtester:
                             f"🛑 {td} 连续{bad_streak}日坏环境，强制清仓"
                         )
 
-                    dd_scale = self._compute_drawdown_scale(
-                        equity_records + [equity],
-                        cfg_runtime.get("weak_regime_protection"),
-                    )
+                    wrp = cfg_runtime.get("weak_regime_protection")
+                    eq_path = equity_records + [equity]
+                    dd_scale = self._compute_drawdown_scale(eq_path, wrp)
+                    vol_scale = self._compute_vol_scale(eq_path, wrp)
+                    risk_scale = dd_scale * vol_scale
                     if (
-                        dd_scale < 1.0 - 1e-9
+                        abs(risk_scale - 1.0) > 1e-9
                         and new_holdings is not None
                         and not new_holdings.empty
                     ):
                         new_holdings = new_holdings.copy()
                         new_holdings["weight"] = (
-                            new_holdings["weight"].astype(float) * dd_scale
+                            new_holdings["weight"].astype(float) * risk_scale
                         )
                         logger.info(
-                            f"📉 {td} 回撤节流 scale={dd_scale:.2f} "
+                            f"📉 {td} 风险缩放 dd={dd_scale:.2f} vol={vol_scale:.2f} "
                             f"敞口={new_holdings['weight'].sum():.2%}"
                         )
 

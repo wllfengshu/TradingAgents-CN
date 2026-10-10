@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -865,45 +866,192 @@ class DataQueryService:
 
     # =========================== 因子预计算区间查询 ===========================
 
-    async def get_factor_market_range(self, start_date: str, end_date: str) -> List[Dict]:
+    @staticmethod
+    def _factor_range_concurrency(cap: int = 8) -> int:
+        """因子窗口并发。大集合必须低并发，避免 Mongo 超时 / 连接池打满。"""
+        raw = os.environ.get("ZSTOCK_OHLCV_CONCURRENCY")
+        if raw:
+            try:
+                n = int(raw)
+            except ValueError:
+                n = default_query_concurrency()
+        else:
+            n = default_query_concurrency()
+        return max(2, min(cap, n))
+
+    async def _query_window_with_retry(
+        self,
+        collection: str,
+        win_start: str,
+        win_end: str,
+        *,
+        attempts: int = 5,
+    ) -> List[Dict]:
+        last_err: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                docs = await self.database_service.query(
+                    collection,
+                    {"trade_date": {"$gte": win_start, "$lte": win_end}},
+                    projection={"_id": 0},
+                    batch_size=4000,
+                )
+                return docs or []
+            except Exception as e:
+                last_err = e
+                msg = str(e).lower()
+                retryable = "timed out" in msg or "timeout" in msg or "connection" in msg
+                if not retryable or attempt >= attempts:
+                    raise
+                wait = min(30, 2 ** (attempt - 1))
+                logger.warning(
+                    "  %s 窗口 %s~%s 失败，%ds 后重试 (%d/%d): %s",
+                    collection,
+                    win_start,
+                    win_end,
+                    wait,
+                    attempt,
+                    attempts,
+                    e,
+                )
+                await asyncio.sleep(wait)
+        raise last_err or RuntimeError(f"{collection} 窗口查询失败")
+
+    async def _query_docs_by_date_windows(
+        self,
+        collection: str,
+        start_date: str,
+        end_date: str,
+        *,
+        date_chunk_days: int = 60,
+        query_concurrency: Optional[int] = None,
+        sink: Optional[Callable[[List[Dict]], None]] = None,
+    ) -> List[Dict]:
+        """按日期窗口并发拉取；sink 用于流式消费，避免 6 年结果在 list 里翻倍占内存。
+
+        不在 Mongo 端 sort：区间扫描走 trade_date 索引，排序改由调用方按日分组。
+        """
+        start = normalize_date(start_date)
+        end = normalize_date(end_date)
+        windows = self._iter_date_windows(start, end, date_chunk_days)
+        if not windows:
+            return []
+        if query_concurrency is None:
+            query_concurrency = self._factor_range_concurrency()
+        sem = asyncio.Semaphore(max(1, query_concurrency))
+        total = len(windows)
+        done = 0
+        n_docs = 0
+        progress_lock = asyncio.Lock()
+
+        async def _fetch(win_start: str, win_end: str) -> List[Dict]:
+            nonlocal done, n_docs
+            async with sem:
+                docs = await self._query_window_with_retry(
+                    collection, win_start, win_end
+                )
+                async with progress_lock:
+                    done += 1
+                    n_docs += len(docs)
+                    if sink is not None and docs:
+                        sink(docs)
+                    if done == 1 or done == total or done % 10 == 0:
+                        logger.info(
+                            "  %s 窗口进度 %d/%d (并发=%d, %s~%s, 本窗 %d 条)",
+                            collection,
+                            done,
+                            total,
+                            query_concurrency,
+                            win_start,
+                            win_end,
+                            len(docs),
+                        )
+                return [] if sink is not None else docs
+
+        parts = await asyncio.gather(*[_fetch(ws, we) for ws, we in windows])
+        out: List[Dict] = []
+        if sink is None:
+            for part in parts:
+                out.extend(part)
+            n_docs = len(out)
+        logger.info(
+            "📦 %s 区间 %s~%s: %d 条 (%d 窗口, 并发=%d)",
+            collection,
+            start,
+            end,
+            n_docs,
+            total,
+            query_concurrency,
+        )
+        return out
+
+    async def get_factor_market_range(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        sink: Optional[Callable[[List[Dict]], None]] = None,
+    ) -> List[Dict]:
         """获取 M1 市场因子预计算文档（区间）。"""
-        docs = await self.database_service.query(
+        return await self._query_docs_by_date_windows(
             COL_FACTOR_MARKET,
-            {"trade_date": {"$gte": normalize_date(start_date), "$lte": normalize_date(end_date)}},
-            projection={"_id": 0},
-            sort=[("trade_date", 1)],
+            start_date,
+            end_date,
+            date_chunk_days=180,
+            query_concurrency=self._factor_range_concurrency(8),
+            sink=sink,
         )
-        return docs or []
 
-    async def get_factor_sectors_range(self, start_date: str, end_date: str) -> List[Dict]:
+    async def get_factor_sectors_range(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        sink: Optional[Callable[[List[Dict]], None]] = None,
+    ) -> List[Dict]:
         """获取 M2 板块因子预计算文档（区间）。"""
-        docs = await self.database_service.query(
+        return await self._query_docs_by_date_windows(
             COL_FACTOR_SECTOR,
-            {"trade_date": {"$gte": normalize_date(start_date), "$lte": normalize_date(end_date)}},
-            projection={"_id": 0},
-            sort=[("trade_date", 1), ("sector_code", 1)],
+            start_date,
+            end_date,
+            date_chunk_days=90,
+            query_concurrency=self._factor_range_concurrency(8),
+            sink=sink,
         )
-        return docs or []
 
-    async def get_factor_dragons_range(self, start_date: str, end_date: str) -> List[Dict]:
+    async def get_factor_dragons_range(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        sink: Optional[Callable[[List[Dict]], None]] = None,
+    ) -> List[Dict]:
         """获取 M3 龙头因子预计算文档（区间）。"""
-        docs = await self.database_service.query(
+        return await self._query_docs_by_date_windows(
             COL_FACTOR_DRAGON,
-            {"trade_date": {"$gte": normalize_date(start_date), "$lte": normalize_date(end_date)}},
-            projection={"_id": 0},
-            sort=[("trade_date", 1), ("sector_code", 1), ("code", 1)],
+            start_date,
+            end_date,
+            date_chunk_days=14,
+            query_concurrency=self._factor_range_concurrency(4),
+            sink=sink,
         )
-        return docs or []
 
-    async def get_factor_forces_range(self, start_date: str, end_date: str) -> List[Dict]:
+    async def get_factor_forces_range(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        sink: Optional[Callable[[List[Dict]], None]] = None,
+    ) -> List[Dict]:
         """获取 M4 合力因子预计算文档（区间）。"""
-        docs = await self.database_service.query(
+        return await self._query_docs_by_date_windows(
             COL_FACTOR_FORCE,
-            {"trade_date": {"$gte": normalize_date(start_date), "$lte": normalize_date(end_date)}},
-            projection={"_id": 0},
-            sort=[("trade_date", 1), ("code", 1)],
+            start_date,
+            end_date,
+            date_chunk_days=14,
+            query_concurrency=self._factor_range_concurrency(4),
+            sink=sink,
         )
-        return docs or []
 
     # =========================== 基本面财务数据查询 ===========================
 

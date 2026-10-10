@@ -58,6 +58,70 @@ def test_drawdown_scale_idle_paths(strategy_params):
     assert Backtester._compute_drawdown_scale([0.0, 0.0], cfg) == 1.0
 
 
+def test_drawdown_scale_tiers_use_deepest_hit():
+    cfg = {
+        "enabled": True,
+        "drawdown_throttle": {
+            "enabled": True,
+            "lookback_days": 252,
+            "tiers": [
+                {"drawdown_threshold": 0.12, "scale_factor": 0.5},
+                {"drawdown_threshold": 0.20, "scale_factor": 0.0},
+            ],
+        },
+    }
+    assert Backtester._compute_drawdown_scale([1.0, 0.95], cfg) == 1.0
+    assert Backtester._compute_drawdown_scale([1.0, 0.85], cfg) == 0.5
+    assert Backtester._compute_drawdown_scale([1.0, 0.79], cfg) == 0.0
+
+
+def test_drawdown_scale_lookback_ignores_old_peak():
+    cfg = {
+        "enabled": True,
+        "drawdown_throttle": {
+            "enabled": True,
+            "lookback_days": 3,
+            "drawdown_threshold": 0.10,
+            "scale_factor": 0.7,
+        },
+    }
+    # 更早的 1.0 峰值已滑出窗口
+    series = [1.0, 0.80, 0.92, 0.91, 0.90]
+    assert Backtester._compute_drawdown_scale(series, cfg) == 1.0
+
+
+def test_vol_scale_idle_and_clip():
+    off = {"vol_target": {"enabled": False}}
+    assert Backtester._compute_vol_scale([1.0, 1.01, 0.99], off) == 1.0
+    assert Backtester._compute_vol_scale([1.0, 1.0], {"vol_target": {"enabled": True}}) == 1.0
+    cfg = {
+        "vol_target": {
+            "enabled": True,
+            "target_vol": 0.12,
+            "lookback_days": 40,
+            "scale_floor": 0.25,
+            "scale_cap": 1.25,
+            "min_obs": 20,
+        }
+    }
+    # 近零波动（日收益几乎常数）不放大
+    flat = [1.0]
+    for _ in range(40):
+        flat.append(flat[-1] * 1.001)
+    assert Backtester._compute_vol_scale(flat, cfg) == 1.0
+    # 低但非零波动 → 顶到 cap
+    quiet = [1.0]
+    for i in range(40):
+        quiet.append(quiet[-1] * (1.001 + (0.0004 if i % 2 == 0 else -0.0004)))
+    assert Backtester._compute_vol_scale(quiet, cfg) == 1.25
+    wild = [1.0]
+    sign = 1
+    for _ in range(40):
+        sign *= -1
+        wild.append(wild[-1] * (1.0 + 0.08 * sign))
+    assert Backtester._compute_vol_scale(wild, cfg) == 0.25
+
+
 def test_drawdown_scale_uses_recorded_2024_mdd(strategy_params, overnight_results):
     """2024 全年记录 MDD≈-11.0%，超过 10% 阈值 → scale_factor=0.7。"""
     cfg = strategy_params["weak_regime_protection"]

@@ -126,17 +126,33 @@ class _FakeQS:
     async def get_factor_forces(self, td):
         return list(self.names.get("forces") or []) + list(self.factor_raw.get("forces") or [])
 
-    async def get_factor_market_range(self, start, end):
-        return [self.factor_raw["market"]]
+    async def get_factor_market_range(self, start, end, sink=None):
+        docs = [self.factor_raw["market"]]
+        if sink:
+            sink(docs)
+            return []
+        return docs
 
-    async def get_factor_sectors_range(self, start, end):
-        return await self.get_factor_sectors("2024-01-02")
+    async def get_factor_sectors_range(self, start, end, sink=None):
+        docs = await self.get_factor_sectors("2024-01-02")
+        if sink:
+            sink(docs)
+            return []
+        return docs
 
-    async def get_factor_dragons_range(self, start, end):
-        return await self.get_factor_dragons("2024-01-02")
+    async def get_factor_dragons_range(self, start, end, sink=None):
+        docs = await self.get_factor_dragons("2024-01-02")
+        if sink:
+            sink(docs)
+            return []
+        return docs
 
-    async def get_factor_forces_range(self, start, end):
-        return await self.get_factor_forces("2024-01-02")
+    async def get_factor_forces_range(self, start, end, sink=None):
+        docs = await self.get_factor_forces("2024-01-02")
+        if sink:
+            sink(docs)
+            return []
+        return docs
 
     async def get_all_stocks(self):
         infos = [v for v in self.names.get("stock_infos", {}).values() if isinstance(v, dict)]

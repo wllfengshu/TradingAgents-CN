@@ -15,6 +15,7 @@ def test_default_config_matches_ssot(strategy_params):
     assert cfg["portfolio_optimization"]["max_weight_per_stock"] == float(
         strategy_params["portfolio"]["max_weight_per_stock"]
     )
+    assert cfg["portfolio_optimization"].get("fill_weights_min_names", 0) == 0
     assert cfg["turnover_control"]["buffer_threshold"] == float(
         strategy_params["turnover_control"]["buffer_threshold"]
     )

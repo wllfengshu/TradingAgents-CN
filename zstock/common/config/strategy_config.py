@@ -221,6 +221,7 @@ def build_runtime_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, D
             "max_weight_per_stock": float(portfolio.get("max_weight_per_stock", 0.2)),
             "weighting": str(po_cfg.get("weighting", "score")),
             "fill_weights_to_position_scale": bool(po_cfg.get("fill_weights_to_position_scale", True)),
+            "fill_weights_min_names": int(po_cfg.get("fill_weights_min_names", 0) or 0),
             "max_single_stock_cap": float(po_cfg.get("max_single_stock_cap", 0.40)),
             "single_stock_cap_by_grade": dict(po_cfg.get("single_stock_cap_by_grade") or {}),
             "single_stock_cap_by_regime": dict(po_cfg.get("single_stock_cap_by_regime") or {}),

@@ -318,6 +318,9 @@ class StrategyPipeline:
             port_cfg = cfg.get('portfolio') or {}
             cap = float(po_cfg.get('max_weight_per_stock', port_cfg.get('max_weight_per_stock', 1.0)))
             fill_full = bool(po_cfg.get('fill_weights_to_position_scale'))
+            fill_min_names = int(po_cfg.get("fill_weights_min_names", 0) or 0)
+            if fill_full and fill_min_names > 0 and len(final_holdings) < fill_min_names:
+                fill_full = False
             base_single_cap = float(po_cfg.get('max_single_stock_cap', port_cfg.get('max_single_stock_cap', 1.0 if fill_full else cap)))
             by_grade = po_cfg.get('single_stock_cap_by_grade') or {}
             by_regime_cap = po_cfg.get('single_stock_cap_by_regime') or {}

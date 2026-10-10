@@ -263,45 +263,109 @@ class CrossSectionStrategyPipeline:
         self._pc_sectors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self._pc_dragons: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self._pc_forces: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self._pc_dragon_df: Optional[pd.DataFrame] = None
+        self._pc_dragon_idx: Dict[str, Any] = {}
+        self._pc_force_df: Optional[pd.DataFrame] = None
+        self._pc_force_idx: Dict[str, Any] = {}
         self._pc_range: Optional[Tuple[str, str]] = None
+
+    @staticmethod
+    def _index_factor_docs_by_date(
+        docs: List[Dict[str, Any]],
+        sink: Dict[str, Any],
+        *,
+        one_per_day: bool = False,
+    ) -> None:
+        for doc in docs or []:
+            td = normalize_date(doc.get("trade_date", ""))
+            if not td:
+                continue
+            if one_per_day:
+                sink[td] = doc
+            else:
+                sink[td].append(doc)
+
+    @staticmethod
+    def _frames_from_docs(parts: List[pd.DataFrame], leftover: Optional[List[Dict]]) -> Optional[pd.DataFrame]:
+        frames = list(parts)
+        if leftover:
+            frames.append(pd.DataFrame.from_records(leftover))
+        if not frames:
+            return None
+        df = pd.concat(frames, ignore_index=True, copy=False)
+        if "trade_date" in df.columns:
+            df["trade_date"] = df["trade_date"].map(normalize_date)
+        return df
+
+    async def _load_factor_range_frames(
+        self,
+        loader,
+        start: str,
+        end: str,
+    ) -> Optional[pd.DataFrame]:
+        frames: List[pd.DataFrame] = []
+
+        def _sink(docs: List[Dict[str, Any]]) -> None:
+            if docs:
+                frames.append(pd.DataFrame.from_records(docs))
+
+        try:
+            leftover = await loader(start, end, sink=_sink)
+        except TypeError:
+            leftover = await loader(start, end)
+        return self._frames_from_docs(frames, leftover)
 
     async def preload_precomputed_factors(
         self, start_date: str, end_date: str
     ) -> None:
-        """回测前批量加载 M1~M4 预计算因子，后续 score_signals 走内存。"""
+        """回测前批量加载 M1~M4 预计算因子，后续 score_signals 走内存。
+
+        M1/M2 体积小，直接按日 dict。M3/M4 六年可达千万级文档，流式拼 DataFrame，
+        避免 list+dict 双份驻留把内存打爆。
+        """
         qs = self._query_service
         start = normalize_date(start_date)
         end = normalize_date(end_date)
-        market_docs, sector_docs, dragon_docs, force_docs = await asyncio.gather(
+        if (
+            self._pc_range == (start, end)
+            and self._pc_dragon_df is not None
+            and self._pc_force_df is not None
+        ):
+            logger.info("📦 因子已在内存，跳过预加载 %s~%s", start, end)
+            return
+        self._reset_precomputed()
+
+        market_docs, sector_docs = await asyncio.gather(
             qs.get_factor_market_range(start, end),
             qs.get_factor_sectors_range(start, end),
-            qs.get_factor_dragons_range(start, end),
-            qs.get_factor_forces_range(start, end),
         )
+        self._index_factor_docs_by_date(market_docs or [], self._pc_market, one_per_day=True)
+        self._index_factor_docs_by_date(sector_docs or [], self._pc_sectors)
 
-        self._reset_precomputed()
-        for doc in market_docs or []:
-            td = normalize_date(doc.get("trade_date", ""))
-            if td:
-                self._pc_market[td] = doc
-        for doc in sector_docs or []:
-            td = normalize_date(doc.get("trade_date", ""))
-            if td:
-                self._pc_sectors[td].append(doc)
-        for doc in dragon_docs or []:
-            td = normalize_date(doc.get("trade_date", ""))
-            if td:
-                self._pc_dragons[td].append(doc)
-        for doc in force_docs or []:
-            td = normalize_date(doc.get("trade_date", ""))
-            if td:
-                self._pc_forces[td].append(doc)
+        logger.info("📦 开始加载 M3 龙头因子（按窗口流式入库）...")
+        dragon_df = await self._load_factor_range_frames(
+            qs.get_factor_dragons_range, start, end
+        )
+        if dragon_df is not None and not dragon_df.empty:
+            self._pc_dragon_df = dragon_df
+            self._pc_dragon_idx = dragon_df.groupby("trade_date", sort=False).indices
+
+        logger.info("📦 开始加载 M4 合力因子（按窗口流式入库）...")
+        force_df = await self._load_factor_range_frames(
+            qs.get_factor_forces_range, start, end
+        )
+        if force_df is not None and not force_df.empty:
+            self._pc_force_df = force_df
+            self._pc_force_idx = force_df.groupby("trade_date", sort=False).indices
+
         self._pc_range = (start, end)
+        m3_days = len(self._pc_dragon_idx) if self._pc_dragon_idx else len(self._pc_dragons)
+        m4_days = len(self._pc_force_idx) if self._pc_force_idx else len(self._pc_forces)
         logger.info(
             "📦 因子区间预加载 %s~%s: M1=%d 天, M2=%d 天, M3=%d 天, M4=%d 天",
             start, end,
             len(self._pc_market), len(self._pc_sectors),
-            len(self._pc_dragons), len(self._pc_forces),
+            m3_days, m4_days,
         )
         if self._all_stocks_cache is None:
             docs, _ = await qs.get_all_stocks()
@@ -313,14 +377,34 @@ class CrossSectionStrategyPipeline:
     def _cached_factor_sectors(self, trade_date: str) -> List[Dict[str, Any]]:
         return list(self._pc_sectors.get(normalize_date(trade_date), []))
 
+    def _records_for_date(
+        self,
+        df: Optional[pd.DataFrame],
+        idx_map: Dict[str, Any],
+        trade_date: str,
+        fallback: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        td = normalize_date(trade_date)
+        if df is not None and idx_map:
+            pos = idx_map.get(td)
+            if pos is None:
+                return []
+            return df.iloc[pos].to_dict("records")
+        return list(fallback)
+
     def _cached_factor_dragons(
         self,
         trade_date: str,
         sector_codes: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        dragons = self._pc_dragons.get(normalize_date(trade_date), [])
+        dragons = self._records_for_date(
+            self._pc_dragon_df,
+            self._pc_dragon_idx,
+            trade_date,
+            self._pc_dragons.get(normalize_date(trade_date), []),
+        )
         if sector_codes is None:
-            return list(dragons)
+            return dragons
         sec_set = set(sector_codes)
         return [d for d in dragons if d.get("sector_code") in sec_set]
 
@@ -333,6 +417,23 @@ class CrossSectionStrategyPipeline:
         """预计算龙头文档字段 → {code: float}。未 preload 时返回空（策略层退出用）。"""
         want = {str(c) for c in codes} if codes is not None else None
         out: Dict[str, float] = {}
+        df = self._pc_dragon_df
+        td = normalize_date(trade_date)
+        if df is not None and self._pc_dragon_idx and field in df.columns:
+            pos = self._pc_dragon_idx.get(td)
+            if pos is None:
+                return {}
+            day = df.iloc[pos]
+            if want is not None and "code" in day.columns:
+                day = day[day["code"].astype(str).isin(want)]
+            for code, val in zip(day["code"].astype(str), day[field]):
+                if not code or (want is not None and code not in want):
+                    continue
+                try:
+                    out[code] = float(val)
+                except (TypeError, ValueError):
+                    out[code] = float("nan")
+            return out
         for d in self._cached_factor_dragons(trade_date):
             code = str(d.get("code") or "")
             if not code or (want is not None and code not in want):
@@ -344,7 +445,12 @@ class CrossSectionStrategyPipeline:
         return out
 
     def _cached_factor_forces(self, trade_date: str) -> List[Dict[str, Any]]:
-        return list(self._pc_forces.get(normalize_date(trade_date), []))
+        return self._records_for_date(
+            self._pc_force_df,
+            self._pc_force_idx,
+            trade_date,
+            self._pc_forces.get(normalize_date(trade_date), []),
+        )
 
     async def _get_all_stocks_cached(self) -> List[Dict[str, Any]]:
         if self._all_stocks_cache is None:
