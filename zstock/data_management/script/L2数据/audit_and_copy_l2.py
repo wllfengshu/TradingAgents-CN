@@ -29,11 +29,12 @@ def _kb(n: int) -> float:
 
 
 def load_trade_calendar(start: str, end: str) -> list[str]:
-    from app.core.config import settings
     from pymongo import MongoClient
+    from zstock.common.utils.db_utils import _mongo_settings
 
-    client = MongoClient(settings.MONGO_URI, serverSelectionTimeoutMS=8000)
-    col = client[settings.MONGO_DB]["zstock_ohlcv"]
+    cfg = _mongo_settings()
+    client = MongoClient(cfg["uri"], serverSelectionTimeoutMS=8000)
+    col = client[cfg["database"]]["zstock_ohlcv"]
     start_iso = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
     end_iso = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
     dates = sorted(

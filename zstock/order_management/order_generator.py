@@ -361,9 +361,9 @@ class OrderGenerator:
             return True
         db = database_service
         if db is None:
-            from zstock.data_management.database_service import get_database_service
+            from zstock.data_management.query_service import get_data_query_service
 
-            db = get_database_service()
+            db = get_data_query_service()
         try:
             for o in orders:
                 doc = o.to_dict()

@@ -253,6 +253,7 @@ def build_runtime_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, D
         "market_factors": _copy_section(params, "market_factors"),
         "weak_regime_protection": _copy_section(params, "weak_regime_protection"),
         "adaptive_rebalance": _copy_section(params, "adaptive_rebalance"),
+        "book_regime": _copy_section(params, "book_regime"),
     }
 
 

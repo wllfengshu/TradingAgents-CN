@@ -1,7 +1,14 @@
 {
   "strategy_name": "截面日频龙头策略",
-  "description": "v1.30.0 生产：单票上限0.40打满 + Buffer空席位补齐(fill_open_slots) (7年CAGR 10.99%, MDD -13.77%)",
-  "version": "1.30.0",
+  "description": "v1.31.0 三状态：进攻截面选股，中性行业ETF，防守国债/黄金/政金债；空闲资金买入国债",
+  "version": "1.31.0",
+  "book_regime": {
+    "enabled": true,
+    "confirm_green_days": 3,
+    "min_utilization": 0.9,
+    "rebalance_band": 0.03,
+    "bond_code": "511260"
+  },
   "market_selection": {
     "factor_pipeline_stops_on_red": false,
     "strategy_blocks_new_on_red": true,

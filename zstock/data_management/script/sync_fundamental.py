@@ -101,26 +101,33 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _get_xtdata():
+    raise RuntimeError("基本面不再从 QMT 拉取")
+
+
+def _fetch_all_stocks():
+    raise RuntimeError("股票列表不再从 QMT 拉取")
+
+
 async def main():
     args = _parse_args()
     start = args.start.replace("-", "")[:8]
     end = args.end.replace("-", "")[:8]
 
     # 1. 连接 MongoDB
-    from app.core import database as db_module
+    from zstock.common.utils import db_utils as db_module
     await db_module.db_manager.init_mongodb()
     db = db_module.db_manager.mongo_db
     logger.info("MongoDB 已连接")
 
     # 2. 获取 xtdata
-    from zstock.common.utils import xtquant_data_utils as xtu
-    xtdata = xtu._get_xtdata()
-    logger.info("xtdata 就绪")
+    xtdata = _get_xtdata()
+    logger.info("财务数据源就绪")
 
-    # 3. 获取全A股代码
-    all_stocks = xtu.fetch_all_stocks()
+    all_stocks = _fetch_all_stocks()
     all_codes = [s["code"] for s in all_stocks if s.get("code")]
-    xt_codes = [xtu.to_xt_code(c) for c in all_codes]
+    from zstock.common.utils.xtquant_util import to_qmt_code
+    xt_codes = [to_qmt_code(c) for c in all_codes]
     logger.info(f"全市场 {len(xt_codes)} 只股票")
 
     if args.drop:
@@ -282,6 +289,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    from zstock.data_management.script.qmt_subprocess_bridge import patch_xtquant_data_utils
-    patch_xtquant_data_utils()
     asyncio.run(main())

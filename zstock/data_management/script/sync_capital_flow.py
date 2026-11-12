@@ -33,7 +33,7 @@ async def _persist_capital_flow_bulk(df) -> int:
         return 0
     try:
         from pymongo import UpdateOne
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
         await db_module.db_manager.init_mongodb()
         db = db_module.db_manager.mongo_db
         logger.info("MongoDB 已连接")
@@ -81,7 +81,7 @@ async def sync_one_period(qs, period: str, max_retries: int = 100) -> int:
 
 
 async def main():
-    from app.core import database as db_module
+    from zstock.common.utils import db_utils as db_module
     await db_module.db_manager.init_mongodb()
     db = db_module.db_manager.mongo_db
     logger.info("MongoDB 已连接")

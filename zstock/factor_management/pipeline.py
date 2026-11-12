@@ -127,8 +127,6 @@ class CrossSectionStrategyPipeline:
         self._all_stocks_cache: Optional[List[Dict[str, Any]]] = None
         self._sectors_cache: Optional[List[Dict[str, Any]]] = None
         self._style_cache: Dict[str, Dict[str, object]] = {}
-        self._fund_provider = None
-        self._fund_provider_tried = False
         logger.info("✅ 策略管道初始化完成")
 
     # ----- 配置读取（编排旋钮，不下沉）-----
@@ -885,23 +883,35 @@ class CrossSectionStrategyPipeline:
                 by.setdefault(sc, {})[code] = DragonFactors.raw_from_doc(d)
             return by
 
-        fund_provider = await self._ensure_fund_provider()
         jobs = []
         for sc, _ in top_sectors:
             stocks = [s for s in (sector_stocks or {}).get(sc, []) if s in filtered_stocks]
             if stocks:
                 jobs.append((sc, stocks))
+        fundamentals = await self._load_fundamental_asof(trade_date)
         raw_by = (
             DragonFactors.calculate_all_dragon_factors_raw(
                 jobs,
                 stock_ohlcv or {},
                 trade_date=trade_date,
-                fund_provider=fund_provider,
+                fund_provider=fundamentals,
             )
             if jobs
             else {}
         )
         return {sc: (raw_by.get(sc) or {}) for sc, _ in jobs}
+
+    async def _load_fundamental_asof(self, trade_date: str) -> Optional[Dict[str, Dict[str, float]]]:
+        """现场 M3 直接查库，不在进程内缓存基本面。"""
+        qs = self._query_service
+        if qs is None or not hasattr(qs, "get_fundamental_asof"):
+            return None
+        try:
+            data = await qs.get_fundamental_asof(trade_date)
+            return data or None
+        except Exception as e:
+            logger.warning("基本面查询失败，f39/f40 将为空: %s", e)
+            return None
 
     async def _load_force_docs_map(
         self,
@@ -1156,31 +1166,6 @@ class CrossSectionStrategyPipeline:
             f"universe={len(df)} (grade={grade}, scale={scale:.2f}, allow_new={allow_new_open})"
         )
         return df
-
-    async def _ensure_fund_provider(self):
-        """现场 M3 的 PIT 基本面缓存（预计算文档已含 f39/f40，不走这里）。"""
-        if self._fund_provider_tried:
-            return self._fund_provider
-        self._fund_provider_tried = True
-        self._fund_provider = None
-        qs = self._query_service
-        if qs is None or not hasattr(qs, "get_all_fundamental_pershare"):
-            return None
-        try:
-            from zstock.data_management.fundamental_provider import FundamentalDataProvider
-
-            provider = FundamentalDataProvider()
-            await provider.load_from_query_service(qs)
-            if provider.is_loaded:
-                self._fund_provider = provider
-                logger.info(
-                    "基本面因子就绪: BPS=%d, HolderChange=%d",
-                    provider.codes_with_pb(),
-                    provider.codes_with_holder(),
-                )
-        except Exception as e:
-            logger.warning("基本面因子加载失败，f39/f40 将为 NaN: %s", e)
-        return self._fund_provider
 
     @staticmethod
     def _empty_signals_df(

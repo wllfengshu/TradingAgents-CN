@@ -164,11 +164,13 @@ async def _codes_needing_fetch(col, codes: List[str], start: str, end: str, min_
     return [c for c in codes if have.get(c, 0) < min_days]
 
 
-def _fetch_with_retry(xtu, codes: List[str], start: str, end: str, retries: int, pause: float):
+def _fetch_with_retry(codes: List[str], start: str, end: str, retries: int, pause: float):
+    from zstock.data_management.script.sync_ohlcv import _load_bars
+
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            df = xtu.fetch_ohlcv_batch(codes, start, end)
+            df = _load_bars(codes, start, end)
             return df, None
         except Exception as e:
             last_err = e
@@ -178,12 +180,12 @@ def _fetch_with_retry(xtu, codes: List[str], start: str, end: str, retries: int,
 
 
 async def _sync_ohlcv(args: argparse.Namespace) -> List[dict]:
-    from app.core import database as db_module
-    from zstock.common.utils import xtquant_data_utils as xtu
+    from zstock.common.utils import db_utils as db_module
     from zstock.data_management.query_service import COL_OHLCV, DataQueryService
     from zstock.data_management.script.sync_ohlcv import (
         INDEX_CODES,
         _iter_year_windows,
+        _load_bars,
         _persist_ohlcv,
         _write_ohlcv_df,
     )
@@ -218,7 +220,7 @@ async def _sync_ohlcv(args: argparse.Namespace) -> List[dict]:
             logger.info(f'  {label} 已齐，跳过 ({len(codes)} 只)')
             return 0
         logger.info(f'  {label} 待补 {len(need)}/{len(codes)} 只')
-        df, err = _fetch_with_retry(xtu, need, ws, we, retries, pause)
+        df, err = _fetch_with_retry(need, ws, we, retries, pause)
         if err is not None:
             failed.append({'start': ws, 'end': we, 'codes': need, 'error': str(err)[:300]})
             _save_checkpoint({'failed': failed, 'updated_at': datetime.now().isoformat(timespec='seconds')})
@@ -254,7 +256,7 @@ async def _sync_ohlcv(args: argparse.Namespace) -> List[dict]:
     logger.info(f'▶ 指数 OHLCV  {args.start} ~ {args.end}')
     for idx_code, idx_name in INDEX_CODES:
         try:
-            df_idx = xtu.fetch_ohlcv(idx_code, args.start, args.end)
+            df_idx = _load_bars([idx_code], args.start, args.end)
         except Exception as e:
             logger.warning(f'  ⚠️ {idx_name}({idx_code}) {e}')
             continue
@@ -277,8 +279,7 @@ def _shift_date(date_str: str, days: int) -> str:
 
 async def _fill_calendar_holes(args: argparse.Namespace) -> None:
     """对指数有K线、个股前后都在交易但窗口内条数过少的股票，强制回拉。"""
-    from app.core import database as db_module
-    from zstock.common.utils import xtquant_data_utils as xtu
+    from zstock.common.utils import db_utils as db_module
     from zstock.data_management.query_service import COL_OHLCV, DataQueryService
     from zstock.data_management.script.sync_ohlcv import _write_ohlcv_df
 
@@ -340,7 +341,7 @@ async def _fill_calendar_holes(args: argparse.Namespace) -> None:
         for bi, i in enumerate(range(0, len(missing), code_batch), 1):
             chunk = missing[i:i + code_batch]
             logger.info('  批 %s/%s  %s..%s (%s)', bi, n_batches, chunk[0], chunk[-1], len(chunk))
-            df, err = _fetch_with_retry(xtu, chunk, ws, we, retries, pause)
+            df, err = _fetch_with_retry(chunk, ws, we, retries, pause)
             if err is not None:
                 logger.error('  ✗ 补洞失败: %s', err)
                 continue
@@ -375,7 +376,7 @@ async def _sync_fundamental(args: argparse.Namespace) -> None:
 
 
 async def check_integrity(start: str, end: str) -> str:
-    from app.core import database as db_module
+    from zstock.common.utils import db_utils as db_module
     from zstock.data_management.query_service import COL_OHLCV
     from zstock.data_management.script.sync_fundamental import (
         COL_FUNDAMENTAL_HOLDER,
@@ -494,13 +495,10 @@ async def check_integrity(start: str, end: str) -> str:
 
 
 async def _run(args: argparse.Namespace) -> None:
-    from zstock.data_management.script.qmt_subprocess_bridge import patch_xtquant_data_utils
-
     if args.check_only:
         await check_integrity(args.start, args.end)
         return
 
-    patch_xtquant_data_utils()
     _wait_for_other_sync()
     t0 = datetime.now()
     if args.fill_holes:

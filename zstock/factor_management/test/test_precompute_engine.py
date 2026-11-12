@@ -158,7 +158,7 @@ async def test_slice_and_store_with_live_preload():
         quiet=True,
     )
     svc = FactorPrecomputeService.__new__(FactorPrecomputeService)
-    svc.database_service = FakeDatabaseService({})
+    svc.query_service = FakeDatabaseService({})
     counts = await svc._store_all("2024-01-02", raw, preload["stock_infos"])
     assert counts["market"] == 1
     assert counts["sector"] >= 1
@@ -173,7 +173,7 @@ async def test_store_force_drops_score_fields():
     from zstock.data_management.query_service import COL_FACTOR_FORCE
 
     svc = FactorPrecomputeService.__new__(FactorPrecomputeService)
-    svc.database_service = FakeDatabaseService({COL_FACTOR_FORCE: []})
+    svc.query_service = FakeDatabaseService({COL_FACTOR_FORCE: []})
     n = await svc._store_force(
         "2024-01-02",
         {
@@ -191,7 +191,7 @@ async def test_store_force_drops_score_fields():
         {"601921": {"name": "x"}},
     )
     assert n == 1
-    stored = svc.database_service.db[COL_FACTOR_FORCE].docs[0]
+    stored = svc.query_service.db[COL_FACTOR_FORCE].docs[0]
     assert stored["fcoop1_main_net_ratio"] == 0.12
     assert "strategy_signal_score" not in stored
     assert "force_composite_score" not in stored

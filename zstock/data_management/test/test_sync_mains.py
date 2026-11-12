@@ -48,11 +48,11 @@ def _mgr(fake: FakeMongoDB):
 
 def _patch_db(monkeypatch, fake: FakeMongoDB, fake_ds: FakeDatabaseService | None = None):
     mgr = _mgr(fake)
-    monkeypatch.setattr("app.core.database.db_manager", mgr)
-    monkeypatch.setattr("app.core.database.get_database", lambda: fake)
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", mgr)
+    monkeypatch.setattr("zstock.common.utils.db_utils.get_database", lambda: fake)
     ds = fake_ds or FakeDatabaseService({})
     monkeypatch.setattr(
-        "zstock.data_management.query_service.get_database_service", lambda: ds
+        "zstock.data_management.query_service.get_database", lambda: ds.db
     )
     monkeypatch.setattr("zstock.data_management.query_service._data_query_service", None)
     return mgr, ds
@@ -71,24 +71,19 @@ async def test_sync_ohlcv_main(stock_ohlcv_docs, hs300_rows, stock_info_sample, 
     df_stocks = pd.DataFrame([d for d in stock_ohlcv_docs if d["code"] == "603201"][:8])
     df_idx = pd.DataFrame(hs300_rows[:8])
 
-    monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_ohlcv_batch",
-        lambda codes, start, end, **k: df_stocks,
-    )
-
-    def _fetch_idx(code, start, end, **k):
-        if code == "399300":
+    def _load(codes, start, end, **k):
+        symbols = list(codes)
+        if symbols == ["399300"]:
             return df_idx
-        if code == "399001":
+        if symbols == ["399001"]:
             raise RuntimeError("timeout")
-        return pd.DataFrame()
+        if len(symbols) == 1 and symbols[0] in {"399006", "899050"}:
+            return pd.DataFrame()
+        return df_stocks
 
     monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_ohlcv", _fetch_idx
-    )
-    monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_float_shares_map",
-        lambda codes: {},
+        "zstock.data_management.script.sync_ohlcv._load_bars",
+        _load,
     )
     monkeypatch.setattr("sys.argv", ["sync_ohlcv.py", "--start", "2024-01-02", "--end", "2024-01-16"])
     from zstock.data_management.script.sync_ohlcv import main
@@ -106,11 +101,11 @@ async def test_sync_stock_info_and_sector_persist(stock_info_sample, sector_list
         for d in stock_info_sample["sample"][:8]
     ]
     monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_all_stocks",
+        "zstock.data_management.script.sync_stock_info._fetch_all_stocks",
         lambda: flags,
     )
     monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_sectors_with_stocks",
+        "zstock.data_management.script.sync_stock_info._fetch_sectors_with_stocks",
         lambda *args, **kwargs: [
             {
                 "sector_code": d["sector_code"],
@@ -149,11 +144,11 @@ async def test_sync_lhb_main(monkeypatch):
     fake = FakeMongoDB()
     _patch_db(monkeypatch, fake)
     monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_all_stocks",
+        "zstock.data_management.script.sync_lhb._fetch_all_stocks",
         lambda: [{"code": "603201", "name": "常润股份"}],
     )
     monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_lhb",
+        "zstock.data_management.script.sync_lhb._fetch_lhb",
         lambda codes, start, end: [
             {"code": "603201", "trade_date": "2024-01-02"},
             {"code": "", "trade_date": "2024-01-02"},
@@ -168,7 +163,7 @@ async def test_sync_lhb_main(monkeypatch):
     n = await main()
     assert n >= 1
     monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_lhb",
+        "zstock.data_management.script.sync_lhb._fetch_lhb",
         lambda *a, **k: [],
     )
     assert await sync_longhubang("2024-01-02", "2024-01-02") == 0
@@ -276,15 +271,11 @@ async def test_sync_fundamental_main(stock_ohlcv_docs, monkeypatch):
             return {"603201.SH": {"Holdernum": hld}, "000060.SZ": {"Holdernum": pd.DataFrame()}}
 
     monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils._get_xtdata", lambda: XT()
+        "zstock.data_management.script.sync_fundamental._get_xtdata", lambda: XT()
     )
     monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_all_stocks",
+        "zstock.data_management.script.sync_fundamental._fetch_all_stocks",
         lambda: [{"code": "603201", "name": "常润股份"}, {"code": "000060", "name": "中金岭南"}],
-    )
-    monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.to_xt_code",
-        lambda c: "603201.SH" if c.startswith("6") else f"{c}.SZ",
     )
     monkeypatch.setattr(
         "sys.argv",

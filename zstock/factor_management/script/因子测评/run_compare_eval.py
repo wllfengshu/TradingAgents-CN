@@ -258,7 +258,7 @@ def generate_compare_report(root: Path, done: Dict[str, Path]) -> Path:
 
 async def async_main(args: argparse.Namespace) -> int:
     try:
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
 
         await db_module.db_manager.init_mongodb()
     except Exception as e:

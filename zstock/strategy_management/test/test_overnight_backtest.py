@@ -332,7 +332,7 @@ async def test_preflight_and_factor_coverage_use_recorded_counts(monkeypatch, ov
     class _Mgr:
         mongo_db = _DB()
 
-    monkeypatch.setattr("app.core.database.db_manager", _Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", _Mgr())
     info = await ob.preflight_checks()
     assert info["mongo"] == "ok"
     assert info["stock_info_count"] == 5558

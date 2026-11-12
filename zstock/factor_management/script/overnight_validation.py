@@ -558,7 +558,7 @@ async def async_main(args: argparse.Namespace) -> int:
         await init_zstock_database()
     except Exception as e:
         logger.warning("init_zstock_database 失败，尝试直连 MongoDB: %s", e)
-        from app.core.database import db_manager
+        from zstock.common.utils.db_utils import db_manager
         await db_manager.init_mongodb()
 
     try:

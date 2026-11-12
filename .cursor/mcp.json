@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "stockdb-native": {
+      "command": "D:\\Python314\\python.exe",
+      "args": [
+        "-u",
+        "D:\\stockdb\\调用方式\\ai_mcp\\stockdb_full_mcp.py"
+      ]
+    }
+  }
+}

@@ -45,8 +45,6 @@ from zstock.common.utils.resource_budget import (
     cap_worker_count,
     compute_resource_budget,
 )
-from zstock.common.utils.xtquant_data_utils import to_xt_code
-from zstock.data_management.fundamental_provider import FundamentalDataProvider
 from zstock.factor_management.dragon_factors import DragonFactors
 from zstock.factor_management.force_factors import ForceFactors
 from zstock.factor_management.market_factors import MarketFactors
@@ -248,7 +246,7 @@ class FactorComputeEngine:
             compute_sectors: 参与计算的板块；None 则用 sectors 全量（非策略过滤）
             compute_universe: 参与计算的股票；None 则用 all_stocks ∪ OHLCV keys
             sector_ohlcv: 预聚合的板块 OHLCV
-            fund_provider: 基本面数据提供者；静态方法不能用 self.fund_provider
+            fund_provider: get_fundamental_asof 的结果；None 则 f39/f40 为空
 
         Returns:
             {market_raw, sector_raw, dragon_raw_by_sector, force_raw, ...} 字典（仅原始因子值，无得分）
@@ -419,10 +417,8 @@ class FactorPrecomputeService:
         query_workers: Optional[int] = None,
         resource_fraction: Optional[float] = None,
     ) -> None:
-        from zstock.data_management.database_service import get_database_service
         from zstock.data_management.query_service import get_data_query_service
 
-        self.database_service = get_database_service()
         self.query_service = get_data_query_service()
         (
             self.compute_workers,
@@ -437,7 +433,7 @@ class FactorPrecomputeService:
         )
         self.resource_budget = budget
         self._load_fundamentals = load_fundamentals
-        self.fund_provider: Optional[FundamentalDataProvider] = None
+        self.fund_provider: Optional[Any] = None
         logger.info(
             "FactorPrecomputeService 初始化完成 "
             f"(资源预算={budget.resource_fraction:.0%}, "
@@ -446,27 +442,18 @@ class FactorPrecomputeService:
             f"query={self.query_workers})"
         )
 
-    async def _ensure_fundamental_provider(self):
-        """从 query_service 装载基本面 PIT 缓存（需先运行 sync_fundamental.py）。"""
-        if self.fund_provider is not None or not self._load_fundamentals:
-            return
+    async def _fundamental_for_date(
+        self, trade_date: str
+    ) -> Optional[Dict[str, Dict[str, float]]]:
+        """按公告日从 query_service 取当日基本面，不在进程内缓存。"""
+        if not self._load_fundamentals:
+            return None
         try:
-            provider = FundamentalDataProvider()
-            await provider.load_from_query_service(self.query_service)
-            if provider.is_loaded:
-                self.fund_provider = provider
-                logger.info(
-                    f"FundamentalDataProvider: 加载完成 "
-                    f"(BPS={provider.codes_with_pb()}, "
-                    f"HolderChange={provider.codes_with_holder()})"
-                )
-            else:
-                logger.warning("FundamentalDataProvider: 无基本面数据, 请先运行 sync_fundamental.py")
+            data = await self.query_service.get_fundamental_asof(trade_date)
+            return data or None
         except Exception as e:
-            logger.warning(f"FundamentalDataProvider: 加载失败 - {e}, 基本面因子将不可用")
-            import traceback
-            logger.debug(traceback.format_exc())
-            self.fund_provider = None
+            logger.warning("基本面查询失败，f39/f40 将为空: %s", e)
+            return None
 
     async def precompute_single_date(
         self,
@@ -479,6 +466,7 @@ class FactorPrecomputeService:
         logger.info(f"预计算 {td}")
         t0 = perf_counter()
         preload = await self._preload_range_data(td, td, lookback_days)
+        preload["fund_provider"] = await self._fundamental_for_date(td)
         t1 = perf_counter()
         raw_result = _compute_day_sync(preload, td, lookback_days, quiet=False)
         t2 = perf_counter()
@@ -529,7 +517,7 @@ class FactorPrecomputeService:
                         ),
                         "compute_sectors": preload["compute_sectors"],
                         "compute_universe": preload["compute_universe"],
-                        "fund_provider": self.fund_provider,
+                        "fund_provider": await self._fundamental_for_date(td),
                     }
                     raw_result = await loop.run_in_executor(
                         compute_executor,
@@ -598,7 +586,7 @@ class FactorPrecomputeService:
 
         ohlcv_codes: List[Any] = []
         try:
-            ohlcv_codes = await self.database_service.db[COL_OHLCV].distinct(
+            ohlcv_codes = await self.query_service.db[COL_OHLCV].distinct(
                 "code",
                 {
                     "period": "D",
@@ -640,7 +628,6 @@ class FactorPrecomputeService:
     ) -> Dict[str, Any]:
         from zstock.common.utils.common_utils import normalize_date
 
-        await self._ensure_fundamental_provider()
         start = normalize_date(start_date)
         end = normalize_date(end_date)
         window_start = (
@@ -783,7 +770,7 @@ class FactorPrecomputeService:
 
         stock_lhb_full: Dict[str, List[Dict]] = defaultdict(list)
         try:
-            lhb_docs = await self.database_service.query(
+            lhb_docs = await self.query_service.query(
                 COL_LHB,
                 {
                     "code": {"$in": list(compute_universe)},
@@ -1031,7 +1018,7 @@ class FactorPrecomputeService:
             "mf5_atr_ratio_20d_20d": market_raw.get("mf5_atr_ratio_20d_20d", float("nan")),
             "mf5_atr_ratio_30d_30d": market_raw.get("mf5_atr_ratio_30d_30d", float("nan")),
         }
-        await self.database_service.replace_one(
+        await self.query_service.replace_one(
             COL_FACTOR_MARKET, {"trade_date": trade_date}, doc, upsert=True
         )
         return 1
@@ -1119,7 +1106,7 @@ class FactorPrecomputeService:
                 )
                 for doc in docs
             ]
-            await self.database_service.db[COL_FACTOR_SECTOR].bulk_write(
+            await self.query_service.db[COL_FACTOR_SECTOR].bulk_write(
                 ops, ordered=False
             )
         return len(docs)
@@ -1225,7 +1212,7 @@ class FactorPrecomputeService:
                 )
                 for doc in docs
             ]
-            await self.database_service.db[COL_FACTOR_DRAGON].bulk_write(
+            await self.query_service.db[COL_FACTOR_DRAGON].bulk_write(
                 ops, ordered=False
             )
         return len(docs)
@@ -1321,7 +1308,7 @@ class FactorPrecomputeService:
                 )
                 for doc in docs
             ]
-            await self.database_service.db[COL_FACTOR_FORCE].bulk_write(
+            await self.query_service.db[COL_FACTOR_FORCE].bulk_write(
                 ops, ordered=False
             )
         return len(docs)
@@ -1333,7 +1320,7 @@ class FactorPrecomputeService:
 
         start = normalize_date(start_date)
         end = normalize_date(end_date)
-        dates = await self.database_service.db[COL_OHLCV].distinct(
+        dates = await self.query_service.db[COL_OHLCV].distinct(
             "trade_date",
             {"period": "D", "trade_date": {"$gte": start, "$lte": end}},
         )
@@ -1388,7 +1375,7 @@ async def main() -> int:
         parser.error("必须指定 --date（单日）或 --start + --end（区间）")
 
     try:
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
 
         await db_module.db_manager.init_mongodb()
     except Exception as e:

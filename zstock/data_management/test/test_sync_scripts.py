@@ -32,12 +32,6 @@ def test_enrich_turnover_empty():
 def test_enrich_turnover_with_float_volume_column(stock_ohlcv_docs, monkeypatch):
     df = pd.DataFrame([d for d in stock_ohlcv_docs if d["code"] == "603201"][:5])
     assert not df.empty
-    # 流通股本走日线自带列：用成交量列复制为 floatVolume 会得到 turnover=10000，
-    # 那是编造分母。这里只验证无 floatVolume 且快照为空时保持 0。
-    monkeypatch.setattr(
-        "zstock.common.utils.xtquant_data_utils.fetch_float_shares_map",
-        lambda codes: {},
-    )
     out = _enrich_turnover_rate(df, ["603201"])
     assert "turnover_rate" in out.columns
     assert float(out["turnover_rate"].fillna(0).max()) == 0.0

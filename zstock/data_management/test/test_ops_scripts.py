@@ -107,7 +107,7 @@ async def test_persist_ohlcv_and_stock_flags(stock_ohlcv_docs, stock_info_sample
         async def init_mongodb(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     sample = pd.DataFrame([d for d in stock_ohlcv_docs if d["code"] == "603201"][:3])
     await _persist_ohlcv(sample, period="D")
     assert await fake[COL_OHLCV].count_documents({"code": "603201"}) >= 1
@@ -136,7 +136,7 @@ async def test_persist_capital_flow_from_live(monkeypatch):
         async def init_mongodb(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     n = await _persist_capital_flow_bulk(df)
     assert n == len(df)
     assert await _persist_capital_flow_bulk(pd.DataFrame()) == 0
@@ -161,7 +161,7 @@ async def test_check_index_on_fake(hs300_rows, monkeypatch):
         async def get_ohlcv_batch(self, codes, start, end, **kwargs):
             return {}
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     monkeypatch.setattr(
         "zstock.data_management.query_service.get_data_query_service",
         lambda: QS(),
@@ -185,7 +185,7 @@ async def test_check_coverage_on_fake(hs300_rows, monkeypatch):
         async def close_connections(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     from zstock.data_management.script.check_ohlcv_coverage import inspect
 
     await inspect("2024-01-02")
@@ -215,8 +215,8 @@ async def test_check_sector_on_fake(sector_list_sample, monkeypatch):
         async def close_connections(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
-    monkeypatch.setattr("app.core.database.get_database", lambda: fake)
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.get_database", lambda: fake)
     await check()
 
 
@@ -249,7 +249,7 @@ async def test_cleanup_run_dry(sector_list_sample, monkeypatch):
         async def init_mongodb(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     await run(apply=False)
 
 
@@ -268,7 +268,7 @@ async def test_delete_today_period_empty(monkeypatch):
         async def close_connections(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     monkeypatch.setattr(mod.sys, "argv", ["delete_today_period.py", "--dry-run"])
     await mod.main()
 

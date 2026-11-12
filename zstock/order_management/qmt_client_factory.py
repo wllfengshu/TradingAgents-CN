@@ -1,4 +1,4 @@
-"""QMT 客户端工厂：默认只连真实 miniQMT；Mock 必须显式打开。"""
+"""QMT 客户端工厂：只连接本机 HTTP 桥。"""
 
 from __future__ import annotations
 
@@ -9,51 +9,30 @@ logger = logging.getLogger(__name__)
 
 
 class QMTConnectionError(ConnectionError):
-    """真实 QMT 不可用，且未允许 Mock。"""
+    """HTTP 桥不可用。"""
 
 
 class QMTClientFactory:
-    """创建已连接的 QMT 客户端，禁止默认静默落到 Mock。"""
+    """创建已连接的 QMT 桥客户端。连不上就抛错。"""
 
     @staticmethod
     def create(prefer_real: bool = True, allow_mock: bool = False) -> Any:
-        """
-        - prefer_real=True, allow_mock=False（默认）：只连真实 QMT，失败则抛错。
-        - prefer_real=True, allow_mock=True：先真连，失败再 Mock（纸面/联调）。
-        - prefer_real=False：明确使用 Mock。
-        """
-        if prefer_real:
-            last_error: str | None = None
-            try:
-                from app.utils.xtquant_util import QMTUtil
+        """连接 HTTP 桥。prefer_real / allow_mock 已无分支，保留参数以免旧调用签名报错。"""
+        del prefer_real, allow_mock
+        last_error: str | None = None
+        try:
+            from zstock.common.utils.xtquant_util import QMTUtil
 
-                client = QMTUtil()
-                if client.connect():
-                    logger.info("使用真实 QMTUtil")
-                    return client
-                last_error = "QMTUtil.connect() 返回 False"
-            except Exception as e:
-                last_error = str(e)
-
-            if not allow_mock:
-                raise QMTConnectionError(
-                    f"QMT 不可用（{last_error}），拒绝静默 Mock。"
-                    "纸面测试请传 allow_mock=True 或 prefer_real=False。"
-                )
-            logger.warning("QMT 不可用（%s），allow_mock=True，回退 Mock", last_error)
-
-        from app.utils.xtquant_mock_util import get_xtquant_mock_client
-
-        client = get_xtquant_mock_client()
-        client.connect()
-        logger.info("使用 MockQMTUtil")
-        return client
+            client = QMTUtil()
+            if client.connect():
+                logger.info("已连接 QMT 桥")
+                return client
+            last_error = "QMTUtil.connect() 返回 False"
+        except Exception as e:
+            last_error = str(e)
+        raise QMTConnectionError(f"QMT 桥不可用（{last_error}）")
 
     @staticmethod
     def is_mock(qmt_util: Any) -> bool:
-        try:
-            from app.utils.xtquant_mock_util import MockQMTUtil
-
-            return isinstance(qmt_util, MockQMTUtil)
-        except ImportError:
-            return False
+        del qmt_util
+        return False

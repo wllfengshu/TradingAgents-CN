@@ -1,14 +1,11 @@
 """
-akshare 数据获取工具
+akshare 数据获取工具。
 
-与 xtquant_data_utils 接口完全对齐，用于 QMT 不可用时（如周末维护）替代。
-所有公开函数的签名、返回列名均与 xtquant_data_utils 保持一致。
+东财/akshare 的日线、板块、交易状态。历史行情和资金流优先走 stockdb。
 
 约定：
 - 股票代码统一使用 6 位纯数字，对外返回也是这个格式。
 - 日期参数接受 'YYYY-MM-DD' 或 'YYYYMMDD'，内部统一转换。
-
-除非xtquant不可用，否则不建议使用该类！！！
 """
 from __future__ import annotations
 import time as _time

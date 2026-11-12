@@ -45,7 +45,7 @@ async def _persist_stock_flags(stock_list: List[Dict[str, str]], batch_size: int
         return
     try:
         from pymongo import UpdateOne
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
         await db_module.db_manager.init_mongodb()
         db = db_module.db_manager.mongo_db
         now = datetime.now(timezone.utc)
@@ -78,7 +78,7 @@ async def _persist_sector_meta(sectors: List[Dict[str, str]]) -> None:
         return
     try:
         from pymongo import UpdateOne
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
         await db_module.db_manager.init_mongodb()
         db = db_module.db_manager.mongo_db
         now = datetime.now(timezone.utc)
@@ -105,7 +105,7 @@ async def _persist_sector_stocks(sector_code: str, codes: List[str]) -> None:
     if not codes:
         return
     try:
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
         await db_module.db_manager.init_mongodb()
         db = db_module.db_manager.mongo_db
         from zstock.data_management.query_service import DataQueryService, COL_SECTOR
@@ -120,9 +120,17 @@ async def _persist_sector_stocks(sector_code: str, codes: List[str]) -> None:
 
 
 
+def _fetch_all_stocks():
+    raise RuntimeError("股票列表不再从 QMT 拉取")
+
+
+def _fetch_sectors_with_stocks():
+    raise RuntimeError("板块不再从 QMT 拉取")
+
+
 async def main():
     # 1. 连接 MongoDB
-    from app.core import database as db_module
+    from zstock.common.utils import db_utils as db_module
     await db_module.db_manager.init_mongodb()
     logger.info("MongoDB 已连接")
 
@@ -130,20 +138,19 @@ async def main():
     from zstock.data_management.query_service import DataQueryService
     qs = DataQueryService()
     await qs.ensure_indexes()
-    from zstock.common.utils import xtquant_data_utils as xtu
-    logger.info(f"数据源: xtquant")
+    logger.info("数据源: 调用方注入的列表")
 
     t0 = datetime.now()
 
     # ── 表1: stock_info ──
     logger.info("▶ [1/3] stock_info — 股票列表")
-    all_codes = xtu.fetch_all_stocks()
+    all_codes = _fetch_all_stocks()
     await _persist_stock_flags(all_codes)
     logger.info(f"  ✓ 全市场 {len(all_codes)} 只")
 
     # ── 表3: sector ──
     logger.info("▶ [3/3] sector — 板块 + 成分股")
-    sectors = xtu.fetch_sectors_with_stocks()
+    sectors = _fetch_sectors_with_stocks()
     await _persist_sector_meta(sectors)
     logger.info(f"  元数据 {len(sectors)} 个板块，开始写入成分股...")
     total_stocks = 0
@@ -170,6 +177,4 @@ async def main():
 
 
 if __name__ == '__main__':
-    from zstock.data_management.script.qmt_subprocess_bridge import patch_xtquant_data_utils
-    patch_xtquant_data_utils()
     asyncio.run(main())

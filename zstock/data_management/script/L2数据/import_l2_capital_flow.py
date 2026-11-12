@@ -182,14 +182,13 @@ def read_l2_file(filepath: str) -> Tuple[str, List[Dict]]:
 # ─────────────────── 主流程 ───────────────────
 
 def _connect_mongo():
-    """同步连接 MongoDB（复用 app.core.config 的配置）。"""
+    """同步连接 MongoDB。"""
     from pymongo import MongoClient
-    from app.core.config import settings
+    from zstock.common.utils.db_utils import _mongo_settings
 
-    uri = settings.MONGO_URI
-    db_name = settings.MONGO_DB
-    client = MongoClient(uri)
-    db = client[db_name]
+    cfg = _mongo_settings()
+    client = MongoClient(cfg["uri"])
+    db = client[cfg["database"]]
     # ping 验证
     client.admin.command('ping')
     return client, db

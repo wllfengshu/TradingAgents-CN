@@ -38,16 +38,6 @@ def _ohlcv_map():
     }
 
 
-class _FakeFund:
-    is_loaded = True
-
-    def compute_pb(self, code, close, trade_date):
-        return float(close) / 5.0
-
-    def get_holder_change(self, code, trade_date):
-        return 0.12 if code == A else -0.05
-
-
 def test_f31_excess_return_is_stock_minus_sector_median():
     raw = DragonFactors.calculate_all_dragon_factors_in_sector_raw(
         [A, B, C], _ohlcv_map()
@@ -117,7 +107,11 @@ def test_f39_f40_from_injected_provider():
         [A, B, C],
         ohlcv,
         trade_date=last,
-        fund_provider=_FakeFund(),
+        fund_provider={
+            A: {"bps": 5.0, "holder_change": 0.12},
+            B: {"holder_change": -0.05},
+            C: {"holder_change": -0.05},
+        },
     )
     assert raw[A]["f39_pb"] == pytest.approx(12.1 / 5.0)
     assert raw[A]["f40_holder_change"] == pytest.approx(0.12)

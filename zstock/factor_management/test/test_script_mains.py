@@ -115,9 +115,12 @@ def _svc_from_live(strategy_params):
                 return ohlcv[code], "fixture"
             return pd.DataFrame(), "fixture"
 
+    qs = QS()
+    qs.db = ds.db
+    qs.query = ds.query
+    qs.replace_one = ds.replace_one
     svc = FactorPrecomputeService.__new__(FactorPrecomputeService)
-    svc.database_service = ds
-    svc.query_service = QS()
+    svc.query_service = qs
     svc.compute_workers = 1
     svc.load_workers = 1
     svc.query_workers = 1
@@ -216,26 +219,13 @@ async def test_precompute_init_and_main(strategy_params, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "zstock.data_management.database_service.get_database_service", lambda: ds
-    )
-    monkeypatch.setattr(
-        "zstock.data_management.query_service.get_database_service", lambda: ds
-    )
-    monkeypatch.setattr(
         "zstock.data_management.query_service.get_data_query_service", lambda: QS()
-    )
-    async def _skip_fund(self, qs):
-        return None
-
-    monkeypatch.setattr(
-        "zstock.data_management.fundamental_provider.FundamentalDataProvider.load_from_query_service",
-        _skip_fund,
     )
     svc = FactorPrecomputeService(
         load_fundamentals=False, compute_workers=1, load_workers=1, query_workers=1, resource_fraction=0.2
     )
     assert svc.compute_workers >= 1
-    await svc._ensure_fundamental_provider()
+    assert svc.fund_provider is None
 
     class FakeSvc:
         def __init__(self, **kwargs):
@@ -253,7 +243,7 @@ async def test_precompute_init_and_main(strategy_params, monkeypatch):
         async def init_mongodb(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     monkeypatch.setattr(mod, "FactorPrecomputeService", FakeSvc)
     monkeypatch.setattr("sys.argv", ["precompute_factors.py", "--date", "2024-01-02", "--lookback", "30"])
     assert await mod.main() == 0
@@ -269,14 +259,14 @@ async def test_precompute_init_and_main(strategy_params, monkeypatch):
     async def _fail_init():
         raise RuntimeError("down")
 
-    monkeypatch.setattr("app.core.database.db_manager.init_mongodb", _fail_init)
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager.init_mongodb", _fail_init)
     monkeypatch.setattr("sys.argv", ["precompute_factors.py", "--date", "2024-01-02"])
     # 上面 setattr 在实例方法上可能无效，改 Mgr
     class BadMgr:
         async def init_mongodb(self):
             raise RuntimeError("down")
 
-    monkeypatch.setattr("app.core.database.db_manager", BadMgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", BadMgr())
     assert await mod.main() == 1
 
 
@@ -501,7 +491,7 @@ async def test_factor_eval_run_and_async_main(
         async def init_mongodb(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
 
     class Tiny:
         def __init__(self, **k):
@@ -525,7 +515,7 @@ async def test_factor_eval_run_and_async_main(
         async def init_mongodb(self):
             raise RuntimeError("down")
 
-    monkeypatch.setattr("app.core.database.db_manager", BadMgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", BadMgr())
     assert await async_main(args) == 1
 
 
@@ -757,7 +747,7 @@ async def test_style_compare_and_report(hs300_ohlcv, factor_eval_2024_csv, tmp_p
         async def init_mongodb(self):
             return None
 
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     monkeypatch.setattr("sys.argv", ["run_style_detector.py", "--start", "2024-01-02", "--end", "2024-01-08", "--plot"])
     await style_main()
 
@@ -796,7 +786,7 @@ async def test_style_compare_and_report(hs300_ohlcv, factor_eval_2024_csv, tmp_p
     assert out.is_file()
 
     ns = SimpleNamespace(modes="cond_p5", years="2024", workers=1, job_parallel=1, output=str(tmp_path / "c2"))
-    monkeypatch.setattr("app.core.database.db_manager", Mgr())
+    monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
     assert await compare_async_main(ns) == 0
     ns_bad = SimpleNamespace(modes="nope", years="2024", workers=1, job_parallel=1, output=None)
     assert await compare_async_main(ns_bad) == 1

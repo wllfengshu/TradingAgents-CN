@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────── 可调参数 ───────────────────
 # 需同步的指数列表（code, name）。
 # 注意：沪深300 用 399300（深交所版），不用 000300（后者库里 0 条且与个股 code 易冲突）。
-# 000016（上证50）不在此列——to_xt_code 会把 000016 映射成 .SZ，与平安银行撞 code。
+# 000016（上证50）不在此列——6 位代码与平安银行相同，入库会撞 code。
 INDEX_CODES = [
     ('399300', '沪深300'),
     ('399001', '深证成指'),
@@ -50,7 +50,7 @@ async def _persist_ohlcv(df: pd.DataFrame, period: str = 'D') -> None:
         return
     try:
         from pymongo import UpdateOne
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
         from zstock.data_management.query_service import COL_OHLCV
 
         db = db_module.db_manager.mongo_db
@@ -79,12 +79,10 @@ async def _persist_ohlcv(df: pd.DataFrame, period: str = 'D') -> None:
 def _enrich_turnover_rate(df: pd.DataFrame, codes: List[str]) -> pd.DataFrame:
     """为 OHLCV DataFrame 补充 turnover_rate 列（换手率，百分数）。
 
-    换手率 = 成交量(手) × 10000 / 流通股本(股)。xtquant 日线 volume 单位为"手"，
-    FloatVolume 单位为"股"：×100 把手换算成股、再 ×100 化为百分数，合计 ×10000。
+    换手率 = 成交量(手) × 10000 / 流通股本(股)。日线 volume 按"手"、
+    floatVolume 按"股"：×100 把手换算成股、再 ×100 化为百分数，合计 ×10000。
 
-    流通股本分母优先级：
-      1. 日线数据逐日 floatVolume 列（历史真实值，无前视偏差）——若 QMT 日线返回该字段
-      2. get_instrument_detail 当前快照（近似值，含前视偏差，仅作降级兜底）
+    分母只用日线自带的逐日 floatVolume。没有这一列时换手率保持 0。
 
     结果为百分数（如 2.0 表示换手 2%），与全系统/同花顺口径一致；
     force_factors._score_turnover_quality 的阈值（3.0/5.0/20.0/30.0）即按此口径。
@@ -109,21 +107,9 @@ def _enrich_turnover_rate(df: pd.DataFrame, codes: List[str]) -> pd.DataFrame:
     else:
         covered_codes = set()
 
-    # 降级：floatVolume 缺失的股票，用当前快照流通股本近似
-    fallback_codes = [c for c in codes if c not in covered_codes]
-    if fallback_codes:
-        from zstock.common.utils import xtquant_data_utils as xtu
-        float_map = xtu.fetch_float_shares_map(fallback_codes)
-        if 'volume' in df.columns and float_map:
-            for code, fv in float_map.items():
-                mask = df['code'] == code
-                if mask.any():
-                    df.loc[mask, 'turnover_rate'] = df.loc[mask, 'volume'].astype(float) * 10000.0 / fv
-        if float_map:
-            logger.warning(
-                f"  ⚠️ {len(fallback_codes) - len(float_map)} 只股票无 floatVolume 且无快照股本，"
-                f"{len(float_map)} 只用当前快照近似（含前视偏差）"
-            )
+    missing = [c for c in codes if c not in covered_codes]
+    if missing:
+        logger.info("  无逐日 floatVolume，换手率保持 0: %s 只", len(missing))
     return df
 
 
@@ -143,8 +129,28 @@ def _iter_year_windows(start: str, end: str, year_step: int) -> Iterator[Tuple[s
         y = ye + 1
 
 
+def _load_bars(codes, start: str, end: str) -> pd.DataFrame:
+    """从 stockdb 拉日线，拼成带 code 列的表。"""
+    from zstock.common.utils.stockdb_utils import StockDbClient
+
+    symbols = [codes] if isinstance(codes, str) else list(codes)
+    client = StockDbClient()
+    client.connect()
+    frames = client.get_bars(symbols, start, end)
+    parts = []
+    for code, frame in frames.items():
+        if frame is None or frame.empty:
+            continue
+        part = frame.copy()
+        part["code"] = code
+        parts.append(part)
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True)
+
+
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='同步 zstock_ohlcv 日线数据（xtquant → MongoDB）')
+    parser = argparse.ArgumentParser(description='同步 zstock_ohlcv 日线数据（stockdb → MongoDB）')
     parser.add_argument('--start', default=DEFAULT_START, help=f'起始日期 YYYY-MM-DD，默认 {DEFAULT_START}')
     parser.add_argument(
         '--end',
@@ -187,7 +193,7 @@ async def main():
     # 分批写入，避免单次 bulk_write 过大
     BATCH_SIZE = 5000
     # 1. 连接 MongoDB
-    from app.core import database as db_module
+    from zstock.common.utils import db_utils as db_module
     await db_module.db_manager.init_mongodb()
     logger.info("MongoDB 已连接")
 
@@ -202,8 +208,6 @@ async def main():
     # 查到所有股票
     all_stocks, source = await qs.get_all_stocks()
     logger.info(f"  ✓ 全市场 {len(all_stocks)} 只 (来源: {source})")
-
-    from zstock.common.utils import xtquant_data_utils as xtu
 
     all_codes = [s['code'] for s in all_stocks]
     windows = list(_iter_year_windows(start, end, year_step))
@@ -223,7 +227,7 @@ async def main():
             chunk = all_codes[i:i + code_batch]
             logger.info(f"  股票批 {bi}/{n_code_batches}  {chunk[0]}..{chunk[-1]} ({len(chunk)} 只)")
             try:
-                df_all = xtu.fetch_ohlcv_batch(chunk, ws, we)
+                df_all = _load_bars(chunk, ws, we)
             except Exception as e:
                 failed_batches += 1
                 logger.error(f"  ✗ 拉取失败 {ws}~{we} 批 {bi}: {e}")
@@ -242,7 +246,7 @@ async def main():
     logger.info(f"▶ index ohlcv — {len(INDEX_CODES)} 个指数  {start} ~ {end}")
     for idx_code, idx_name in INDEX_CODES:
         try:
-            df_idx = xtu.fetch_ohlcv(idx_code, start, end)
+            df_idx = _load_bars([idx_code], start, end)
         except Exception as e:
             logger.warning(f"  ⚠️ 指数 {idx_name}({idx_code}) 拉取失败: {e}")
             continue
@@ -271,6 +275,4 @@ async def main():
 
 
 if __name__ == '__main__':
-    from zstock.data_management.script.qmt_subprocess_bridge import patch_xtquant_data_utils
-    patch_xtquant_data_utils()
     asyncio.run(main())

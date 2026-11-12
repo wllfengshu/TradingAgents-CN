@@ -21,6 +21,10 @@ from zstock.common.config.strategy_config import (
     load_strategy_params,
 )
 from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
+from zstock.strategy_management.book_data import (
+    load_book_market_inputs,
+    positions_to_weights_frame,
+)
 from zstock.strategy_management.pipeline import StrategyPipeline
 
 logger = logging.getLogger(__name__)
@@ -92,6 +96,38 @@ class StrategySignalService:
             "adaptive_rebalance": params.get("adaptive_rebalance", {}),
         }
 
+    async def _load_execution_context(
+        self,
+        trade_date: str,
+        *,
+        use_qmt: bool = True,
+    ) -> Dict[str, Any]:
+        params = self.load_strategy_params()
+        capital = float((params.get("backtest") or {}).get("initial_capital", 1e7))
+        current_positions: Optional[pd.DataFrame] = None
+        book = await load_book_market_inputs(trade_date)
+        if use_qmt:
+            try:
+                from zstock.order_management.qmt_client_factory import QMTClientFactory
+
+                client = QMTClientFactory.create()
+                info = client.get_account_info()
+                if info.total_value and info.total_value > 0:
+                    capital = float(info.total_value)
+                current_positions = positions_to_weights_frame(
+                    client.get_positions(), capital
+                )
+            except Exception as exc:
+                logger.warning("QMT 持仓/资金不可用，使用默认资金且无当前持仓: %s", exc)
+        return {
+            "total_capital": capital,
+            "current_positions": current_positions,
+            "index_bars": book.index_bars,
+            "index_closes": book.index_closes,
+            "asset_closes": book.asset_closes,
+            "book_grade": book.book_grade,
+        }
+
     async def get_daily_signals(
         self,
         trade_date: str,
@@ -99,6 +135,7 @@ class StrategySignalService:
         include_targets: bool = False,
         prefer_precomputed: bool = True,
         include_watch: bool = False,
+        use_qmt: bool = True,
     ) -> Dict[str, Any]:
         """
         获取指定交易日截面信号（与回测 score_signals 同 schema）。
@@ -135,19 +172,31 @@ class StrategySignalService:
 
         if include_targets:
             runtime_cfg = self._load_runtime_config(self.load_strategy_params())
+            exec_ctx = await self._load_execution_context(td, use_qmt=use_qmt)
             summary = await self.strategy_pipeline.execute_full_pipeline(
                 trade_date=td,
                 config=runtime_cfg,
                 precomputed_signals=signals_df,
+                current_positions=exec_ctx.get("current_positions"),
+                total_capital=float(exec_ctx.get("total_capital", 1e7)),
+                index_bars=exec_ctx.get("index_bars"),
+                index_closes=exec_ctx.get("index_closes"),
+                asset_closes=exec_ctx.get("asset_closes"),
+                respect_book_rebalance_band=True,
             )
             targets = summary.get("results", {}).get("final_holdings", pd.DataFrame())
             payload["pipeline_summary"] = {
                 "status": summary.get("status"),
+                "style_regime": summary.get("style_regime"),
                 "regime": summary.get("regime"),
+                "book_state": summary.get("book_state"),
                 "market_grade": summary.get("market_grade"),
+                "signal_market_grade": summary.get("signal_market_grade"),
                 "effective_top_k": summary.get("effective_top_k"),
                 "reduce_only": summary.get("reduce_only"),
                 "position_scale": summary.get("position_scale"),
+                "attack_idle": summary.get("attack_idle"),
+                "book_rebalance_skipped": summary.get("book_rebalance_skipped"),
                 "statistics": summary.get("statistics"),
             }
             payload["targets"] = self._holdings_to_records(targets)
@@ -215,14 +264,22 @@ class StrategySignalService:
 
         pipeline_diffs: List[Dict[str, Any]] = []
         if include_pipeline:
+            exec_ctx = await self._load_execution_context(td, use_qmt=False)
+            book_kwargs = {
+                "index_bars": exec_ctx.get("index_bars"),
+                "index_closes": exec_ctx.get("index_closes"),
+                "asset_closes": exec_ctx.get("asset_closes"),
+            }
             summary_bt = await self.strategy_pipeline.execute_full_pipeline(
                 trade_date=td,
                 config=runtime_cfg,
                 precomputed_signals=backtest_df,
+                **book_kwargs,
             )
             summary_api = await self.strategy_pipeline.execute_full_pipeline(
                 trade_date=td,
                 config=runtime_cfg,
+                **book_kwargs,
             )
             pipeline_diffs = self._compare_pipeline_summaries(
                 summary_bt, summary_api, weight_tolerance=score_tolerance
@@ -380,7 +437,15 @@ class StrategySignalService:
         def _add(field: str, bv: Any, av: Any) -> None:
             diffs.append({"field": field, "backtest_value": bv, "api_value": av})
 
-        for key in ("status", "regime", "market_grade", "effective_top_k", "reduce_only"):
+        for key in (
+            "status",
+            "style_regime",
+            "regime",
+            "book_state",
+            "market_grade",
+            "effective_top_k",
+            "reduce_only",
+        ):
             bv, av = summary_bt.get(key), summary_api.get(key)
             if bv != av:
                 _add(f"pipeline.{key}", bv, av)

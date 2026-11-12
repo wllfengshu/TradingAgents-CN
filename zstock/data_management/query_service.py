@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 from collections import defaultdict
@@ -29,7 +30,7 @@ import pandas as pd
 from zstock.common.utils.common_utils import normalize_code, normalize_date
 from zstock.common.utils.resource_budget import default_query_concurrency
 
-from .database_service import get_database_service
+from zstock.common.utils.db_utils import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +101,318 @@ class DataQueryService:
         return windows
 
     def __init__(self):
-        self.database_service = get_database_service()
-        logger.info("✅ 查询服务初始化成功")
+        self.db = get_database()
+        if self.db is None:
+            raise RuntimeError("数据源未初始化")
+        logger.info("查询服务初始化成功")
+
+    # ==================== 数据查询方法 ====================
+
+    async def query(self, collection: str, query: Dict = None, **kwargs) -> List[Dict]:
+        """
+        查询数据
+
+        Args:
+            collection: 集合名称
+            query: 查询条件
+            **kwargs: 其他查询参数（skip, limit, sort 等）
+
+        Returns:
+            查询结果列表
+        """
+        if query is None:
+            query = {}
+        try:
+            result = await self.db[collection].find(query, **kwargs).to_list(None)
+            if result is None:
+                return None
+            logger.debug(f"📊 查询 {collection}: 找到 {len(result)} 条记录")
+            return result
+        except Exception as e:
+            logger.error(f"❌ 查询失败 {collection}: {e}")
+            raise
+
+    async def query_one(self, collection: str, query: Dict = None, **kwargs) -> Optional[Dict]:
+        """
+        查询单条数据
+
+        Args:
+            collection: 集合名称
+            query: 查询条件
+
+        Returns:
+            查询结果或 None
+        """
+        if query is None:
+            query = {}
+        try:
+            result = await self.db[collection].find_one(query, **kwargs)
+            logger.debug(f"📊 查询单条 {collection}: {'找到' if result else '未找到'}")
+            return result
+        except Exception as e:
+            logger.error(f"❌ 查询单条失败 {collection}: {e}")
+            raise
+
+    # ==================== 数据插入方法 ====================
+
+    async def insert_one(self, collection: str, document: Dict) -> str:
+        """
+        插入单条数据
+
+        Args:
+            collection: 集合名称
+            document: 文档
+
+        Returns:
+            插入的文档 ID
+        """
+        try:
+            result = await self.db[collection].insert_one(document)
+            logger.info(f"✅ 插入 {collection}: {result.inserted_id}")
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"❌ 插入失败 {collection}: {e}")
+            raise
+
+    async def insert_many(
+        self,
+        collection: str,
+        documents: List[Dict],
+        ordered: bool = False,
+    ) -> List[str]:
+        """
+        批量插入数据
+
+        Args:
+            collection: 集合名称
+            documents: 文档列表
+            ordered: 是否顺序写入。默认 False——遇到重复键等错误时继续处理剩余文档，
+                     避免行情/因子回填因单条冲突静默丢失整批数据。
+
+        Returns:
+            插入的文档 ID 列表
+        """
+        if not documents:
+            return []
+        try:
+            result = await self.db[collection].insert_many(documents, ordered=ordered)
+            logger.debug(f"✅ 批量插入 {collection}: {len(result.inserted_ids)} 条")
+            return [str(_id) for _id in result.inserted_ids]
+        except Exception as e:
+            # ordered=False 场景下 BulkWriteError 会带 details.nInserted；上层可据此判断是否需要报警。
+            logger.error(f"❌ 批量插入失败 {collection}: {e}")
+            raise
+
+    async def bulk_upsert(
+        self,
+        collection: str,
+        documents: List[Dict],
+        key_fields: List[str],
+        ordered: bool = False,
+    ) -> Dict[str, int]:
+        """
+        批量 upsert：按 key_fields 组成的组合键 upsert 每条文档。
+
+        用于行情/因子回填这类"允许重复调用、需要幂等"的场景，比逐条 replace_one
+        吞吐至少高一个数量级。
+
+        Args:
+            collection: 集合名称
+            documents: 文档列表
+            key_fields: 用于匹配已有文档的字段名（例如 ["code", "trade_date"]）
+            ordered: 是否顺序执行（默认 False，一条失败不影响其余）
+
+        Returns:
+            {"matched": ..., "modified": ..., "upserted": ...}
+        """
+        if not documents:
+            return {"matched": 0, "modified": 0, "upserted": 0}
+        if not key_fields:
+            raise ValueError("bulk_upsert 必须指定 key_fields")
+
+        from pymongo import UpdateOne  # 局部导入避免顶部对 pymongo 的硬依赖
+
+        ops = []
+        for doc in documents:
+            missing = [k for k in key_fields if k not in doc]
+            if missing:
+                raise ValueError(f"bulk_upsert 文档缺少 key_fields: {missing}")
+            flt = {k: doc[k] for k in key_fields}
+            ops.append(UpdateOne(flt, {"$set": doc}, upsert=True))
+
+        try:
+            result = await self.db[collection].bulk_write(ops, ordered=ordered)
+            summary = {
+                "matched": int(result.matched_count or 0),
+                "modified": int(result.modified_count or 0),
+                "upserted": int(len(result.upserted_ids or {})),
+            }
+            logger.debug(f"✅ bulk_upsert {collection}: {summary}")
+            return summary
+        except Exception as e:
+            logger.error(f"❌ bulk_upsert 失败 {collection}: {e}")
+            raise
+
+    # ==================== 数据更新方法 ====================
+
+    def _prepare_update(self, update: Dict) -> Dict:
+        """检查更新文档是否已经包涵 Mongo 操作符。"""
+        if any(k.startswith('$') for k in update.keys()):
+            return update
+        return {"$set": update}
+
+    async def update_one(
+        self,
+        collection: str,
+        query: Dict,
+        update: Dict,
+        upsert: bool = False,
+    ) -> int:
+        """
+        更新单条数据
+
+        Args:
+            collection: 集合名称
+            query: 查询条件
+            update: 更新内容（如果不用操作符会自动包裹 $set）
+            upsert: 未匹配到文档时是否插入新文档（Mongo upsert）
+
+        Returns:
+            修改的文档数（upsert 插入时也算 1）
+        """
+        try:
+            update_doc = self._prepare_update(update)
+            result = await self.db[collection].update_one(query, update_doc, upsert=upsert)
+            changed = int(result.modified_count or 0) + (1 if result.upserted_id is not None else 0)
+            logger.debug(f"✅ 更新 {collection}: {changed} 条 (upsert={upsert})")
+            return changed
+        except Exception as e:
+            logger.error(f"❌ 更新失败 {collection}: {e}")
+            raise
+
+    async def update_many(self, collection: str, query: Dict, update: Dict) -> int:
+        """
+        批量更新数据
+
+        Args:
+            collection: 集合名称
+            query: 查询条件
+            update: 更新内容（如果不用操作符会自动包裹 $set）
+
+        Returns:
+            修改的文档数
+        """
+        try:
+            update_doc = self._prepare_update(update)
+            result = await self.db[collection].update_many(query, update_doc)
+            logger.info(f"✅ 批量更新 {collection}: {result.modified_count} 条")
+            return result.modified_count
+        except Exception as e:
+            logger.error(f"❌ 批量更新失败 {collection}: {e}")
+            raise
+
+    async def replace_one(
+        self,
+        collection: str,
+        query: Dict,
+        document: Dict,
+        upsert: bool = False,
+    ) -> int:
+        """替换单条数据（可选 upsert），返回修改/插入条数。"""
+        try:
+            result = await self.db[collection].replace_one(query, document, upsert=upsert)
+            changed = int(result.modified_count or 0) + (1 if result.upserted_id is not None else 0)
+            # 逐条 upsert 在批量预计算场景会非常嘈杂，默认降为 debug。
+            logger.debug(f"✅ 替换 {collection}: {changed} 条")
+            return changed
+        except Exception as e:
+            logger.error(f"❌ 替换失败 {collection}: {e}")
+            raise
+
+    # ==================== 数据删除方法 ====================
+
+    async def delete_one(self, collection: str, query: Dict) -> int:
+        """
+        删除单条数据
+
+        Args:
+            collection: 集合名称
+            query: 查询条件
+
+        Returns:
+            删除的文档数
+        """
+        try:
+            result = await self.db[collection].delete_one(query)
+            logger.info(f"✅ 删除 {collection}: {result.deleted_count} 条")
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f"❌ 删除失败 {collection}: {e}")
+            raise
+
+    async def delete_many(self, collection: str, query: Dict) -> int:
+        """
+        批量删除数据
+
+        Args:
+            collection: 集合名称
+            query: 查询条件
+
+        Returns:
+            删除的文档数
+        """
+        try:
+            result = await self.db[collection].delete_many(query)
+            logger.info(f"✅ 批量删除 {collection}: {result.deleted_count} 条")
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f"❌ 批量删除失败 {collection}: {e}")
+            raise
+
+    # ==================== 统计方法 ====================
+
+    async def count(self, collection: str, query: Dict = None) -> int:
+        """
+        统计文档数
+
+        Args:
+            collection: 集合名称
+            query: 查询条件
+
+        Returns:
+            文档数
+        """
+        if query is None:
+            query = {}
+        try:
+            count = await self.db[collection].count_documents(query)
+            logger.debug(f"📊 统计 {collection}: {count} 条")
+            return count
+        except Exception as e:
+            logger.error(f"❌ 统计失败 {collection}: {e}")
+            raise
+
+    # ==================== 集合操作方法 ====================
+
+    async def drop_collection(self, collection: str) -> None:
+        """删除集合"""
+        try:
+            await self.db[collection].drop()
+            logger.info(f"✅ 删除集合: {collection}")
+        except Exception as e:
+            logger.error(f"❌ 删除集合失败 {collection}: {e}")
+            raise
+
+    async def list_collections(self) -> List[str]:
+        """获取所有集合名称"""
+        try:
+            collections = await self.db.list_collection_names()
+            logger.debug(f"📋 集合列表: {collections}")
+            return collections
+        except Exception as e:
+            logger.error(f"❌ 获取集合列表失败: {e}")
+            return []
+
 
     async def ensure_indexes(self) -> None:
         """在所有集合上建立必要索引（幂等，可重复调用）。
@@ -113,7 +424,7 @@ class DataQueryService:
         """
         from pymongo import ASCENDING,DESCENDING, IndexModel
 
-        db = self.database_service.db
+        db = self.db
         # zstock_ohlcv
         await db[COL_OHLCV].create_indexes(
             [
@@ -291,7 +602,7 @@ class DataQueryService:
         norm_start = normalize_date(start_date)
         norm_end = normalize_date(end_date)
 
-        docs = await self.database_service.query(
+        docs = await self.query(
             COL_OHLCV,
             {
                 "code": code,
@@ -351,7 +662,7 @@ class DataQueryService:
             nonlocal done_queries
             async with sem:
                 try:
-                    docs = await self.database_service.query(
+                    docs = await self.query(
                         COL_OHLCV,
                         {
                             "code": {"$in": chunk},
@@ -419,7 +730,7 @@ class DataQueryService:
 
     async def get_stock_info(self, symbol: str) -> Tuple[Dict, str]:
         """获取股票基本信息。无数据抛 ValueError。"""
-        doc = await self.database_service.query_one(
+        doc = await self.query_one(
             COL_STOCK_INFO, {"code": normalize_code(symbol)}
         )
         if doc is not None:
@@ -431,7 +742,7 @@ class DataQueryService:
     async def get_all_stocks(self) -> Tuple[List[Dict], str]:
         """获取全 A 股完整信息列表（含创业板/科创板/北交所，含 ST）。"""
         try:
-            docs = await self.database_service.query(
+            docs = await self.query(
                 COL_STOCK_INFO,
                 {},
                 projection={"_id": 0},
@@ -457,7 +768,7 @@ class DataQueryService:
         td_norm = normalize_date(trade_date)
 
         try:
-            doc = await self.database_service.query_one(
+            doc = await self.query_one(
                 COL_CAPITAL_FLOW,
                 {"code": code, "trade_date": td_norm, "period": period},
             )
@@ -502,7 +813,7 @@ class DataQueryService:
         start_bound = (end_dt - timedelta(days=lookback_calendar)).strftime("%Y-%m-%d")
 
         try:
-            docs = await self.database_service.query(
+            docs = await self.query(
                 COL_CAPITAL_FLOW,
                 {
                     "code": {"$in": pure_codes},
@@ -579,7 +890,7 @@ class DataQueryService:
         ) -> List[Dict]:
             async with sem:
                 try:
-                    return await self.database_service.query(
+                    return await self.query(
                         COL_CAPITAL_FLOW,
                         {
                             "code": {"$in": chunk},
@@ -628,7 +939,7 @@ class DataQueryService:
         code_norm = normalize_code(code)
         td_norm = normalize_date(trade_date)
         try:
-            doc = await self.database_service.query_one(
+            doc = await self.query_one(
                 COL_LHB,
                 {"code": code_norm, "trade_date": td_norm},
                 projection={"_id": 0},
@@ -655,7 +966,7 @@ class DataQueryService:
         start_bound = (end_dt - timedelta(days=lookback_calendar)).strftime("%Y-%m-%d")
 
         try:
-            docs = await self.database_service.query(
+            docs = await self.query(
                 COL_LHB,
                 {
                     "code": code_norm,
@@ -683,7 +994,7 @@ class DataQueryService:
         td_norm = normalize_date(trade_date)
 
         try:
-            docs = await self.database_service.query(
+            docs = await self.query(
                 COL_LHB,
                 {
                     "code": {"$in": codes_norm},
@@ -723,7 +1034,7 @@ class DataQueryService:
         start_bound = (end_dt - timedelta(days=lookback_calendar)).strftime("%Y-%m-%d")
         empty = {c: [] for c in codes_norm}
         try:
-            docs = await self.database_service.query(
+            docs = await self.query(
                 COL_LHB,
                 {
                     "code": {"$in": codes_norm},
@@ -759,7 +1070,7 @@ class DataQueryService:
             query: Dict[str, Any] = {"source": "xtquant"}
             if prefix:
                 query["sector_code"] = {"$regex": f"^{re.escape(prefix)}"}
-            docs = await self.database_service.query(
+            docs = await self.query(
                 COL_SECTOR,
                 query,
                 projection={
@@ -782,7 +1093,7 @@ class DataQueryService:
     async def get_sector_stocks(self, sector_code: str) -> Tuple[List[str], str]:
         """获取板块成分股代码列表（纯 6 位代码字符串）。"""
         try:
-            doc = await self.database_service.query_one(
+            doc = await self.query_one(
                 COL_SECTOR,
                 {"sector_code": sector_code, "source": "xtquant"},
                 projection={"stocks": 1, "_id": 0},
@@ -803,7 +1114,7 @@ class DataQueryService:
             return {}
 
         try:
-            docs = await self.database_service.query(
+            docs = await self.query(
                 COL_SECTOR,
                 {"sector_code": {"$in": sector_codes}, "source": "xtquant"},
                 projection={"sector_code": 1, "stocks": 1, "_id": 0},
@@ -821,7 +1132,7 @@ class DataQueryService:
 
     async def get_factor_market(self, trade_date: str) -> Optional[Dict]:
         """获取 M1 市场因子原始值。无数据返回 None。"""
-        return await self.database_service.query_one(
+        return await self.query_one(
             COL_FACTOR_MARKET,
             {"trade_date": normalize_date(trade_date)},
             projection={"_id": 0},
@@ -829,7 +1140,7 @@ class DataQueryService:
 
     async def get_factor_sectors(self, trade_date: str) -> List[Dict]:
         """获取 M2 板块因子原始值（全板块）。"""
-        docs = await self.database_service.query(
+        docs = await self.query(
             COL_FACTOR_SECTOR,
             {"trade_date": normalize_date(trade_date)},
             projection={"_id": 0},
@@ -846,7 +1157,7 @@ class DataQueryService:
         query: Dict[str, Any] = {"trade_date": normalize_date(trade_date)}
         if sector_codes:
             query["sector_code"] = {"$in": sector_codes}
-        docs = await self.database_service.query(
+        docs = await self.query(
             COL_FACTOR_DRAGON,
             query,
             projection={"_id": 0},
@@ -856,7 +1167,7 @@ class DataQueryService:
 
     async def get_factor_forces(self, trade_date: str) -> List[Dict]:
         """获取 M4 合力因子原始值（全部候选）。"""
-        docs = await self.database_service.query(
+        docs = await self.query(
             COL_FACTOR_FORCE,
             {"trade_date": normalize_date(trade_date)},
             projection={"_id": 0},
@@ -890,7 +1201,7 @@ class DataQueryService:
         last_err: Optional[BaseException] = None
         for attempt in range(1, attempts + 1):
             try:
-                docs = await self.database_service.query(
+                docs = await self.query(
                     collection,
                     {"trade_date": {"$gte": win_start, "$lte": win_end}},
                     projection={"_id": 0},
@@ -1057,7 +1368,7 @@ class DataQueryService:
 
     async def get_all_fundamental_pershare(self) -> List[Dict]:
         """获取全量每股指标文档（包含 bps 等字段）。"""
-        docs = await self.database_service.query(
+        docs = await self.query(
             COL_FUNDAMENTAL_PERSHARE,
             {"bps": {"$exists": True, "$ne": None}},
             projection={"_id": 0, "code": 1, "ann_date": 1, "bps": 1},
@@ -1067,13 +1378,34 @@ class DataQueryService:
 
     async def get_all_fundamental_holder(self) -> List[Dict]:
         """获取全量股东数历史文档。"""
-        docs = await self.database_service.query(
+        docs = await self.query(
             COL_FUNDAMENTAL_HOLDER,
             {},
             projection={"_id": 0, "code": 1, "ann_date": 1, "end_date": 1, "shareholder": 1},
             sort=[("code", 1), ("end_date", 1)],
         )
         return docs or []
+
+    async def get_fundamental_asof(self, asof_date: str) -> Dict[str, Dict[str, float]]:
+        """截至公告日 asof_date（含）的最新 BPS 与股东户数环比。
+
+        返回 ``{code: {"bps": float, "holder_change": float}}``，缺哪项就不写哪项。
+        股东户数环比按报告期相邻两期计算，取公告日不晚于 asof 的最近一期。
+        """
+        asof = normalize_date(asof_date)
+        pershare = await self.query(
+            COL_FUNDAMENTAL_PERSHARE,
+            {"ann_date": {"$lte": asof}, "bps": {"$ne": None}},
+            projection={"_id": 0, "code": 1, "ann_date": 1, "bps": 1},
+            sort=[("ann_date", 1)],
+        )
+        holder = await self.query(
+            COL_FUNDAMENTAL_HOLDER,
+            {"ann_date": {"$lte": asof}},
+            projection={"_id": 0, "code": 1, "ann_date": 1, "end_date": 1, "shareholder": 1},
+            sort=[("end_date", 1)],
+        )
+        return _fundamental_asof_map(pershare or [], holder or [])
 
 
 # ==========================================================================
@@ -1090,4 +1422,63 @@ def get_data_query_service() -> DataQueryService:
 
 # 模块级兼容导出（内部方法别名，保持外部已有工具/单测兼容）
 _iter_date_windows = DataQueryService._iter_date_windows
+
+
+def _finite_float(val: Any) -> Optional[float]:
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(num):
+        return None
+    return num
+
+
+def _fundamental_asof_map(
+    pershare_docs: List[Dict],
+    holder_docs: List[Dict],
+) -> Dict[str, Dict[str, float]]:
+    """把已按公告日截断的文档收成每股最新 BPS 与股东户数环比。"""
+    out: Dict[str, Dict[str, float]] = {}
+    bps_ann: Dict[str, str] = {}
+    for doc in pershare_docs:
+        code = doc.get("code")
+        ann = doc.get("ann_date")
+        bps = _finite_float(doc.get("bps"))
+        if not code or not ann or bps is None or bps == 0:
+            continue
+        ann_s = str(ann)
+        prev = bps_ann.get(code)
+        if prev is not None and ann_s < prev:
+            continue
+        bps_ann[code] = ann_s
+        out.setdefault(code, {})["bps"] = bps
+
+    by_code: Dict[str, List[Tuple[str, str, float]]] = defaultdict(list)
+    for doc in holder_docs:
+        code = doc.get("code")
+        ann = doc.get("ann_date")
+        end = doc.get("end_date")
+        sh = _finite_float(doc.get("shareholder"))
+        if not code or not ann or not end or sh is None or sh <= 0:
+            continue
+        by_code[code].append((str(end), str(ann), sh))
+
+    for code, records in by_code.items():
+        records.sort(key=lambda item: item[0])
+        chosen_ann: Optional[str] = None
+        chosen_rate: Optional[float] = None
+        for i in range(1, len(records)):
+            prev_sh = records[i - 1][2]
+            curr_sh = records[i][2]
+            ann = records[i][1]
+            rate = (curr_sh - prev_sh) / prev_sh
+            if not math.isfinite(rate):
+                continue
+            if chosen_ann is None or ann >= chosen_ann:
+                chosen_ann = ann
+                chosen_rate = rate
+        if chosen_rate is not None:
+            out.setdefault(code, {})["holder_change"] = chosen_rate
+    return out
 

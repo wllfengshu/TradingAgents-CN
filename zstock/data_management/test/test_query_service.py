@@ -12,14 +12,16 @@ from zstock.data_management.query_service import (
     COL_FACTOR_FORCE,
     COL_LHB,
     COL_CAPITAL_FLOW,
+    COL_FUNDAMENTAL_HOLDER,
+    COL_FUNDAMENTAL_PERSHARE,
     DataQueryService,
 )
-from zstock.data_management.test.conftest import FakeDatabaseService
+from zstock.data_management.test.conftest import FakeDatabaseService, FakeMongoDB
 
 
 def _make_qs(store) -> DataQueryService:
     qs = DataQueryService.__new__(DataQueryService)
-    qs.database_service = FakeDatabaseService(store)
+    qs.db = FakeDatabaseService(store).db
     return qs
 
 
@@ -128,13 +130,8 @@ async def test_factor_layers_and_empty_lhb():
 
 @pytest.mark.asyncio
 async def test_ensure_indexes_on_fake_mongo():
-    from zstock.data_management.database_service import DatabaseService
-    from zstock.data_management.test.conftest import FakeMongoDB
-
     qs = DataQueryService.__new__(DataQueryService)
-    svc = DatabaseService.__new__(DatabaseService)
-    svc.db = FakeMongoDB()
-    qs.database_service = svc
+    qs.db = FakeMongoDB()
     await qs.ensure_indexes()
 
 
@@ -197,25 +194,40 @@ async def test_get_factor_dragons_filter():
     assert {d["code"] for d in all_docs} == {"603201", "000060"}
 
 
-class _BoomDB:
-    async def query(self, *args, **kwargs):
+class _BoomCol:
+    def find(self, *args, **kwargs):
         raise RuntimeError("mongo down")
 
-    async def query_one(self, *args, **kwargs):
+    async def find_one(self, *args, **kwargs):
         raise RuntimeError("mongo down")
+
+
+class _BoomDB:
+    def __getitem__(self, name):
+        return _BoomCol()
+
+
+class _NoneCursor:
+    async def to_list(self, n):
+        return None
+
+
+class _NoneCol:
+    def find(self, *args, **kwargs):
+        return _NoneCursor()
+
+    async def find_one(self, *args, **kwargs):
+        return None
 
 
 class _NoneDB:
-    async def query(self, *args, **kwargs):
-        return None
-
-    async def query_one(self, *args, **kwargs):
-        return None
+    def __getitem__(self, name):
+        return _NoneCol()
 
 
 def _qs_with(db) -> DataQueryService:
     qs = DataQueryService.__new__(DataQueryService)
-    qs.database_service = db
+    qs.db = db
     return qs
 
 
@@ -346,9 +358,6 @@ async def test_lhb_and_sector_error_paths():
 
 @pytest.mark.asyncio
 async def test_ensure_indexes_legacy_drop_missing():
-    from zstock.data_management.database_service import DatabaseService
-    from zstock.data_management.test.conftest import FakeMongoDB
-
     class RaisingMongo(FakeMongoDB):
         def __getitem__(self, name):
             col = super().__getitem__(name)
@@ -360,20 +369,46 @@ async def test_ensure_indexes_legacy_drop_missing():
             return col
 
     qs = DataQueryService.__new__(DataQueryService)
-    svc = DatabaseService.__new__(DatabaseService)
-    svc.db = RaisingMongo()
-    qs.database_service = svc
+    qs.db = RaisingMongo()
     await qs.ensure_indexes()
 
 
 def test_get_data_query_service_singleton(monkeypatch):
     import zstock.data_management.query_service as qs_mod
-    from zstock.data_management.test.conftest import FakeDatabaseService
-
-    fake = FakeDatabaseService({})
-    monkeypatch.setattr(qs_mod, "get_database_service", lambda: fake)
+    fake = FakeMongoDB()
+    monkeypatch.setattr(qs_mod, "get_database", lambda: fake)
     monkeypatch.setattr(qs_mod, "_data_query_service", None)
     a = qs_mod.get_data_query_service()
     b = qs_mod.get_data_query_service()
     assert a is b
-    assert a.database_service is fake
+    assert a.db is fake
+
+
+@pytest.mark.asyncio
+async def test_get_fundamental_asof_uses_announce_date():
+    qs = _make_qs(
+        {
+            COL_FUNDAMENTAL_PERSHARE: [
+                {"code": "603201", "ann_date": "2024-03-01", "bps": 4.0},
+                {"code": "603201", "ann_date": "2024-06-01", "bps": 5.0},
+                {"code": "603201", "ann_date": "2023-08-01", "bps": 0},
+                {"code": "000060", "ann_date": "2024-01-15", "bps": 2.5},
+            ],
+            COL_FUNDAMENTAL_HOLDER: [
+                {"code": "603201", "ann_date": "2023-04-01", "end_date": "2023-03-31", "shareholder": 100.0},
+                {"code": "603201", "ann_date": "2023-08-20", "end_date": "2023-06-30", "shareholder": 80.0},
+                {"code": "603201", "ann_date": "2024-04-20", "end_date": "2024-03-31", "shareholder": 120.0},
+            ],
+        }
+    )
+    early = await qs.get_fundamental_asof("2024-01-02")
+    assert "bps" not in early["603201"]
+    assert early["603201"]["holder_change"] == pytest.approx((80.0 - 100.0) / 100.0)
+    assert "000060" not in early
+    mid = await qs.get_fundamental_asof("2024-03-15")
+    assert mid["603201"]["bps"] == 4.0
+    assert mid["603201"]["holder_change"] == pytest.approx((80.0 - 100.0) / 100.0)
+    later = await qs.get_fundamental_asof("20240601")
+    assert later["603201"]["bps"] == 5.0
+    assert later["603201"]["holder_change"] == pytest.approx((120.0 - 80.0) / 80.0)
+    assert later["000060"]["bps"] == 2.5

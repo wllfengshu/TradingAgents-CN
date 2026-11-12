@@ -36,6 +36,15 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from zstock.strategy_management.market_book import (
+    BOOK_OHLCV_CODES,
+    INDEX_CODE,
+    holdings_frame,
+    needs_book_trade,
+    park_treasury,
+    weight_map,
+)
+
 if TYPE_CHECKING:
     from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
 
@@ -770,9 +779,18 @@ class Backtester:
         days_since_rebalance = rebalance_freq  # 首个交易日触发再平衡
         last_regime = "neutral"
         last_market_grade = "green"
+        book_cfg = cfg_runtime.get("book_regime") or {}
+        book_on = bool(book_cfg.get("enabled", False))
+        book_band = float(book_cfg.get("rebalance_band", 0.03))
+        book_min_util = float(book_cfg.get("min_utilization", 0.90))
+        book_bond = str(book_cfg.get("bond_code") or "511260")
+        index_rows: List[dict] = []
+        asset_hist: Dict[str, List[float]] = {}
+        prev_book_state: Optional[str] = None
 
         for i, td in enumerate(trade_dates):
             day_ohlcv = ohlcv_provider(td) or {}
+            nav_for_book = equity
 
             # === 第一步：用昨日的持仓 + 今日收盘价计算今日收益 ===
             day_return = 0.0
@@ -838,10 +856,65 @@ class Backtester:
                 do_rebalance = (i % rebalance_freq == 0)
             rebalance_status = '-'
             n_holdings_today = len(last_holdings) if last_holdings is not None else 0
+            decision = None
+            book_managed = False
+            if book_on:
+                from zstock.strategy_management.market_book import grade_from_index_bars
+
+                grade_b = grade_from_index_bars(index_rows)
+                index_closes = [float(row["close"]) for row in index_rows]
+                held_codes: List[str] = []
+                if last_holdings is not None and not last_holdings.empty and "code" in last_holdings.columns:
+                    held_codes = [str(code) for code in last_holdings["code"].tolist()]
+                decision = self.strategy.book.step(
+                    td,
+                    grade_b,
+                    index_closes,
+                    nav_for_book,
+                    asset_hist,
+                    held_codes,
+                    confirm_green_days=int(book_cfg.get("confirm_green_days", 3)),
+                )
+                state_changed = decision.state != prev_book_state
+                prev_book_state = decision.state
+                if decision.weights is not None:
+                    if state_changed or needs_book_trade(
+                        weight_map(last_holdings),
+                        decision.weights,
+                        band=book_band,
+                        min_utilization=book_min_util,
+                    ):
+                        do_rebalance = True
+                    else:
+                        do_rebalance = False
+                elif state_changed:
+                    do_rebalance = True
 
             if do_rebalance:
                 precomputed_signals = None
-                if use_precomputed_factors and self.factor_pipeline:
+                if book_on and decision is not None and decision.weights is not None:
+                    book_managed = True
+                    new_book = holdings_frame(decision.weights)
+                    book_costs = self.strategy._turnover_controller.estimate_trading_costs(
+                        current_holdings=last_holdings,
+                        new_holdings=new_book,
+                        total_capital=equity,
+                    )
+                    summary = {
+                        "status": "success",
+                        "market_grade": decision.grade,
+                        "style_regime": last_regime,
+                        "regime": last_regime,
+                        "book_state": decision.state,
+                        "results": {
+                            "final_holdings": new_book,
+                            "signals": pd.DataFrame(),
+                            "trading_costs": book_costs,
+                            "risk_check": {"status": "passed", "issues": []},
+                        },
+                        "statistics": {"position_scale": 1.0},
+                    }
+                elif use_precomputed_factors and self.factor_pipeline:
                     # ── 快速路径：从 MongoDB 读预计算信号 ──
                     # 缺日（节假日/未预计算）跳过再平衡，继续持有，不中断整段回测
                     try:
@@ -854,6 +927,15 @@ class Backtester:
                         }
                     else:
                         extra = self._pipeline_market_kwargs(td, prev_td, last_holdings)
+                        if book_on:
+                            extra = {
+                                **extra,
+                                "index_bars": list(index_rows),
+                                "index_closes": [
+                                    float(r["close"]) for r in index_rows
+                                ],
+                                "asset_closes": dict(asset_hist),
+                            }
                         summary = await self.strategy.execute_full_pipeline(
                             trade_date=td,
                             current_positions=last_holdings,
@@ -867,6 +949,15 @@ class Backtester:
                     prebuilt = signal_provider(td) if signal_provider else None
                     try:
                         extra = self._pipeline_market_kwargs(td, prev_td, last_holdings)
+                        if book_on:
+                            extra = {
+                                **extra,
+                                "index_bars": list(index_rows),
+                                "index_closes": [
+                                    float(r["close"]) for r in index_rows
+                                ],
+                                "asset_closes": dict(asset_hist),
+                            }
                         summary = await self.strategy.execute_full_pipeline(
                             trade_date=td,
                             current_positions=last_holdings,
@@ -984,7 +1075,12 @@ class Backtester:
                     bad_streak = 0 if market_grade != "red" else bad_streak + 1
                     new_holdings = summary['results']['final_holdings'].copy() if 'final_holdings' in summary['results'] else pd.DataFrame()
                     # 连续跌出买入名单 → 从目标持仓剔除
-                    if force_out and new_holdings is not None and not new_holdings.empty:
+                    if (
+                        not book_managed
+                        and force_out
+                        and new_holdings is not None
+                        and not new_holdings.empty
+                    ):
                         before = len(new_holdings)
                         new_holdings = new_holdings[~new_holdings["code"].isin(force_out)].copy()
                         if len(new_holdings) < before:
@@ -995,7 +1091,11 @@ class Backtester:
                             if not new_holdings.empty:
                                 new_holdings = self._clip_weights(new_holdings)
                     # 若仍处于坏环境连击且达到清仓阈值（防御：成功但红灯）
-                    if bad_streak >= flat_after_bad_days and market_grade == "red":
+                    if (
+                        not book_on
+                        and bad_streak >= flat_after_bad_days
+                        and market_grade == "red"
+                    ):
                         new_holdings = pd.DataFrame(columns=["code", "weight", "score"])
                         logger.info(
                             f"🛑 {td} 连续{bad_streak}日坏环境，强制清仓"
@@ -1007,7 +1107,8 @@ class Backtester:
                     vol_scale = self._compute_vol_scale(eq_path, wrp)
                     risk_scale = dd_scale * vol_scale
                     if (
-                        abs(risk_scale - 1.0) > 1e-9
+                        not book_on
+                        and abs(risk_scale - 1.0) > 1e-9
                         and new_holdings is not None
                         and not new_holdings.empty
                     ):
@@ -1072,6 +1173,21 @@ class Backtester:
                     logger.info(f"  ⚠️ {td} 再平衡未产出信号 (status={rebalance_status})")
             elif use_adaptive:
                 days_since_rebalance += 1
+
+            _append_book_bars(index_rows, asset_hist, day_ohlcv)
+            if book_on and last_holdings is not None and not last_holdings.empty:
+                parked = park_treasury(last_holdings, book_bond)
+                if abs(float(parked["weight"].sum()) - float(last_holdings["weight"].sum())) > 1e-8:
+                    fill_costs = self.strategy._turnover_controller.estimate_trading_costs(
+                        current_holdings=last_holdings,
+                        new_holdings=parked,
+                        total_capital=equity,
+                    )
+                    fill_cost = float(fill_costs.get("cost_pct", 0.0))
+                    equity *= 1.0 - fill_cost
+                    day_cost += fill_cost
+                    day_turnover += float(fill_costs.get("turnover", 0.0))
+                    last_holdings = parked
 
             equity_records.append(equity)
             net_return = (1.0 + day_return) * (1.0 - day_cost) - 1.0
@@ -1498,6 +1614,44 @@ class Backtester:
 
 
 # ============================== 便捷数据 provider ==============================
+
+def _append_book_bars(
+    index_rows: List[dict],
+    asset_hist: Dict[str, List[float]],
+    day_ohlcv: Dict[str, pd.DataFrame],
+) -> None:
+    """把当日收盘记入账户状态所用的历史。判定用的是调用前已经积累的部分。"""
+    for code, frame in (day_ohlcv or {}).items():
+        if frame is None or getattr(frame, "empty", True):
+            continue
+        row = frame.iloc[-1]
+        try:
+            close = float(row.get("close", float("nan")))
+        except (TypeError, ValueError):
+            continue
+        if not close > 0:
+            continue
+        code_s = str(code)
+        if code_s not in BOOK_OHLCV_CODES:
+            continue
+        asset_hist.setdefault(code_s, []).append(close)
+        if code_s != INDEX_CODE:
+            continue
+        def _num(key: str, default: float) -> float:
+            try:
+                value = float(row.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            if value != value:
+                return default
+            return value
+        index_rows.append({
+            "close": close,
+            "high": _num("high", close),
+            "low": _num("low", close),
+            "volume": _num("volume", 0.0),
+        })
+
 
 def make_ohlcv_provider_from_dict(
     ohlcv_by_code: Dict[str, pd.DataFrame],

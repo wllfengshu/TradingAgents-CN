@@ -32,7 +32,7 @@ INDEX_CODES = [
 
 
 async def inspect(trade_date: str = None) -> None:
-    from app.core import database as db_module
+    from zstock.common.utils import db_utils as db_module
     await db_module.db_manager.init_mongodb()
     db = db_module.db_manager.mongo_db
     col = db['zstock_ohlcv']

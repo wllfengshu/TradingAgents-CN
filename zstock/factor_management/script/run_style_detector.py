@@ -191,7 +191,7 @@ async def main():
 
     # 初始化 MongoDB
     try:
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
         await db_module.db_manager.init_mongodb()
     except Exception as e:
         logging.error(f"数据库初始化失败: {e}")

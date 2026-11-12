@@ -248,11 +248,10 @@ class FactorEvaluationPipeline:
     async def _init_services(self) -> None:
         if self.db is not None:
             return
-        from zstock.data_management.database_service import get_database_service
         from zstock.data_management.query_service import get_data_query_service
 
-        self.db = get_database_service()
-        self.qs = get_data_query_service()
+        self.db = get_data_query_service()
+        self.qs = self.db
 
     async def load_stock_factor_panel(
         self,
@@ -1157,7 +1156,7 @@ async def run_batch_years(
 
 async def async_main(args: argparse.Namespace) -> int:
     try:
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
 
         await db_module.db_manager.init_mongodb()
     except Exception as e:

@@ -74,7 +74,7 @@ class ZstockDataVerifier:
         print(f"  ⚠️ {msg}")
 
     async def setup(self) -> None:
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
         from zstock.data_management.query_service import DataQueryService
 
         print("📌 初始化 MongoDB...")
@@ -87,7 +87,7 @@ class ZstockDataVerifier:
         self._pass("MongoDB / 查询服务就绪")
 
     async def teardown(self) -> None:
-        from app.core import database as db_module
+        from zstock.common.utils import db_utils as db_module
 
         await db_module.db_manager.close_connections()
         print("✅ 已断开 MongoDB")

@@ -702,8 +702,8 @@ def _init_worker_pool(ohlcv_cache_path: str, scoring_method: str) -> None:
 
 def _reset_worker_singletons() -> None:
     """子进程内重置 DB / 查询服务单例，避免 Motor 绑定已关闭 event loop。"""
-    import app.core.database as db_module
-    from app.core.database import db_manager
+    from zstock.common.utils import db_utils as db_module
+    from zstock.common.utils.db_utils import db_manager
 
     db_manager.mongo_client = None
     db_manager.mongo_db = None
@@ -777,6 +777,20 @@ async def load_ohlcv(start: str, end: str) -> dict:
                 ohlcv_data.update(batch)
         except Exception as e:
             logger.warning("OHLCV 批次失败: %s", e)
+    from zstock.strategy_management.market_book import BOOK_OHLCV_CODES
+
+    try:
+        extra = await qs.get_ohlcv_batch(
+            list(BOOK_OHLCV_CODES),
+            start,
+            end,
+            batch_size=ohlcv_batch_size,
+            query_concurrency=ohlcv_query_concurrency,
+        )
+        if extra:
+            ohlcv_data.update(extra)
+    except Exception as e:
+        logger.warning("指数/ETF/债券行情加载失败: %s", e)
     for code, df in ohlcv_data.items():
         if "trade_date" in df.columns:
             df["trade_date"] = df["trade_date"].apply(normalize_date)

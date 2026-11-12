@@ -7,8 +7,9 @@
 - scores_from_raw()                             回测：原始值 → 门禁 + 加权得分
 - raw_from_doc()                                预计算 Mongo 文档 → scores_from_raw 单股 raw
 
-基本面 f39/f40：调用方传入 fund_provider（data_management.FundamentalDataProvider）；
-未传入则 f39/f40 为 NaN。MongoDB 只存原始值，得分由 scores_from_raw 实时计算。
+基本面 f39/f40：调用方传入 fund_provider，即 query_service.get_fundamental_asof
+的结果 ``{code: {"bps", "holder_change"}}``；未传入则 f39/f40 为 NaN。
+MongoDB 只存原始值，得分由 scores_from_raw 实时计算。
 
 因子权重/极性由 strategy_params.json active_factors.dragon 提供，
 准入门禁由 dragon_layer.gates 驱动。
@@ -113,7 +114,7 @@ class DragonFactors:
         Args:
             sector_jobs: [(sector_code, [code, ...]), ...]
             stock_ohlcv: {code: DataFrame}
-            fund_provider: 调用方装载的基本面缓存；None 则 f39/f40 为 NaN
+            fund_provider: get_fundamental_asof 的结果；None 则 f39/f40 为 NaN
 
         Returns:
             {sector_code: {code: raw_dict}}
@@ -433,10 +434,8 @@ class DragonFactors:
         all_codes &= sector_set
 
         last_close = features.get("last_close", {})
-        provider = fund_provider
-        use_fundamental = bool(
-            trade_date and provider is not None and getattr(provider, "is_loaded", False)
-        )
+        fundamentals = fund_provider if isinstance(fund_provider, dict) else None
+        use_fundamental = bool(trade_date and fundamentals)
 
         result: Dict[str, Dict[str, Any]] = {}
         for code in all_codes:
@@ -464,7 +463,7 @@ class DragonFactors:
             ]
             if use_fundamental:
                 DragonFactors._apply_fundamental_factors(
-                    row, code, trade_date, last_close, provider
+                    row, code, last_close, fundamentals
                 )
             result[code] = row
 
@@ -475,11 +474,12 @@ class DragonFactors:
     def _apply_fundamental_factors(
         row: Dict[str, Any],
         code: str,
-        trade_date: str,
         last_close: Dict[str, float],
-        provider: Any,
+        fundamentals: Dict[str, Dict[str, float]],
     ) -> None:
-        """F3.9 PB / F3.10 股东户数变化（PIT-safe，与预计算路径一致）。
+        """F3.9 PB / F3.10 股东户数变化。
+
+        fundamentals 来自 DataQueryService.get_fundamental_asof，已按公告日截断。
 
         **重要**：`last_close[code]` 必须是**未复权价（raw close）**。
         因为 BPS 是绝对金额、不随除权除息调整，若传入前复权价会让除权后 PB
@@ -487,14 +487,16 @@ class DragonFactors:
         时使用的复权类型由数据层决定，因子层无法反查；若上游改用前复权，
         请务必同步保留一份 raw close 供本函数使用。
         """
+        info = fundamentals.get(code) or {}
         close = last_close.get(code)
-        if close and close > 0:
-            pb_val = provider.compute_pb(code, close, trade_date)
-            if pb_val is not None:
+        bps = info.get("bps")
+        if close and close > 0 and bps:
+            pb_val = float(close) / float(bps)
+            if np.isfinite(pb_val) and pb_val > 0:
                 row["f39_pb"] = pb_val
-        hc_val = provider.get_holder_change(code, trade_date)
-        if hc_val is not None:
-            row["f40_holder_change"] = hc_val
+        hc_val = info.get("holder_change")
+        if hc_val is not None and np.isfinite(float(hc_val)):
+            row["f40_holder_change"] = float(hc_val)
 
     @staticmethod
     def _sorted_ohlcv_map(

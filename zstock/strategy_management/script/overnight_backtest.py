@@ -411,7 +411,7 @@ def _count_steps(args: argparse.Namespace, periods: Dict[str, str]) -> int:
 
 
 async def preflight_checks() -> Dict[str, Any]:
-    from app.core.database import db_manager
+    from zstock.common.utils.db_utils import db_manager
 
     info: Dict[str, Any] = {"ok": True, "issues": []}
     try:
@@ -454,7 +454,7 @@ def backup_strategy_params(output_dir: Path) -> Path:
 
 
 async def check_factor_coverage(start: str, end: str) -> Dict[str, Any]:
-    from app.core.database import db_manager
+    from zstock.common.utils.db_utils import db_manager
 
     db = db_manager.mongo_db
     mkt = await db["zstock_factor_market"].count_documents({"trade_date": {"$gte": start, "$lte": end}})
@@ -870,7 +870,7 @@ async def async_main(args: argparse.Namespace) -> int:
         await init_zstock_database()
     except Exception as e:
         logger.warning("init_zstock_database 失败: %s", e)
-        from app.core.database import db_manager
+        from zstock.common.utils.db_utils import db_manager
         await db_manager.init_mongodb()
 
     try:

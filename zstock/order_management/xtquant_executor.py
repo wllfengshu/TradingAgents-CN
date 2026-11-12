@@ -1,8 +1,8 @@
 """
 XtQuant 执行接口模块
 
-通过注入 QMTUtil（真实）或 MockQMTUtil（模拟）执行订单操作。
-订单数据持久化到 MongoDB，通过 DatabaseService 读写。
+通过注入 QMTUtil（HTTP 桥）执行订单操作。测试可注入同接口的替身。
+订单数据持久化到 MongoDB，通过 DataQueryService 读写。
 """
 
 import logging
@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 
 from zstock.common.entity.order_entity import Order
 from zstock.common.utils.common_utils import normalize_code
-from zstock.common.utils.xtquant_data_utils import to_xt_code
-from zstock.data_management.database_service import get_database_service
+from zstock.common.utils.xtquant_util import to_qmt_code
+from zstock.data_management.query_service import get_data_query_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +39,13 @@ class XtQuantExecutor:
 
     def _db(self):
         if self._db_service is None:
-            self._db_service = get_database_service()
+            self._db_service = get_data_query_service()
         return self._db_service
 
     @staticmethod
     def _to_broker_code(stock_code: str) -> str:
         """6 位或任意格式 → QMT 代码（如 600000.SH）。"""
-        return to_xt_code(normalize_code(stock_code))
+        return to_qmt_code(normalize_code(stock_code))
 
     # 允许推进为终态/流转态的状态图（防止 broker 回报把 filled 打回 pending）
     _TERMINAL_STATUSES = frozenset({"filled", "cancelled", "rejected"})

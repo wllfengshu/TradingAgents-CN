@@ -31,6 +31,7 @@ def test_default_config_matches_ssot(strategy_params):
         "market_overlay",
         "final_score",
         "portfolio",
+        "book_regime",
     ):
         assert key in cfg
         assert cfg[key] == (strategy_params.get(key) or {})
@@ -50,11 +51,15 @@ def test_extract_market_grade_from_attrs_and_columns(green_signals):
 
 
 @pytest.mark.asyncio
-async def test_empty_precomputed_stops_as_no_signals():
+async def test_empty_precomputed_on_red_is_defense_book():
     empty = CrossSectionStrategyPipeline._empty_signals_df("2024-01-02", "red", 0.0)
     pipe = make_offline_pipeline()
     out = await pipe.execute_full_pipeline(trade_date="2024-01-02", precomputed_signals=empty)
-    assert out["status"] == "no_signals"
+    assert out["status"] == "success"
+    assert out["book_state"] == "defense"
+    holdings = out["results"]["final_holdings"]
+    assert float(holdings["weight"].sum()) == pytest.approx(1.0)
+    assert "511260" in set(holdings["code"].astype(str))
 
 
 @pytest.mark.asyncio
@@ -68,17 +73,11 @@ async def test_real_jan_signals_success_and_yellow_scale(real_signals, real_trad
     )
     assert out["status"] == "success"
     assert out["market_grade"] == "yellow"
-    expected_scale = float(real_signals.attrs.get("position_scale", 0.5))
-    if strategy_params.get("target_equity", {}).get("enabled"):
-        regime = str(real_signals.attrs.get("regime", "momentum"))
-        expected_scale = strategy_params["target_equity"]["by_context"].get(
-            f"{regime}_yellow", expected_scale
-        )
-    assert out["statistics"]["position_scale"] == pytest.approx(expected_scale)
+    assert out["book_state"] == "neutral"
     holdings = out["results"]["final_holdings"]
     assert not holdings.empty
-    assert float(holdings["weight"].sum()) <= expected_scale + 1e-6
-    assert set(holdings["code"]) <= set(real_signals["code"].astype(str))
+    assert float(holdings["weight"].sum()) == pytest.approx(1.0)
+    assert float(holdings["weight"].sum()) > 0.90
 
 
 @pytest.mark.asyncio
@@ -94,14 +93,13 @@ async def test_reversal_yellow_reduce_only_blocks_new_entry(
         config=strategy_params,
     )
     assert out["status"] == "success"
-    assert out["reduce_only"] is True
-    assert out["effective_top_k"] == 3
-    assert out["results"]["final_holdings"].empty
+    assert out["book_state"] == "neutral"
+    assert float(out["results"]["final_holdings"]["weight"].sum()) == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio
 async def test_reduce_only_with_runtime_config_only(reversal_yellow_signals):
-    """API/隔夜只拿 build_runtime_config 时，reversal+yellow 仍须只减不加。"""
+    """黄灯走中性行业 ETF 账户，不再在这一层开新股票。"""
     runtime = StrategyPipeline._default_config()
     assert runtime.get("weak_regime_protection")
     td = str(reversal_yellow_signals.iloc[0]["trade_date"])
@@ -113,8 +111,8 @@ async def test_reduce_only_with_runtime_config_only(reversal_yellow_signals):
         config=runtime,
     )
     assert out["status"] == "success"
-    assert out["reduce_only"] is True
-    assert out["results"]["final_holdings"].empty
+    assert out["book_state"] == "neutral"
+    assert float(out["results"]["final_holdings"]["weight"].sum()) == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio
@@ -140,10 +138,13 @@ async def test_optimization_failure_status(real_signals, real_trade_date):
         def optimize_portfolio(self, **kwargs):
             raise RuntimeError("opt boom")
 
+    from zstock.strategy_management.market_book import BookDecision
+
     pipe = StrategyPipeline(
         factor_pipeline=make_offline_pipeline()._factor_pipeline,
         portfolio_optimizer=_Boom(),  # type: ignore[arg-type]
     )
+    pipe.book.step = lambda *args, **kwargs: BookDecision("attack", None, "green")  # type: ignore[method-assign]
     out = await pipe.execute_full_pipeline(trade_date=real_trade_date, precomputed_signals=real_signals)
     assert out["status"] == "optimization_failed"
 

@@ -2,7 +2,7 @@
 
 ## 概述
 
-这是 zstock 量化交易系统的数据管理层，提供统一的数据获取、缓存、降级与统计能力。
+这是 zstock 量化交易系统的数据管理层，提供统一的数据获取、降级与统计能力。
 
 系统分层位置：
 
@@ -20,9 +20,7 @@
 
 ## 核心组件
 
-### 1) 缓存管理器：`cache_service.py`
+### 1) 数据源管理器：`database_service.py`
 
-### 2) 数据源管理器：`database_service.py`
-
-### 3) 查询服务：`query_service.py`
+### 2) 查询服务：`query_service.py`
 

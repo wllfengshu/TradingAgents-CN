@@ -152,7 +152,7 @@ class FakeQMT:
         return self._positions
 
     def get_realtime_quote(self, codes: List[str]) -> Dict[str, Dict]:
-        from zstock.common.utils.xtquant_data_utils import to_xt_code
+        from zstock.common.utils.xtquant_util import to_qmt_code
         from zstock.common.utils.common_utils import normalize_code
 
         out = {}
@@ -161,7 +161,7 @@ class FakeQMT:
             px = self.price_map.get(pure) or self.price_map.get(c)
             if px:
                 out[c] = {"lastPrice": float(px)}
-                out[to_xt_code(pure)] = {"lastPrice": float(px)}
+                out[to_qmt_code(pure)] = {"lastPrice": float(px)}
         return out
 
     def buy(self, code, amount, price=None, remark="", volume=None):

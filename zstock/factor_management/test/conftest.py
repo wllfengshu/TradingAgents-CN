@@ -98,8 +98,6 @@ def make_offline_pipeline(config: Dict[str, Any], qs=None):
     pipe._reset_precomputed()
     pipe._all_stocks_cache = None
     pipe._sectors_cache = None
-    pipe._fund_provider = None
-    pipe._fund_provider_tried = False
     pipe._style_cache = {}
     return pipe
 

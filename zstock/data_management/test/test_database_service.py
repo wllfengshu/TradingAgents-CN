@@ -1,8 +1,8 @@
-"""DatabaseService：FakeMongo 覆盖 CRUD，不写真实库。"""
+"""DataQueryService 的通用读写：FakeMongo 覆盖，不写真实库。"""
 
 import pytest
 
-from zstock.data_management.database_service import DatabaseService
+from zstock.data_management.query_service import DataQueryService
 from zstock.data_management.test.conftest import FakeMongoDB
 
 
@@ -10,10 +10,10 @@ from zstock.data_management.test.conftest import FakeMongoDB
 def db_service(monkeypatch):
     fake = FakeMongoDB()
     monkeypatch.setattr(
-        "zstock.data_management.database_service.get_database",
+        "zstock.data_management.query_service.get_database",
         lambda: fake,
     )
-    return DatabaseService(), fake
+    return DataQueryService(), fake
 
 
 @pytest.mark.asyncio
@@ -66,24 +66,25 @@ def test_prepare_update_wraps_set(db_service):
     assert svc._prepare_update(already) is already
 
 
-def test_get_database_service_singleton(monkeypatch):
-    import zstock.data_management.database_service as ds
-    from zstock.data_management.test.conftest import FakeMongoDB
+def test_get_data_query_service_singleton(monkeypatch):
+    import zstock.data_management.query_service as qs
 
-    monkeypatch.setattr(ds, "get_database", lambda: FakeMongoDB())
-    monkeypatch.setattr(ds, "_database_service", None)
-    a = ds.get_database_service()
-    b = ds.get_database_service()
+    fake = FakeMongoDB()
+    monkeypatch.setattr(qs, "get_database", lambda: fake)
+    monkeypatch.setattr(qs, "_data_query_service", None)
+    a = qs.get_data_query_service()
+    b = qs.get_data_query_service()
     assert a is b
+    assert a.db is fake
 
 
 def test_init_fails_without_db(monkeypatch):
     monkeypatch.setattr(
-        "zstock.data_management.database_service.get_database",
+        "zstock.data_management.query_service.get_database",
         lambda: None,
     )
-    with pytest.raises(Exception):
-        DatabaseService()
+    with pytest.raises(RuntimeError):
+        DataQueryService()
 
 
 class _BoomCol:
@@ -132,10 +133,10 @@ class _BoomDB:
 @pytest.mark.asyncio
 async def test_database_service_error_paths(monkeypatch):
     monkeypatch.setattr(
-        "zstock.data_management.database_service.get_database",
+        "zstock.data_management.query_service.get_database",
         lambda: _BoomDB(),
     )
-    svc = DatabaseService()
+    svc = DataQueryService()
     with pytest.raises(RuntimeError):
         await svc.query("zstock_ohlcv", {"code": "603201"})
     with pytest.raises(RuntimeError):

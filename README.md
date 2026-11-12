@@ -1,0 +1,1 @@
+https://dict.thinktrader.net/

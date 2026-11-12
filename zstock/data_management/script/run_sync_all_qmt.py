@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""依次运行 stock_info / ohlcv / fundamental 同步（经 QMT 子进程调用 xtquant）。"""
+"""依次运行股票列表、日线、基本面同步。日线从 stockdb 读取。"""
 from __future__ import annotations
 
 import asyncio
@@ -20,9 +20,6 @@ logger = logging.getLogger(__name__)
 
 
 async def _run_all() -> None:
-    from zstock.data_management.script.qmt_subprocess_bridge import patch_xtquant_data_utils
-    patch_xtquant_data_utils()
-
     logger.info('=' * 50)
     logger.info('▶ [1/3] sync_stock_info')
     logger.info('=' * 50)

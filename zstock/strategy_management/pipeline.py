@@ -15,6 +15,17 @@ from typing import Any, Dict, List, Optional, Set
 import numpy as np
 import pandas as pd
 
+from .market_book import (
+    BOND,
+    MIN_UTILIZATION,
+    REBALANCE_BAND,
+    MarketBook,
+    grade_from_index_bars,
+    holdings_frame,
+    needs_book_trade,
+    park_treasury,
+    weight_map,
+)
 from .portfolio_optimizer import PortfolioOptimizer
 from .risk_manager import RiskManager
 from .turnover_controller import TurnoverController
@@ -48,6 +59,8 @@ class StrategyPipeline:
             )
         self._turnover_controller = turnover_controller
         self._pipeline_result: Dict[str, Any] = {}
+        book_cfg = self._default_config().get("book_regime") or {}
+        self.book = MarketBook(confirm_green_days=int(book_cfg.get("confirm_green_days", 3)))
         logger.info("✅ StrategyPipeline(factor) 初始化完成")
 
     async def _generate_signals(
@@ -88,6 +101,10 @@ class StrategyPipeline:
         precomputed_signals: Optional[pd.DataFrame] = None,
         ohlcv_by_code: Optional[Dict[str, pd.DataFrame]] = None,
         prev_f35_by_code: Optional[Dict[str, float]] = None,
+        index_closes: Optional[List[float]] = None,
+        asset_closes: Optional[Dict[str, List[float]]] = None,
+        index_bars: Optional[List[dict]] = None,
+        respect_book_rebalance_band: bool = False,
     ) -> Dict:
         """
         Args:
@@ -102,6 +119,8 @@ class StrategyPipeline:
                 跳过 query_service 真实拉数。
             ohlcv_by_code: 趋势退出用的个股日线；缺省则「未创新高」支路为 False。
             prev_f35_by_code: 上一交易日 f35，供 bollinger_require_declining。
+            index_bars: 指数 K 线（不含当日），与回测 grade_from_index_bars 同源。
+            respect_book_rebalance_band: 中性/防守日在偏离带内时保留当前持仓。
         """
         cfg = self._merge_config(config)
         td = trade_date or datetime.now().strftime('%Y-%m-%d')
@@ -125,8 +144,74 @@ class StrategyPipeline:
                 prebuilt_data=prebuilt_data,
             )
         results['signals'] = signals_df
-        results['market_grade'] = self._extract_market_grade(signals_df)
+        signal_grade = self._extract_market_grade(signals_df)
+        style_regime = "neutral"
+        if hasattr(signals_df, "attrs") and signals_df.attrs.get("regime") is not None:
+            style_regime = str(signals_df.attrs.get("regime"))
+        results["style_regime"] = style_regime
+        book_grade = self._resolve_book_grade(signal_grade, index_bars=index_bars)
+        if self._book_enabled(cfg):
+            results["signal_market_grade"] = signal_grade
+            results["market_grade"] = book_grade
+            if index_bars and index_closes is None:
+                index_closes = [float(r["close"]) for r in index_bars]
+        else:
+            results["market_grade"] = signal_grade
+        market_grade = str(results["market_grade"])
+        decision = None
+        if self._book_enabled(cfg):
+            held: List[str] = []
+            if current_positions is not None and not current_positions.empty and "code" in current_positions.columns:
+                held = [str(code) for code in current_positions["code"].tolist()]
+            book_cfg = cfg.get("book_regime") or {}
+            decision = self.book.step(
+                trade_date=td,
+                grade=book_grade,
+                index_closes=index_closes,
+                nav=float(total_capital) if total_capital else None,
+                closes=asset_closes,
+                held=held,
+                confirm_green_days=int(book_cfg.get("confirm_green_days", self.book.confirm_green_days)),
+            )
+            results["book_state"] = decision.state
+            if decision.weights is not None:
+                target_weights = dict(decision.weights)
+                if respect_book_rebalance_band and current_positions is not None and not current_positions.empty:
+                    band = float(book_cfg.get("rebalance_band", REBALANCE_BAND))
+                    min_util = float(book_cfg.get("min_utilization", MIN_UTILIZATION))
+                    cur = weight_map(current_positions)
+                    if not needs_book_trade(
+                        cur,
+                        target_weights,
+                        band=band,
+                        min_utilization=min_util,
+                    ):
+                        logger.info(
+                            "Book %s: 偏离在 %.0f%% 带内且利用率达标，保留当前持仓",
+                            decision.state,
+                            band * 100,
+                        )
+                        keep = current_positions.copy()
+                        if "weight" not in keep.columns:
+                            keep["weight"] = 0.0
+                        return self._book_result(
+                            td,
+                            results,
+                            decision.state,
+                            keep,
+                            total_capital,
+                            rebalance_skipped=True,
+                        )
+                return self._book_result(
+                    td, results, decision.state, holdings_frame(target_weights), total_capital
+                )
         if signals_df.empty:
+            if self._book_enabled(cfg):
+                logger.warning("⚠️ 进攻日无股票信号，空闲资金买入国债")
+                results["attack_idle"] = True
+                return self._book_result(
+                    td, results, "attack", holdings_frame({BOND: 1.0}), total_capital
+                )
             logger.warning("⚠️ 无信号，管道终止（由回测层决定减仓/清仓）")
             self._pipeline_result = {
                 'status': 'no_signals',
@@ -142,10 +227,8 @@ class StrategyPipeline:
         else:
             buy_df = signals_df
 
-        regime = "neutral"
-        if hasattr(signals_df, "attrs"):
-            regime = str(signals_df.attrs.get("regime", regime))
-        market_grade = self._extract_market_grade(signals_df)
+        regime = style_regime
+        market_grade = str(results.get("market_grade", signal_grade))
 
         params_root = cfg
         if self._strategy_blocks_new_on_red(params_root) and market_grade == "red":
@@ -294,7 +377,9 @@ class StrategyPipeline:
                 new_holdings=optimized_holdings,
                 current_holdings=current_positions,
                 buffer_threshold=tc_cfg.get('buffer_threshold', 0.25),
-                min_hold_days=int(tc_cfg.get('min_hold_days', 0)),
+                min_hold_days=int(
+                    tc_cfg.get("min_hold_days", self._turnover_controller.min_hold_days)
+                ),
                 trade_date=td,
                 force_exit_codes=force_exit_codes,
                 fill_open_slots=bool(tc_cfg.get('fill_open_slots', False)),
@@ -349,7 +434,9 @@ class StrategyPipeline:
                 )
 
         position_scale = 1.0
-        if self._position_scale_in_strategy(params_root):
+        if self._book_enabled(cfg) and decision is not None and decision.state == "attack":
+            position_scale = 1.0
+        elif self._position_scale_in_strategy(params_root):
             m1_default = None
             if not signals_df.empty:
                 for col in ("position_scale", "position_scale_factor"):
@@ -395,6 +482,10 @@ class StrategyPipeline:
                 f"权益仓位={final_holdings['weight'].sum():.2%}"
             )
 
+        if self._book_enabled(cfg) and decision is not None and decision.state == "attack":
+            bond = str((cfg.get("book_regime") or {}).get("bond_code") or BOND)
+            final_holdings = park_treasury(final_holdings, bond)
+            results["book_state"] = "attack"
         results['final_holdings'] = final_holdings
         results['trading_costs'] = trading_costs
         results['position_scale'] = position_scale
@@ -405,7 +496,11 @@ class StrategyPipeline:
             'trade_date': td,
             'execution_time': datetime.now().astimezone().isoformat(),
             'market_grade': results['market_grade'],
+            'signal_market_grade': results.get('signal_market_grade', signal_grade),
+            'style_regime': regime,
             'regime': regime,
+            'book_state': results.get('book_state'),
+            'attack_idle': bool(results.get('attack_idle', False)),
             'effective_top_k': effective_top_k,
             'reduce_only': reduce_only,
             'statistics': {
@@ -441,6 +536,16 @@ class StrategyPipeline:
         if isinstance(sub, dict) and sub.get("top_k") is not None:
             return int(sub["top_k"])
         return int(fs.get("top_k", 5))
+
+    @staticmethod
+    def _resolve_book_grade(
+        signal_grade: str,
+        *,
+        index_bars: Optional[List[dict]] = None,
+    ) -> str:
+        if index_bars:
+            return grade_from_index_bars(index_bars)
+        return str(signal_grade or "unknown").lower()
 
     @staticmethod
     def _extract_market_grade(signals_df: Optional[pd.DataFrame]) -> str:
@@ -732,6 +837,62 @@ class StrategyPipeline:
             ):
                 out.add(str(code))
         return out
+
+    @staticmethod
+    def _book_enabled(cfg: Dict[str, Any]) -> bool:
+        book = cfg.get("book_regime") or {}
+        return bool(book.get("enabled", False))
+
+    def _book_result(
+        self,
+        trade_date: str,
+        results: Dict[str, Any],
+        state: str,
+        holdings: pd.DataFrame,
+        total_capital: float,
+        *,
+        rebalance_skipped: bool = False,
+    ) -> Dict[str, Any]:
+        results["final_holdings"] = holdings
+        results["book_state"] = state
+        results["trading_costs"] = {
+            "turnover": 0.0,
+            "cost_pct": 0.0,
+            "cost_amount": 0.0,
+            "fee_rate": 0.0,
+        }
+        results["position_scale"] = 1.0
+        results["force_exit_codes"] = []
+        style = str(results.get("style_regime") or "neutral")
+        summary = {
+            "status": "success",
+            "trade_date": trade_date,
+            "execution_time": datetime.now().astimezone().isoformat(),
+            "market_grade": results.get("market_grade"),
+            "signal_market_grade": results.get("signal_market_grade"),
+            "style_regime": style,
+            "regime": style,
+            "book_state": state,
+            "attack_idle": bool(results.get("attack_idle", False)),
+            "book_rebalance_skipped": rebalance_skipped,
+            "effective_top_k": 0,
+            "reduce_only": False,
+            "statistics": {
+                "signals_count": 0,
+                "universe_count": len(results["signals"]) if results.get("signals") is not None else 0,
+                "optimized_holdings": len(holdings),
+                "final_holdings": len(holdings),
+                "risk_status": "passed",
+                "turnover": 0.0,
+                "cost_pct": 0.0,
+                "total_capital": total_capital,
+                "position_scale": 1.0,
+            },
+            "results": results,
+        }
+        self._pipeline_result = summary
+        logger.info("✅ 三状态账户 %s: %d 个目标", state, len(holdings))
+        return summary
 
     @staticmethod
     def _default_config() -> Dict[str, Dict]:

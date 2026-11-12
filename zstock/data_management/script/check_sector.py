@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.core import database as db
+from zstock.common.utils import db_utils as db
 
 async def check():
     await db.db_manager.init_mongodb()
