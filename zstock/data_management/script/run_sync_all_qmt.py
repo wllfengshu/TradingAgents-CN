@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-"""依次运行股票列表、日线、基本面同步。日线从 stockdb 读取。"""
+"""兼容入口：转发到每晚流水线（stockdb 同步 + 因子预计算）。
+
+历史名称含 QMT，实际日线/资金流已改走 stockdb。
+新代码请直接：
+    python -m zstock.data_management.script.nightly_pipeline
+"""
 from __future__ import annotations
 
-import asyncio
-import logging
 import sys
 from pathlib import Path
 
@@ -11,43 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)-7s  %(message)s',
-    datefmt='%H:%M:%S',
-)
-logger = logging.getLogger(__name__)
+from zstock.data_management.script.nightly_pipeline import main
 
 
-async def _run_all() -> None:
-    logger.info('=' * 50)
-    logger.info('▶ [1/3] sync_stock_info')
-    logger.info('=' * 50)
-    from zstock.data_management.script import sync_stock_info
-    await sync_stock_info.main()
-
-    logger.info('=' * 50)
-    logger.info('▶ [2/3] sync_ohlcv  (增量: 2026-08-19 ~ 今天)')
-    logger.info('=' * 50)
-    sys.argv = ['sync_ohlcv.py', '--start', '2026-08-19']
-    from zstock.data_management.script import sync_ohlcv
-    await sync_ohlcv.main()
-
-    logger.info('=' * 50)
-    logger.info('▶ [3/3] sync_fundamental')
-    logger.info('=' * 50)
-    sys.argv = ['sync_fundamental.py']
-    from zstock.data_management.script import sync_fundamental
-    await sync_fundamental.main()
-
-    logger.info('=' * 50)
-    logger.info('✅ 三项同步全部完成')
-    logger.info('=' * 50)
-
-
-def main() -> None:
-    asyncio.run(_run_all())
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

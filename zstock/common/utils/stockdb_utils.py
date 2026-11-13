@@ -27,6 +27,8 @@ _FLOW_CHUNK = 80
 _BAR_FIELDS = {
     "date": "trade_date",
     "trade_date": "trade_date",
+    "datetime": "trade_date",
+    "time": "trade_date",
     "open": "open",
     "high": "high",
     "low": "low",
@@ -35,7 +37,39 @@ _BAR_FIELDS = {
     "vol": "volume",
     "amount": "amount",
     "money": "amount",
+    "pre_close": "pre_close",
+    "pct_chg": "pct_chg",
+    "amplitude": "amplitude",
 }
+
+
+def _normalize_bar_timestamp(value) -> str:
+    """日线 → YYYY-MM-DD；分钟线 → YYYY-MM-DD HH:MM:SS。
+
+    stockdb 分钟线 date 常见为 int/str：20260916093500。
+    """
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        try:
+            # pandas/Timestamp / datetime
+            if getattr(value, "hour", None) is not None or " " in str(value):
+                return value.strftime("%Y-%m-%d %H:%M:%S")
+            return value.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    digits = "".join(ch for ch in str(value).strip() if ch.isdigit())
+    if len(digits) >= 14:
+        return (
+            f"{digits[:4]}-{digits[4:6]}-{digits[6:8]} "
+            f"{digits[8:10]}:{digits[10:12]}:{digits[12:14]}"
+        )
+    if len(digits) == 12:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]} {digits[8:10]}:{digits[10:12]}:00"
+    if len(digits) == 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return normalize_date(str(value))
+
 
 
 class StockDbError(RuntimeError):
@@ -86,8 +120,10 @@ class StockDbClient:
         symbols = [normalize_code(code) for code in codes if normalize_code(code)]
         if not symbols:
             return {}
+        # SDK 约定：rd.get_data 的 symbols 参数始终传列表，
+        # 单代码也包一成列表，避免字符串/列表两种分支导致行为不一致。
         raw = sdk.rd.get_data(
-            symbols if len(symbols) > 1 else symbols[0],
+            symbols,
             start=_compact_date(start),
             end=_compact_date(end),
             frequency=frequency,
@@ -157,7 +193,17 @@ def _group_bars(raw, symbols: Sequence[str]) -> Dict[str, list]:
     if isinstance(raw, dict):
         out = {}
         for code in symbols:
-            rows = raw.get(code) or raw.get(code.lstrip("0")) or []
+            rows = raw.get(code) or []
+            # SDK 部分版本对代码做了去前导零处理（如 "000001" → "1"），
+            # 用 int 比对而非 lstrip("0")，避免 "000010" 被截成 "10" 后误匹配 "0010"。
+            if not rows:
+                for key in raw:
+                    try:
+                        if int(key) == int(code):
+                            rows = raw[key]
+                            break
+                    except (ValueError, TypeError):
+                        continue
             out[code] = list(rows) if isinstance(rows, list) else _as_records(rows)
         return out
     if len(symbols) == 1:
@@ -187,11 +233,13 @@ def _bars_frame(code: str, rows: list) -> pd.DataFrame:
             if target and target not in item:
                 item[target] = value
         if "trade_date" in item:
-            item["trade_date"] = normalize_date(str(item["trade_date"]))
+            item["trade_date"] = _normalize_bar_timestamp(item["trade_date"])
         records.append(item)
     frame = pd.DataFrame(records)
     if frame.empty:
-        return pd.DataFrame(columns=["code", "trade_date", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=["code", "trade_date", "open", "high", "low", "close", "volume", "amount"]
+        )
     return frame
 
 

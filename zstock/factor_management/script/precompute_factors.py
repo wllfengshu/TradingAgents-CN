@@ -41,10 +41,6 @@ from zstock.common.utils.common_utils import (
     is_index_code,
     normalize_code,
 )
-from zstock.common.utils.resource_budget import (
-    cap_worker_count,
-    compute_resource_budget,
-)
 from zstock.factor_management.dragon_factors import DragonFactors
 from zstock.factor_management.force_factors import ForceFactors
 from zstock.factor_management.market_factors import MarketFactors
@@ -71,67 +67,59 @@ def _is_stock_code(code: Any) -> bool:
     return not is_index_code(c)
 
 
+def _cpu_default_workers() -> int:
+    return max(1, (os.cpu_count() or 8) // 2)
+
+
 def _resolve_worker_count(
     env_key: str,
-    budget_value: int,
+    default_value: int,
     *,
     name: str,
 ) -> int:
     raw = os.environ.get(env_key)
     if raw:
         try:
-            requested = max(1, int(raw))
-            return cap_worker_count(requested, budget_value, name=name)
+            return max(1, int(raw))
         except ValueError:
-            logger.warning("忽略无效环境变量 %s=%r", env_key, raw)
-    return budget_value
+            logger.warning("忽略无效环境变量 %s=%r，使用默认 %s=%d", env_key, raw, name, default_value)
+    return max(1, default_value)
 
 
 def _apply_resource_budget(
     *,
-    resource_fraction: Optional[float],
+    resource_fraction: Optional[float] = None,
     compute_workers: Optional[int],
     load_workers: Optional[int],
     query_workers: Optional[int],
-) -> Tuple[int, int, int, "ResourceBudget"]:
-    from zstock.common.utils.resource_budget import ResourceBudget
-
-    if resource_fraction is not None:
-        os.environ["ZSTOCK_RESOURCE_FRACTION"] = str(resource_fraction)
-    budget = compute_resource_budget(
-        fraction=resource_fraction if resource_fraction is not None else None
+) -> Tuple[int, int, int]:
+    """按显式参数 / 环境变量 / CPU 半数给出并发；resource_fraction 已废弃忽略。"""
+    del resource_fraction  # 兼容旧调用签名
+    cpu_half = _cpu_default_workers()
+    compute = (
+        max(1, int(compute_workers))
+        if compute_workers is not None
+        else _resolve_worker_count("ZSTOCK_PRECOMPUTE_WORKERS", cpu_half, name="workers")
     )
-
-    if compute_workers is not None:
-        compute = cap_worker_count(
-            compute_workers, budget.compute_workers, name="workers"
+    load_default = max(2, min(8, max(1, compute // 2)))
+    load = (
+        max(1, int(load_workers))
+        if load_workers is not None
+        else _resolve_worker_count(
+            "ZSTOCK_PRECOMPUTE_LOAD_WORKERS", load_default, name="load-workers"
         )
-    else:
-        compute = _resolve_worker_count(
-            "ZSTOCK_PRECOMPUTE_WORKERS", budget.compute_workers, name="workers"
-        )
-
-    if load_workers is not None:
-        load = cap_worker_count(
-            load_workers, budget.load_workers, name="load-workers"
-        )
-    else:
-        load = _resolve_worker_count(
-            "ZSTOCK_PRECOMPUTE_LOAD_WORKERS", budget.load_workers, name="load-workers"
-        )
-
-    if query_workers is not None:
-        query = cap_worker_count(
-            query_workers, budget.query_workers, name="query-workers"
-        )
-    else:
-        query = _resolve_worker_count(
+    )
+    query_default = max(4, min(12, cpu_half))
+    query = (
+        max(1, int(query_workers))
+        if query_workers is not None
+        else _resolve_worker_count(
             "ZSTOCK_PRECOMPUTE_QUERY_WORKERS",
-            budget.query_workers,
+            query_default,
             name="query-workers",
         )
-
-    return compute, load, query, budget
+    )
+    return compute, load, query
 
 
 def _sort_ohlcv_frame(code: str, df: pd.DataFrame) -> Tuple[str, pd.DataFrame]:
@@ -424,20 +412,17 @@ class FactorPrecomputeService:
             self.compute_workers,
             self.load_workers,
             self.query_workers,
-            budget,
         ) = _apply_resource_budget(
             resource_fraction=resource_fraction,
             compute_workers=compute_workers,
             load_workers=load_workers,
             query_workers=query_workers,
         )
-        self.resource_budget = budget
         self._load_fundamentals = load_fundamentals
         self.fund_provider: Optional[Any] = None
         logger.info(
             "FactorPrecomputeService 初始化完成 "
-            f"(资源预算={budget.resource_fraction:.0%}, "
-            f"内存={budget.total_memory_gb}GB, CPU={budget.cpu_cores}核, "
+            f"(CPU={os.cpu_count() or 0}核, "
             f"compute={self.compute_workers}, load={self.load_workers}, "
             f"query={self.query_workers})"
         )

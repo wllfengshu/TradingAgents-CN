@@ -215,13 +215,10 @@ class FactorEvaluationPipeline:
         self.decay_max = decay_max
         self.layer = layer
         self.field = field
-        from zstock.common.utils.resource_budget import (
-            cap_worker_count,
-            compute_resource_budget,
-        )
+        import os
 
-        budget = compute_resource_budget()
-        self.workers = cap_worker_count(workers, budget.compute_workers, name="workers")
+        default_workers = max(1, (os.cpu_count() or 8) // 2)
+        self.workers = max(1, int(workers)) if workers is not None else default_workers
 
         if output_dir:
             self.output_dir = Path(output_dir)

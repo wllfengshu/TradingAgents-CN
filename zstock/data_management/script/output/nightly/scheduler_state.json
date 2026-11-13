@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "hour": 21,
+  "minute": 0,
+  "last_run": null,
+  "last_status": null,
+  "last_message": "",
+  "next_run": "2026-11-13 21:00:00"
+}

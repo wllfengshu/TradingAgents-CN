@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from zstock.common.entity.order_entity import Order
 from zstock.common.utils.common_utils import normalize_code
-from zstock.common.utils.xtquant_util import to_qmt_code
+from zstock.common.utils.qmt_util import to_qmt_code
 from zstock.data_management.query_service import get_data_query_service
 
 logger = logging.getLogger(__name__)

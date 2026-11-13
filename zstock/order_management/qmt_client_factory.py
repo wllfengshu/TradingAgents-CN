@@ -21,7 +21,7 @@ class QMTClientFactory:
         del prefer_real, allow_mock
         last_error: str | None = None
         try:
-            from zstock.common.utils.xtquant_util import QMTUtil
+            from zstock.common.utils.qmt_util import QMTUtil
 
             client = QMTUtil()
             if client.connect():

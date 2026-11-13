@@ -44,8 +44,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from zstock.common.utils.resource_budget import cap_worker_count, compute_resource_budget
-
 logger = logging.getLogger(__name__)
 
 # ProcessPool 子进程共享（initializer 注入）
@@ -815,14 +813,12 @@ async def async_main(args: argparse.Namespace) -> int:
             logger.error("无 OHLCV，退出")
             return 1
         provider = make_ohlcv_provider_from_dict(ohlcv)
-        budget = compute_resource_budget()
-        workers = cap_worker_count(args.workers, budget.compute_workers, name="workers")
-        logger.info(
-            "资源预算: CPU=%d 内存=%.1fGB → workers=%d",
-            budget.cpu_cores,
-            budget.total_memory_gb,
-            workers,
-        )
+        import os
+
+        cpu = os.cpu_count() or 8
+        default_workers = max(1, cpu // 2)
+        workers = max(1, int(args.workers)) if args.workers else default_workers
+        logger.info("workers=%d (CPU=%d)", workers, cpu)
         opt = RealGridSearchOptimizer(
             output_dir=Path(args.output) if args.output else None,
             scoring_method=args.scoring_method,

@@ -6,6 +6,7 @@ WAN_TO_YUAN = 10000.0
 
 # =========================== 通用工具 ===========================
 
+import math
 from typing import Optional
 
 def normalize_code(symbol: str) -> str:
@@ -228,7 +229,6 @@ def minmax_normalize(values_dict, default_val: float = 50.0) -> dict:
     """
     if not values_dict:
         return {}
-    import math
     clean = {
         k: float(v)
         for k, v in values_dict.items()

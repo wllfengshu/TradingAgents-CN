@@ -8,4 +8,6 @@ motor
 pydantic
 requests
 pytest
+fastapi
+uvicorn[standard]
 

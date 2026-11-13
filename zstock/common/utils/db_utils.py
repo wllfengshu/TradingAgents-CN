@@ -16,7 +16,11 @@ mongo_db = None
 
 
 def _load_project_env() -> None:
-    """把项目根目录 .env 填进环境变量，不覆盖进程里已经设置的值。"""
+    """把项目根目录 .env 填进环境变量，不覆盖进程里已经设置的值。
+
+    仅支持简单 KEY=VALUE 格式（不含多行值、转义字符、export 前缀）。
+    项目未引入 python-dotenv，如需高级特性再迁移。
+    """
     env_path = Path(__file__).resolve().parents[3] / ".env"
     if not env_path.is_file():
         return
@@ -125,9 +129,4 @@ async def init_zstock_database() -> None:
 
 async def close_zstock_database() -> None:
     """关闭 zstock 数据库连接。"""
-    await close_database()
-
-
-async def close_database() -> None:
-    """关闭 MongoDB 连接。"""
     await db_manager.close_connections()

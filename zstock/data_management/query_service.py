@@ -3,7 +3,7 @@
 
 集合：
     zstock_stock_info       — 股票元数据（is_mainboard / is_st）
-    zstock_ohlcv            — 行情，period: 'D' / 'W' / 'M'
+    zstock_ohlcv            — 行情，period: 'D' / 'W' / 'M' / '5m' / '1m'
     zstock_capital_flow     — 个股资金流（L2_daily / today / ...）
     zstock_sector           — 板块定义 + 成分股内嵌
     zstock_factor_market    — M1 市场因子预计算
@@ -23,14 +23,17 @@ import os
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from zstock.common.utils.common_utils import normalize_code, normalize_date
-from zstock.common.utils.resource_budget import default_query_concurrency
 
 from zstock.common.utils.db_utils import get_database
+
+
+def _default_query_concurrency() -> int:
+    return max(4, min(12, (os.cpu_count() or 8) // 2))
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +55,20 @@ COL_FUNDAMENTAL_HOLDER = "zstock_fundamental_holder"
 # 资金流默认周期：通达信 L2 历史；东财快照为 today/3day/5day/10day
 PERIOD_L2_DAILY = "L2_daily"
 
-# period 映射：公开 API 用 daily/weekly/monthly，落库用 D/W/M
-_PERIOD_MAP = {"daily": "D", "weekly": "W", "monthly": "M"}
+# period 映射：公开 API → 落库 period
+_PERIOD_MAP = {
+    "daily": "D",
+    "1d": "D",
+    "D": "D",
+    "weekly": "W",
+    "W": "W",
+    "monthly": "M",
+    "M": "M",
+    "5m": "5m",
+    "5min": "5m",
+    "1m": "1m",
+    "1min": "1m",
+}
 
 # OHLCV 批量查询默认字段（减少网络传输）
 _OHLCV_PROJECTION = {
@@ -100,11 +115,107 @@ class DataQueryService:
             cur = chunk_end + timedelta(days=1)
         return windows
 
+    _instance: ClassVar[Optional["DataQueryService"]] = None
+
+    @classmethod
+    def get_data_query_service(cls) -> "DataQueryService":
+        """进程内单例。"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """清空单例，使下次 get_data_query_service 重新初始化。
+
+        close_connections 后调用，避免单例持有已关闭的 db 引用。
+        """
+        cls._instance = None
+
+    @staticmethod
+    def _finite_float(val: Any) -> Optional[float]:
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(num):
+            return None
+        return num
+
+    @staticmethod
+    def _fundamental_asof_map(
+        pershare_docs: List[Dict],
+        holder_docs: List[Dict],
+    ) -> Dict[str, Dict[str, float]]:
+        """把已按公告日截断的文档收成每股最新 BPS 与股东户数环比。"""
+        out: Dict[str, Dict[str, float]] = {}
+        bps_ann: Dict[str, str] = {}
+        for doc in pershare_docs:
+            code = doc.get("code")
+            ann = doc.get("ann_date")
+            bps = DataQueryService._finite_float(doc.get("bps"))
+            if not code or not ann or bps is None or bps == 0:
+                continue
+            ann_s = str(ann)
+            prev = bps_ann.get(code)
+            if prev is not None and ann_s < prev:
+                continue
+            bps_ann[code] = ann_s
+            out.setdefault(code, {})["bps"] = bps
+
+        by_code: Dict[str, List[Tuple[str, str, float]]] = defaultdict(list)
+        for doc in holder_docs:
+            code = doc.get("code")
+            ann = doc.get("ann_date")
+            end = doc.get("end_date")
+            sh = DataQueryService._finite_float(doc.get("shareholder"))
+            if not code or not ann or not end or sh is None or sh <= 0:
+                continue
+            by_code[code].append((str(end), str(ann), sh))
+
+        for code, records in by_code.items():
+            records.sort(key=lambda item: item[0])
+            chosen_ann: Optional[str] = None
+            chosen_rate: Optional[float] = None
+            for i in range(1, len(records)):
+                prev_sh = records[i - 1][2]
+                curr_sh = records[i][2]
+                ann = records[i][1]
+                rate = (curr_sh - prev_sh) / prev_sh
+                if not math.isfinite(rate):
+                    continue
+                if chosen_ann is None or ann >= chosen_ann:
+                    chosen_ann = ann
+                    chosen_rate = rate
+            if chosen_rate is not None:
+                out.setdefault(code, {})["holder_change"] = chosen_rate
+        return out
+
     def __init__(self):
-        self.db = get_database()
-        if self.db is None:
-            raise RuntimeError("数据源未初始化")
+        # 触发一次 get_database() 验证连接已初始化；
+        # 不缓存返回值——close_connections 后旧引用会失效，
+        # 每次通过 property 动态获取保证重连后自动生效。
+        _ = self.db
         logger.info("查询服务初始化成功")
+
+    @property
+    def db(self):
+        """动态获取 MongoDB 数据库，避免 close_connections 后持有过期引用。
+
+        测试可通过 ``qs.db = fake_db`` 注入 mock，注入后优先使用注入值。
+        """
+        override = self.__dict__.get("_db_override")
+        if override is not None:
+            return override
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB 客户端未初始化，请先调用 db_manager.init_mongodb()")
+        return db
+
+    @db.setter
+    def db(self, value):
+        """允许测试注入 fake db。"""
+        self.__dict__["_db_override"] = value
 
     # ==================== 数据查询方法 ====================
 
@@ -125,11 +236,11 @@ class DataQueryService:
         try:
             result = await self.db[collection].find(query, **kwargs).to_list(None)
             if result is None:
-                return None
-            logger.debug(f"📊 查询 {collection}: 找到 {len(result)} 条记录")
+                result = []
+            logger.debug(f"查询 {collection}: 找到 {len(result)} 条记录")
             return result
         except Exception as e:
-            logger.error(f"❌ 查询失败 {collection}: {e}")
+            logger.error(f"查询失败 {collection}: {e}")
             raise
 
     async def query_one(self, collection: str, query: Dict = None, **kwargs) -> Optional[Dict]:
@@ -147,10 +258,10 @@ class DataQueryService:
             query = {}
         try:
             result = await self.db[collection].find_one(query, **kwargs)
-            logger.debug(f"📊 查询单条 {collection}: {'找到' if result else '未找到'}")
+            logger.debug(f"查询单条 {collection}: {'找到' if result else '未找到'}")
             return result
         except Exception as e:
-            logger.error(f"❌ 查询单条失败 {collection}: {e}")
+            logger.error(f"查询单条失败 {collection}: {e}")
             raise
 
     # ==================== 数据插入方法 ====================
@@ -168,10 +279,10 @@ class DataQueryService:
         """
         try:
             result = await self.db[collection].insert_one(document)
-            logger.info(f"✅ 插入 {collection}: {result.inserted_id}")
+            logger.info(f"插入 {collection}: {result.inserted_id}")
             return str(result.inserted_id)
         except Exception as e:
-            logger.error(f"❌ 插入失败 {collection}: {e}")
+            logger.error(f"插入失败 {collection}: {e}")
             raise
 
     async def insert_many(
@@ -196,11 +307,11 @@ class DataQueryService:
             return []
         try:
             result = await self.db[collection].insert_many(documents, ordered=ordered)
-            logger.debug(f"✅ 批量插入 {collection}: {len(result.inserted_ids)} 条")
+            logger.debug(f"批量插入 {collection}: {len(result.inserted_ids)} 条")
             return [str(_id) for _id in result.inserted_ids]
         except Exception as e:
             # ordered=False 场景下 BulkWriteError 会带 details.nInserted；上层可据此判断是否需要报警。
-            logger.error(f"❌ 批量插入失败 {collection}: {e}")
+            logger.error(f"批量插入失败 {collection}: {e}")
             raise
 
     async def bulk_upsert(
@@ -247,10 +358,10 @@ class DataQueryService:
                 "modified": int(result.modified_count or 0),
                 "upserted": int(len(result.upserted_ids or {})),
             }
-            logger.debug(f"✅ bulk_upsert {collection}: {summary}")
+            logger.debug(f"bulk_upsert {collection}: {summary}")
             return summary
         except Exception as e:
-            logger.error(f"❌ bulk_upsert 失败 {collection}: {e}")
+            logger.error(f"bulk_upsert 失败 {collection}: {e}")
             raise
 
     # ==================== 数据更新方法 ====================
@@ -284,10 +395,10 @@ class DataQueryService:
             update_doc = self._prepare_update(update)
             result = await self.db[collection].update_one(query, update_doc, upsert=upsert)
             changed = int(result.modified_count or 0) + (1 if result.upserted_id is not None else 0)
-            logger.debug(f"✅ 更新 {collection}: {changed} 条 (upsert={upsert})")
+            logger.debug(f"更新 {collection}: {changed} 条 (upsert={upsert})")
             return changed
         except Exception as e:
-            logger.error(f"❌ 更新失败 {collection}: {e}")
+            logger.error(f"更新失败 {collection}: {e}")
             raise
 
     async def update_many(self, collection: str, query: Dict, update: Dict) -> int:
@@ -305,10 +416,10 @@ class DataQueryService:
         try:
             update_doc = self._prepare_update(update)
             result = await self.db[collection].update_many(query, update_doc)
-            logger.info(f"✅ 批量更新 {collection}: {result.modified_count} 条")
+            logger.info(f"批量更新 {collection}: {result.modified_count} 条")
             return result.modified_count
         except Exception as e:
-            logger.error(f"❌ 批量更新失败 {collection}: {e}")
+            logger.error(f"批量更新失败 {collection}: {e}")
             raise
 
     async def replace_one(
@@ -323,10 +434,10 @@ class DataQueryService:
             result = await self.db[collection].replace_one(query, document, upsert=upsert)
             changed = int(result.modified_count or 0) + (1 if result.upserted_id is not None else 0)
             # 逐条 upsert 在批量预计算场景会非常嘈杂，默认降为 debug。
-            logger.debug(f"✅ 替换 {collection}: {changed} 条")
+            logger.debug(f"替换 {collection}: {changed} 条")
             return changed
         except Exception as e:
-            logger.error(f"❌ 替换失败 {collection}: {e}")
+            logger.error(f"替换失败 {collection}: {e}")
             raise
 
     # ==================== 数据删除方法 ====================
@@ -344,10 +455,10 @@ class DataQueryService:
         """
         try:
             result = await self.db[collection].delete_one(query)
-            logger.info(f"✅ 删除 {collection}: {result.deleted_count} 条")
+            logger.info(f"删除 {collection}: {result.deleted_count} 条")
             return result.deleted_count
         except Exception as e:
-            logger.error(f"❌ 删除失败 {collection}: {e}")
+            logger.error(f"删除失败 {collection}: {e}")
             raise
 
     async def delete_many(self, collection: str, query: Dict) -> int:
@@ -363,10 +474,10 @@ class DataQueryService:
         """
         try:
             result = await self.db[collection].delete_many(query)
-            logger.info(f"✅ 批量删除 {collection}: {result.deleted_count} 条")
+            logger.info(f"批量删除 {collection}: {result.deleted_count} 条")
             return result.deleted_count
         except Exception as e:
-            logger.error(f"❌ 批量删除失败 {collection}: {e}")
+            logger.error(f"批量删除失败 {collection}: {e}")
             raise
 
     # ==================== 统计方法 ====================
@@ -386,10 +497,10 @@ class DataQueryService:
             query = {}
         try:
             count = await self.db[collection].count_documents(query)
-            logger.debug(f"📊 统计 {collection}: {count} 条")
+            logger.debug(f"统计 {collection}: {count} 条")
             return count
         except Exception as e:
-            logger.error(f"❌ 统计失败 {collection}: {e}")
+            logger.error(f"统计失败 {collection}: {e}")
             raise
 
     # ==================== 集合操作方法 ====================
@@ -398,19 +509,19 @@ class DataQueryService:
         """删除集合"""
         try:
             await self.db[collection].drop()
-            logger.info(f"✅ 删除集合: {collection}")
+            logger.info(f"删除集合: {collection}")
         except Exception as e:
-            logger.error(f"❌ 删除集合失败 {collection}: {e}")
+            logger.error(f"删除集合失败 {collection}: {e}")
             raise
 
     async def list_collections(self) -> List[str]:
-        """获取所有集合名称"""
+        """获取所有集合名称。查询失败时返回空列表（非关键路径，不抛异常）。"""
         try:
             collections = await self.db.list_collection_names()
-            logger.debug(f"📋 集合列表: {collections}")
+            logger.debug(f"集合列表: {collections}")
             return collections
         except Exception as e:
-            logger.error(f"❌ 获取集合列表失败: {e}")
+            logger.error(f"获取集合列表失败: {e}")
             return []
 
 
@@ -422,9 +533,21 @@ class DataQueryService:
         - 交易日筛选：period + trade_date（无 code）
         - 因子：按日 delete/load、按 code/sector 回查
         """
-        from pymongo import ASCENDING,DESCENDING, IndexModel
+        from pymongo import ASCENDING, DESCENDING, IndexModel
+        from pymongo.errors import OperationFailure
 
         db = self.db
+
+        async def _safe_drop_index(collection_name: str, index_name: str) -> None:
+            """删除旧索引，索引不存在时静默跳过，其他错误记录 warning。"""
+            try:
+                await db[collection_name].drop_index(index_name)
+            except OperationFailure as e:
+                # code 27 = IndexNotFound，属预期情况
+                if e.code != 27:
+                    logger.warning("drop_index %s.%s 失败: %s", collection_name, index_name, e)
+            except Exception as e:
+                logger.warning("drop_index %s.%s 异常: %s", collection_name, index_name, e)
         # zstock_ohlcv
         await db[COL_OHLCV].create_indexes(
             [
@@ -464,10 +587,7 @@ class DataQueryService:
             ]
         )
         # zstock_capital_flow: (code, trade_date, period) 唯一
-        try:
-            await db[COL_CAPITAL_FLOW].drop_index("code_date")
-        except Exception:
-            pass
+        await _safe_drop_index(COL_CAPITAL_FLOW, "code_date")
         await db[COL_CAPITAL_FLOW].create_indexes(
             [
                 IndexModel(
@@ -513,10 +633,7 @@ class DataQueryService:
         # zstock_lhb（龙虎榜）
         # 兼容历史自动命名索引，避免 create_indexes 因同 key 不同 name 冲突（code 85）
         for legacy_idx in ("code_1_trade_date_-1", "trade_date_-1"):
-            try:
-                await db[COL_LHB].drop_index(legacy_idx)
-            except Exception:
-                pass
+            await _safe_drop_index(COL_LHB, legacy_idx)
         await db[COL_LHB].create_indexes(
             [
                 IndexModel(
@@ -585,7 +702,7 @@ class DataQueryService:
                 ),
             ]
         )
-        logger.info("✅ MongoDB 索引已就绪（含因子预计算集合）")
+        logger.info("MongoDB 索引已就绪（含因子预计算集合）")
 
     # =========================== OHLCV 行情 ===========================
 
@@ -612,7 +729,7 @@ class DataQueryService:
             sort=[("trade_date", 1)],
         )
         if not docs:
-            raise ValueError(f"❌ 无数据: {symbol} ({start_date} - {end_date})")
+            raise ValueError(f"无数据: {symbol} ({start_date} - {end_date})")
 
         df = pd.DataFrame(docs)
         df.drop(columns=[c for c in ("_id",) if c in df.columns], inplace=True)
@@ -651,7 +768,7 @@ class DataQueryService:
             return {}
 
         if query_concurrency is None:
-            query_concurrency = default_query_concurrency()
+            query_concurrency = _default_query_concurrency()
         sem = asyncio.Semaphore(max(1, query_concurrency))
         done_queries = 0
         progress_lock = asyncio.Lock()
@@ -681,7 +798,7 @@ class DataQueryService:
                         e,
                     )
                     raise ValueError(
-                        f"❌ get_ohlcv_batch无法获取数据: codes={len(chunk)} "
+                        f"get_ohlcv_batch无法获取数据: codes={len(chunk)} "
                         f"({win_start} - {win_end})"
                     ) from e
 
@@ -737,7 +854,7 @@ class DataQueryService:
             doc.pop("_id", None)
             return doc, "mongodb"
 
-        raise ValueError(f"❌ get_stock_info无法获取数据: {symbol}")
+        raise ValueError(f"get_stock_info无法获取数据: {symbol}")
 
     async def get_all_stocks(self) -> Tuple[List[Dict], str]:
         """获取全 A 股完整信息列表（含创业板/科创板/北交所，含 ST）。"""
@@ -751,9 +868,9 @@ class DataQueryService:
                 return [d for d in docs if d.get("code")], "mongodb"
         except Exception as e:
             logger.error(f"从 MongoDB 获取全市场股票列表失败: {e}")
-            raise ValueError("❌ get_all_stocks无法获取数据") from e
+            raise ValueError("get_all_stocks无法获取数据") from e
 
-        raise ValueError("❌ get_all_stocks无法获取数据")
+        raise ValueError("get_all_stocks无法获取数据")
 
     # =========================== 资金流 ===========================
 
@@ -778,10 +895,10 @@ class DataQueryService:
         except Exception as e:
             logger.error(f"从 MongoDB 获取资金流数据失败: {e}")
             raise ValueError(
-                f"❌ get_capital_flow无数据: {symbol} ({trade_date})"
+                f"get_capital_flow无数据: {symbol} ({trade_date})"
             ) from e
 
-        raise ValueError(f"❌ get_capital_flow无数据: {symbol} ({trade_date})")
+        raise ValueError(f"get_capital_flow无数据: {symbol} ({trade_date})")
 
     async def get_capital_flow_recent_days(
         self,
@@ -827,10 +944,15 @@ class DataQueryService:
             raise
 
         grouped: Dict[str, List[Dict]] = defaultdict(list)
+        seen_dates: Dict[str, set] = defaultdict(set)
         for doc in docs or []:
             code = doc.get("code")
             if not code or len(grouped[code]) >= days:
                 continue
+            td = doc.get("trade_date")
+            if td in seen_dates[code]:
+                continue
+            seen_dates[code].add(td)
             doc.pop("_id", None)
             grouped[code].append(doc)
 
@@ -882,7 +1004,7 @@ class DataQueryService:
             return {}
 
         if query_concurrency is None:
-            query_concurrency = default_query_concurrency()
+            query_concurrency = _default_query_concurrency()
         sem = asyncio.Semaphore(max(1, query_concurrency))
 
         async def _fetch_chunk(
@@ -1082,13 +1204,10 @@ class DataQueryService:
                 },
                 limit=10000,
             )
-            if docs is not None:
-                return docs, "mongodb"
+            return docs, "mongodb"
         except Exception as e:
             logger.error(f"从 MongoDB 获取板块列表失败: {e}")
-            raise ValueError("❌ get_sector_list无法获取数据") from e
-
-        raise ValueError("❌ get_sector_list无法获取数据")
+            raise ValueError("get_sector_list无法获取数据") from e
 
     async def get_sector_stocks(self, sector_code: str) -> Tuple[List[str], str]:
         """获取板块成分股代码列表（纯 6 位代码字符串）。"""
@@ -1102,9 +1221,9 @@ class DataQueryService:
                 return doc["stocks"], "mongodb"
         except Exception as e:
             logger.error(f"从 MongoDB 获取板块成分股失败: {e}")
-            raise ValueError("❌ get_sector_stocks无法获取数据") from e
+            raise ValueError("get_sector_stocks无法获取数据") from e
 
-        raise ValueError("❌ get_sector_stocks无法获取数据")
+        raise ValueError("get_sector_stocks无法获取数据")
 
     async def get_sector_stocks_batch(
         self, sector_codes: List[str]
@@ -1126,7 +1245,7 @@ class DataQueryService:
             return result
         except Exception as e:
             logger.error(f"sector_stocks batch MongoDB 查询失败: {e}")
-            raise ValueError("❌ get_sector_stocks_batch无法获取数据") from e
+            raise ValueError("get_sector_stocks_batch无法获取数据") from e
 
     # =========================== 因子预计算查询 ===========================
 
@@ -1179,15 +1298,19 @@ class DataQueryService:
 
     @staticmethod
     def _factor_range_concurrency(cap: int = 8) -> int:
-        """因子窗口并发。大集合必须低并发，避免 Mongo 超时 / 连接池打满。"""
-        raw = os.environ.get("ZSTOCK_OHLCV_CONCURRENCY")
+        """因子窗口并发。大集合必须低并发，避免 Mongo 超时 / 连接池打满。
+
+        优先读 ZSTOCK_FACTOR_CONCURRENCY，回退到 ZSTOCK_OHLCV_CONCURRENCY
+        （与 backtester / overnight_risk_validate 共用的并发配置）。
+        """
+        raw = os.environ.get("ZSTOCK_FACTOR_CONCURRENCY") or os.environ.get("ZSTOCK_OHLCV_CONCURRENCY")
         if raw:
             try:
                 n = int(raw)
             except ValueError:
-                n = default_query_concurrency()
+                n = _default_query_concurrency()
         else:
-            n = default_query_concurrency()
+            n = _default_query_concurrency()
         return max(2, min(cap, n))
 
     async def _query_window_with_retry(
@@ -1286,7 +1409,7 @@ class DataQueryService:
                 out.extend(part)
             n_docs = len(out)
         logger.info(
-            "📦 %s 区间 %s~%s: %d 条 (%d 窗口, 并发=%d)",
+            "%s 区间 %s~%s: %d 条 (%d 窗口, 并发=%d)",
             collection,
             start,
             end,
@@ -1405,80 +1528,9 @@ class DataQueryService:
             projection={"_id": 0, "code": 1, "ann_date": 1, "end_date": 1, "shareholder": 1},
             sort=[("end_date", 1)],
         )
-        return _fundamental_asof_map(pershare or [], holder or [])
+        return self._fundamental_asof_map(pershare or [], holder or [])
 
 
-# ==========================================================================
-
-_data_query_service: Optional[DataQueryService] = None
-
-
-def get_data_query_service() -> DataQueryService:
-    global _data_query_service
-    if _data_query_service is None:
-        _data_query_service = DataQueryService()
-    return _data_query_service
-
-
-# 模块级兼容导出（内部方法别名，保持外部已有工具/单测兼容）
-_iter_date_windows = DataQueryService._iter_date_windows
-
-
-def _finite_float(val: Any) -> Optional[float]:
-    try:
-        num = float(val)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(num):
-        return None
-    return num
-
-
-def _fundamental_asof_map(
-    pershare_docs: List[Dict],
-    holder_docs: List[Dict],
-) -> Dict[str, Dict[str, float]]:
-    """把已按公告日截断的文档收成每股最新 BPS 与股东户数环比。"""
-    out: Dict[str, Dict[str, float]] = {}
-    bps_ann: Dict[str, str] = {}
-    for doc in pershare_docs:
-        code = doc.get("code")
-        ann = doc.get("ann_date")
-        bps = _finite_float(doc.get("bps"))
-        if not code or not ann or bps is None or bps == 0:
-            continue
-        ann_s = str(ann)
-        prev = bps_ann.get(code)
-        if prev is not None and ann_s < prev:
-            continue
-        bps_ann[code] = ann_s
-        out.setdefault(code, {})["bps"] = bps
-
-    by_code: Dict[str, List[Tuple[str, str, float]]] = defaultdict(list)
-    for doc in holder_docs:
-        code = doc.get("code")
-        ann = doc.get("ann_date")
-        end = doc.get("end_date")
-        sh = _finite_float(doc.get("shareholder"))
-        if not code or not ann or not end or sh is None or sh <= 0:
-            continue
-        by_code[code].append((str(end), str(ann), sh))
-
-    for code, records in by_code.items():
-        records.sort(key=lambda item: item[0])
-        chosen_ann: Optional[str] = None
-        chosen_rate: Optional[float] = None
-        for i in range(1, len(records)):
-            prev_sh = records[i - 1][2]
-            curr_sh = records[i][2]
-            ann = records[i][1]
-            rate = (curr_sh - prev_sh) / prev_sh
-            if not math.isfinite(rate):
-                continue
-            if chosen_ann is None or ann >= chosen_ann:
-                chosen_ann = ann
-                chosen_rate = rate
-        if chosen_rate is not None:
-            out.setdefault(code, {})["holder_change"] = chosen_rate
-    return out
+# 兼容旧 import：from ...query_service import get_data_query_service
+get_data_query_service = DataQueryService.get_data_query_service
 
