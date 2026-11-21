@@ -30,7 +30,14 @@ export const api = {
     request<StrategyDetail>('/api/strategies', { method: 'POST', body: JSON.stringify(body) }),
   updateStrategy: (id: string, body: Partial<StrategyCreateBody> & { params?: unknown }) =>
     request<StrategyDetail>(`/api/strategies/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  runBacktest: (id: string, body?: { start_date?: string; end_date?: string; use_precomputed?: boolean }) =>
+  deleteStrategy: (id: string) =>
+    request<{ ok: boolean }>(`/api/strategies/${id}`, { method: 'DELETE' }),
+  runBacktest: (id: string, body?: {
+    start_date?: string
+    end_date?: string
+    use_precomputed?: boolean
+    universe_mode?: 'full' | 'prefilter' | 'funnel'
+  }) =>
     request<{ job_id: string; backtest_id: string; status: string }>(`/api/strategies/${id}/backtest`, {
       method: 'POST',
       body: JSON.stringify(body || {}),
@@ -41,13 +48,16 @@ export const api = {
       strategyId ? `/api/backtests?strategy_id=${encodeURIComponent(strategyId)}` : '/api/backtests',
     ),
   dataStats: () => request<{ items: DataStat[] }>('/api/data/stats'),
-  triggerData: (action: string, extra?: Record<string, number>) =>
+  triggerData: (action: string, extra?: Record<string, string | number | boolean>) =>
     request<{ job_id: string }>('/api/data/trigger', {
       method: 'POST',
       body: JSON.stringify({ action, ...(extra || {}) }),
     }),
   getJob: (id: string) => request<JobInfo>(`/api/jobs/${id}`),
   listJobs: () => request<{ items: JobInfo[] }>('/api/jobs'),
+  listFactorEvals: () => request<{ items: FactorEvalSummary[] }>('/api/jobs/evals'),
+  getFactorEval: (evalId: string) =>
+    request<FactorEvalDoc>(`/api/jobs/evals/${encodeURIComponent(evalId)}`),
   nightlyStatus: () => request<NightlyStatus>('/api/jobs/scheduler/nightly'),
   nightlyAction: (action: string) =>
     request<{ ok?: boolean; message?: string }>('/api/jobs/scheduler/nightly', {
@@ -92,10 +102,16 @@ export const api = {
 }
 
 export type QuoteItem = {
+  code?: string
   name: string
   price: number | null
   change_pct: number | null
+  currency?: string
+  asof?: string | null
+  source?: string
   message?: string
+  cny_per_gram?: number | null
+  session?: string
 }
 
 export type NewsItem = {
@@ -126,7 +142,13 @@ export type WorkbenchSummary = {
     message: string
     created_at: string
   }[]
-  market?: { index: QuoteItem; gold: QuoteItem }
+  market?: {
+    index: QuoteItem
+    gold: QuoteItem
+    gold_sge?: QuoteItem
+    quotes?: QuoteItem[]
+    fetched_at?: string
+  }
   news?: NewsItem[]
 }
 
@@ -204,6 +226,29 @@ export type JobInfo = {
   finished_at?: string | null
   logs: string[]
   result?: unknown
+}
+
+export type FactorEvalSummary = {
+  id: string
+  job_id?: string
+  start?: string
+  end?: string
+  universe_mode?: string
+  period?: number
+  layer?: string | null
+  field?: string | null
+  status?: string
+  progress?: string
+  done?: number
+  total?: number
+  row_count?: number
+  created_at?: string
+  updated_at?: string
+  preview?: Record<string, unknown>[]
+}
+
+export type FactorEvalDoc = FactorEvalSummary & {
+  rows?: Record<string, unknown>[]
 }
 
 export type NightlyStatus = {

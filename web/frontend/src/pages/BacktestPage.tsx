@@ -43,52 +43,61 @@ export default function BacktestPage() {
 
   return (
     <>
-      <div>
-        <h1 className="page-title">回测结果</h1>
-        <p className="page-lead">
-          状态 <span className={statusClass}>{doc?.status || '加载中'}</span>
-          {' · '}
-          <Link
-            to={doc?.strategy_id ? `/research/strategies/${doc.strategy_id}` : '/research/strategies'}
-            style={{ color: 'var(--primary)' }}
-          >
-            回策略
-          </Link>
-          {' · '}
-          <Link to="/research/factors" style={{ color: 'var(--primary)' }}>
-            因子库
-          </Link>
-        </p>
+      <div className="page-head">
+        <div>
+          <p className="page-kicker">研究 / 回测</p>
+          <h1 className="page-title">回测结果</h1>
+          <p className="page-lead">
+            状态 <span className={statusClass}>{doc?.status || '加载中'}</span>
+            {' · '}
+            <Link
+              to={doc?.strategy_id ? `/research/strategies/${doc.strategy_id}` : '/research/strategies'}
+              className="text-link"
+            >
+              回策略
+            </Link>
+            {' · '}
+            <Link to="/research/factors" className="text-link">
+              因子库
+            </Link>
+          </p>
+        </div>
       </div>
-      {error && <p className="danger">{error}</p>}
+      {error && !doc && <p className="danger">{error}</p>}
+      {error && doc && (
+        <p className="muted">刷新失败（将自动重试）：{error}</p>
+      )}
       {doc?.error && <p className="danger">{doc.error}</p>}
+      {(doc?.status === 'running' || doc?.status === 'queued') && !doc?.equity?.length && (
+        <p className="muted">回测进行中，页面会自动刷新…</p>
+      )}
 
       <div className="stat-row" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
-        <div className="card hoverable stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">累计收益</div>
           <div className="value" style={{ fontSize: '1.65rem' }}>
             {pct(m.total_return)}
           </div>
         </div>
-        <div className="card hoverable stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">年化</div>
           <div className="value" style={{ fontSize: '1.65rem' }}>
             {pct(m.annualized_return)}
           </div>
         </div>
-        <div className="card hoverable stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">最大回撤</div>
           <div className="value" style={{ fontSize: '1.65rem' }}>
             {pct(m.max_drawdown)}
           </div>
         </div>
-        <div className="card hoverable stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">夏普</div>
           <div className="value" style={{ fontSize: '1.65rem' }}>
             {m.sharpe != null ? Number(m.sharpe).toFixed(2) : '—'}
           </div>
         </div>
-        <div className="card hoverable stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">区间</div>
           <div className="value" style={{ fontSize: '0.95rem', marginTop: 12 }}>
             {doc?.start_date || '—'}

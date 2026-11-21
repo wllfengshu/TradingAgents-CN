@@ -63,6 +63,9 @@ type Props = {
   onLayer: (l: (typeof LAYERS)[number]) => void
   onRegime: (r: (typeof REGIMES)[number]) => void
   onChange: (next: ActiveFactors) => void
+  /** 单因子测评；不传则不显示「测评」按钮 */
+  onEval?: (meta: FactorMeta) => void
+  evalBusyField?: string
 }
 
 export default function FactorPicker({
@@ -73,6 +76,8 @@ export default function FactorPicker({
   onLayer,
   onRegime,
   onChange,
+  onEval,
+  evalBusyField,
 }: Props) {
   const layerCatalog = useMemo(
     () => catalog.filter((x) => x.layer === layer),
@@ -111,17 +116,32 @@ export default function FactorPicker({
   }
 
   return (
-    <div>
-      <div className="tabs">
+    <div className="factor-picker">
+      <div className="tabs-layer" role="tablist" aria-label="因子层">
         {LAYERS.map((l) => (
-          <button key={l} type="button" className={layer === l ? 'active' : ''} onClick={() => onLayer(l)}>
+          <button
+            key={l}
+            type="button"
+            role="tab"
+            aria-selected={layer === l}
+            className={layer === l ? 'active' : ''}
+            onClick={() => onLayer(l)}
+          >
             {LAYER_LABEL[l]}
           </button>
         ))}
       </div>
-      <div className="tabs">
+      <p className="factor-picker-hint">风格剖面</p>
+      <div className="tabs-regime" role="tablist" aria-label="风格剖面">
         {REGIMES.map((r) => (
-          <button key={r} type="button" className={regime === r ? 'active' : ''} onClick={() => onRegime(r)}>
+          <button
+            key={r}
+            type="button"
+            role="tab"
+            aria-selected={regime === r}
+            className={regime === r ? 'active' : ''}
+            onClick={() => onRegime(r)}
+          >
             {REGIME_LABEL[r]}
           </button>
         ))}
@@ -131,7 +151,7 @@ export default function FactorPicker({
         const sel = selectedMap.get(meta.field)
         const on = !!sel
         return (
-          <div className="factor-row" key={meta.field}>
+          <div className={`factor-row${onEval ? ' with-eval' : ''}`} key={meta.field}>
             <input type="checkbox" checked={on} onChange={(e) => toggle(meta, e.target.checked)} />
             <div>
               <div className="name">{meta.name_cn}</div>
@@ -153,6 +173,17 @@ export default function FactorPicker({
               <option value="positive">正向</option>
               <option value="negative">反向</option>
             </select>
+            {onEval && (
+              <button
+                type="button"
+                className="btn-sm"
+                disabled={!!evalBusyField}
+                title="对该因子跑 IC/分层测评"
+                onClick={() => onEval(meta)}
+              >
+                {evalBusyField === meta.field ? '提交中…' : '测评'}
+              </button>
+            )}
           </div>
         )
       })}

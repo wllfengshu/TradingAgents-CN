@@ -37,7 +37,7 @@ class _ReplayPipeline:
 @pytest.mark.asyncio
 async def test_prefers_precomputed(real_signals, real_trade_date):
     fp = _ReplayPipeline(real_signals)
-    pipe = StrategyPipeline(factor_pipeline=fp)  # type: ignore[arg-type]
+    pipe = StrategyPipeline(signals=fp)  # type: ignore[arg-type]
     df = await pipe._generate_signals(trade_date=real_trade_date)
     assert df is real_signals
     assert fp.score_calls == 1
@@ -47,7 +47,7 @@ async def test_prefers_precomputed(real_signals, real_trade_date):
 @pytest.mark.asyncio
 async def test_falls_back_to_live_on_missing_precompute(real_signals, real_trade_date):
     fp = _ReplayPipeline(real_signals, fail_precomputed=True)
-    pipe = StrategyPipeline(factor_pipeline=fp)  # type: ignore[arg-type]
+    pipe = StrategyPipeline(signals=fp)  # type: ignore[arg-type]
     df = await pipe._generate_signals(trade_date=real_trade_date, prefer_precomputed=True)
     assert df is real_signals
     assert fp.score_calls == 1
@@ -57,7 +57,7 @@ async def test_falls_back_to_live_on_missing_precompute(real_signals, real_trade
 @pytest.mark.asyncio
 async def test_prebuilt_skips_precomputed(real_signals, real_trade_date):
     fp = _ReplayPipeline(real_signals)
-    pipe = StrategyPipeline(factor_pipeline=fp)  # type: ignore[arg-type]
+    pipe = StrategyPipeline(signals=fp)  # type: ignore[arg-type]
     df = await pipe._generate_signals(
         trade_date=real_trade_date, prebuilt_data={"trade_date": real_trade_date}
     )

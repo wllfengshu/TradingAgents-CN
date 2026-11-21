@@ -158,14 +158,15 @@ export default function DataBrowsePage() {
     <div className="data-browse">
       <div className="page-head">
         <div>
+          <p className="page-kicker">运维</p>
           <h1 className="page-title">数据管理</h1>
           <p className="page-lead">只读浏览 Mongo 集合与文档。</p>
         </div>
         <div className="row">
-          <button type="button" className="btn-sm" disabled={metaBusy} onClick={() => void testMongo()}>
+          <button type="button" className="btn-outline" disabled={metaBusy} onClick={() => void testMongo()}>
             测试 Mongo
           </button>
-          <button type="button" className="btn-sm" disabled={metaBusy} onClick={() => void loadMeta()}>
+          <button type="button" className="btn-outline" disabled={metaBusy} onClick={() => void loadMeta()}>
             刷新集合
           </button>
         </div>

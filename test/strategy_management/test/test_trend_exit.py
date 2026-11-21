@@ -3,6 +3,7 @@
 import pandas as pd
 
 from zstock.strategy_management.pipeline import StrategyPipeline
+from zstock.strategy_management.strategy_section import exit as exit_policy
 
 
 def _ohlcv(n=25, last_close=9.0, peak=12.0, start="2023-12-01"):
@@ -29,26 +30,26 @@ BOTH = {
 
 
 def test_disabled_and_regime_filter():
-    assert StrategyPipeline._trend_exit_enabled({"trend_exit": {"enabled": False}}) is False
-    assert StrategyPipeline._trend_exit_enabled(
+    assert exit_policy.trend_exit_enabled({"trend_exit": {"enabled": False}}) is False
+    assert exit_policy.trend_exit_enabled(
         {"trend_exit": {"enabled": True, "when_regimes": ["momentum"]}},
         regime="reversal",
     ) is False
-    assert StrategyPipeline._trend_exit_enabled(
+    assert exit_policy.trend_exit_enabled(
         {"trend_exit": {"enabled": True, "when_regimes": ["momentum"]}},
         regime="momentum",
     ) is True
 
 
 def test_require_both_without_ohlcv_is_false():
-    assert StrategyPipeline._should_trend_exit(
+    assert exit_policy.should_trend_exit(
         ohlcv=None,
         trade_date="2024-01-02",
         f35=10.0,
         prev_f35=None,
         trend_cfg=BOTH,
     ) is False
-    assert StrategyPipeline._should_trend_exit(
+    assert exit_policy.should_trend_exit(
         ohlcv=pd.DataFrame(),
         trade_date="2024-01-02",
         f35=10.0,
@@ -60,14 +61,14 @@ def test_require_both_without_ohlcv_is_false():
 def test_require_both_true_when_no_new_high_and_weak_bollinger():
     ohlcv = _ohlcv()
     td = str(ohlcv["trade_date"].iloc[-1])
-    assert StrategyPipeline._should_trend_exit(
+    assert exit_policy.should_trend_exit(
         ohlcv=ohlcv,
         trade_date=td,
         f35=10.0,
         prev_f35=None,
         trend_cfg=BOTH,
     ) is True
-    assert StrategyPipeline._should_trend_exit(
+    assert exit_policy.should_trend_exit(
         ohlcv=ohlcv,
         trade_date=td,
         f35=80.0,
@@ -78,7 +79,7 @@ def test_require_both_true_when_no_new_high_and_weak_bollinger():
 
 def test_or_mode_can_exit_on_bollinger_only():
     cfg = dict(BOTH, require_both=False)
-    assert StrategyPipeline._should_trend_exit(
+    assert exit_policy.should_trend_exit(
         ohlcv=None,
         trade_date="2024-01-02",
         f35=10.0,
@@ -89,7 +90,7 @@ def test_or_mode_can_exit_on_bollinger_only():
 
 def test_force_exit_empty_ohlcv_map_with_require_both():
     rules = {"trend_exit": BOTH}
-    out = StrategyPipeline._trend_force_exit_codes(
+    out = exit_policy.trend_force_exit_codes(
         {"000001"},
         "2024-01-02",
         rules,
@@ -99,7 +100,7 @@ def test_force_exit_empty_ohlcv_map_with_require_both():
     assert out == set()
     ohlcv = _ohlcv()
     td = str(ohlcv["trade_date"].iloc[-1])
-    out = StrategyPipeline._trend_force_exit_codes(
+    out = exit_policy.trend_force_exit_codes(
         {"000001"},
         td,
         rules,

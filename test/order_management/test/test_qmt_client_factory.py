@@ -2,7 +2,7 @@
 
 import pytest
 
-from zstock.order_management.qmt_client_factory import (
+from zstock.order_management.broker import (
     QMTClientFactory,
     QMTConnectionError,
 )
@@ -14,7 +14,7 @@ def test_connect_failure_raises(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        "zstock.common.utils.qmt_util.py.QMTUtil",
+        "zstock.common.utils.qmt_util.QMTUtil",
         Boom,
         raising=True,
     )
@@ -27,10 +27,6 @@ def test_connect_exception_raises(monkeypatch):
         def connect(self):
             raise RuntimeError("bridge down")
 
-    monkeypatch.setattr("zstock.common.utils.qmt_util.py.QMTUtil", Boom, raising=True)
+    monkeypatch.setattr("zstock.common.utils.qmt_util.QMTUtil", Boom, raising=True)
     with pytest.raises(QMTConnectionError):
-        QMTClientFactory.create(prefer_real=False, allow_mock=True)
-
-
-def test_is_mock_is_always_false():
-    assert QMTClientFactory.is_mock(object()) is False
+        QMTClientFactory.create()

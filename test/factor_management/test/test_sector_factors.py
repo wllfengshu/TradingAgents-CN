@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from zstock.common.utils.common_utils import WAN_TO_YUAN
-from zstock.factor_management.sector_factors import SectorFactors
+from zstock.factor_management.factors_sector import SectorFactors
 from test.factor_management.test.conftest import make_ohlcv
 
 N = 65
@@ -71,7 +71,7 @@ def _bundle():
     return stocks, flow, members, sectors, last
 
 
-def test_rps_is_last_over_base_minus_one():
+def test_rps_is_cross_sectional_percentile():
     hot_ohlcv = _sector_index(N, 0.20)
     cold_ohlcv = _sector_index(N, 0.0)
     stocks, flow, members, sectors, last = _bundle()
@@ -84,11 +84,11 @@ def test_rps_is_last_over_base_minus_one():
         market_sector_ohlcv={HOT: hot_ohlcv, COLD: cold_ohlcv},
         trade_date=last,
     )
-    assert raw["f21_rps_20d"][HOT] == pytest.approx(0.20)
-    assert raw["f21_rps"][HOT] == pytest.approx(0.20)
+    assert raw["f21_rps_20d"][HOT] == pytest.approx(100.0)
+    assert raw["f21_rps"][HOT] == pytest.approx(100.0)
     assert raw["f21_rps_20d"][COLD] == pytest.approx(0.0)
-    assert raw["f21_rps_10d"][HOT] == pytest.approx(0.20)
-    assert raw["f21_rps_60d"][HOT] == pytest.approx(0.20)
+    assert raw["f21_rps_10d"][HOT] == pytest.approx(100.0)
+    assert raw["f21_rps_60d"][HOT] == pytest.approx(100.0)
 
 
 def test_f22_main_flow_sums_wan_to_yuan():
@@ -240,42 +240,6 @@ def test_f25_volume_slope_positive_when_share_rises():
     assert raw["f25_volume_slope_5d"][HOT] > raw["f25_volume_slope_5d"][COLD]
 
 
-def test_scores_from_raw_gates_and_top_n(strategy_params):
-    raw = {
-        "f21_rps_20d": {HOT: 0.2, COLD: 0.0},
-        "f23_limit_up_density": {HOT: 0.5, COLD: 0.0},
-        "f26_volume_growth_5d": {HOT: 0.1, COLD: 0.0},
-    }
-    # gates=None：兼容旧逻辑，要求 f23>0
-    gated = SectorFactors.scores_from_raw(
-        raw,
-        regime="momentum",
-        active_factors={
-            "sector": {
-                "momentum": [{"field": "f21_rps_20d", "weight": 1.0, "polarity": "positive"}]
-            }
-        },
-        top_n=2,
-        gates=None,
-    )
-    assert set(gated) == {HOT}
-    # 过门槛后仅一只，min-max 退化为中性 50
-    assert gated[HOT] == pytest.approx(50.0)
-
-    both = SectorFactors.scores_from_raw(
-        raw,
-        regime="momentum",
-        active_factors={
-            "sector": {
-                "momentum": [{"field": "f21_rps_20d", "weight": 1.0, "polarity": "positive"}]
-            }
-        },
-        top_n=1,
-        gates=[],
-    )
-    assert set(both) == {HOT}
-    assert SectorFactors.scores_from_raw({}, regime="momentum", active_factors=strategy_params["active_factors"]) == {}
-
 
 def test_raw_from_docs_roundtrip_fields():
     docs = [
@@ -314,17 +278,3 @@ def test_aggregate_sector_ohlcv_reconstructs_equal_member_return():
     assert flow[HOT]["main_flow"] == pytest.approx(3.0 * WAN_TO_YUAN)
 
 
-def test_sector_scores_from_dumped_raw(factor_raw, strategy_params):
-    from test.factor_management.test.conftest import docs_to_field_map
-
-    docs = factor_raw["sectors"]
-    raw = docs_to_field_map(docs, "sector_code")
-    scores = SectorFactors.scores_from_raw(
-        raw,
-        regime="momentum",
-        active_factors=strategy_params["active_factors"],
-        top_n=int(strategy_params["sector_layer"]["top_sectors"]),
-    )
-    assert scores
-    assert len(scores) <= int(strategy_params["sector_layer"]["top_sectors"])
-    assert all(v >= 0 for v in scores.values())

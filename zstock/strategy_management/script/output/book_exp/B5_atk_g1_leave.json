@@ -1,0 +1,33 @@
+{
+  "id": "B5_atk_g1_leave",
+  "book_regime": {
+    "confirm_green_days": 1,
+    "attack_skip_neutral_on_green": true
+  },
+  "status": "ok",
+  "started_at": "2026-11-15T22:30:25",
+  "elapsed_sec": 794.6,
+  "total_return": 0.3559093243528342,
+  "annualized_return": 0.1702618276998611,
+  "max_drawdown": -0.08222174673906768,
+  "sharpe": 1.2506999672737324,
+  "rebalance_count": 127,
+  "total_cost": 0.12133818067317909,
+  "output_dir": "output/book_exp/B5_atk_g1_leave",
+  "2025_ret": 0.1799484829911362,
+  "2025_ann": 0.17323499941127318,
+  "2025_mdd": -0.07815897760949453,
+  "2025_days": 261.0,
+  "2026_ret": 0.14912090172414416,
+  "2026_ann": 0.16684704780925896,
+  "2026_mdd": -0.08222174673906779,
+  "2026_days": 227.0,
+  "avg_w_stock": 0.23975409836065575,
+  "avg_w_ind": 0.19252902428996754,
+  "attack_day_frac": 0.2192622950819672,
+  "neutral_day_frac": 0.2766393442622951,
+  "defense_day_frac": 0.5040983606557377,
+  "port_on_attack": 0.25331161157114046,
+  "port_on_neutral": 0.054886484851021544,
+  "port_on_defense": 0.025566860722771256
+}

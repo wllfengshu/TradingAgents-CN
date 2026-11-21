@@ -1,0 +1,857 @@
+[
+  {
+    "collection": "ai_selector_schedules",
+    "count": 0,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "ai_selector_tasks",
+    "count": 50,
+    "large": false,
+    "key": [
+      "task_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "ai_trading_orders",
+    "count": 3,
+    "large": false,
+    "key": [
+      "order_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "ai_trading_portfolio_snapshots",
+    "count": 1,
+    "large": false,
+    "key": [
+      "task_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "ai_trading_schedules",
+    "count": 0,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "ai_trading_tasks",
+    "count": 13,
+    "large": false,
+    "key": [
+      "task_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "analysis_reports",
+    "count": 38,
+    "large": false,
+    "key": [
+      "task_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "analysis_tasks",
+    "count": 86,
+    "large": false,
+    "key": [
+      "task_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "capital_flow",
+    "count": 202,
+    "large": false,
+    "key": [
+      "code",
+      "trade_date"
+    ],
+    "date_min": "2026-06-30",
+    "date_max": "2026-07-04",
+    "cal_cov_pct": 0.18,
+    "cal_missing_days": 1660,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "chat",
+    "count": 1,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "financial_data_cache",
+    "count": 1,
+    "large": false,
+    "key": [
+      "symbol"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "llm_providers",
+    "count": 6,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "mainboard_stocks",
+    "count": 3044,
+    "large": false,
+    "key": [
+      "code"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "market_categories",
+    "count": 5,
+    "large": false,
+    "key": [
+      "id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "market_data",
+    "count": 2000,
+    "large": false,
+    "key": [
+      "code",
+      "trade_date"
+    ],
+    "date_min": "2026-05-06",
+    "date_max": "2026-07-01",
+    "cal_cov_pct": 2.41,
+    "cal_missing_days": 1623,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "market_quotes",
+    "count": 5868,
+    "large": false,
+    "key": [
+      "code",
+      "trade_date"
+    ],
+    "date_min": "2026-07-01",
+    "date_max": "2026-07-01",
+    "cal_cov_pct": 0.06,
+    "cal_missing_days": 1662,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "model_catalog",
+    "count": 3,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "notifications",
+    "count": 13,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "operation_logs",
+    "count": 1330,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "paper_accounts",
+    "count": 1,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "paper_orders",
+    "count": 4,
+    "large": false,
+    "key": [
+      "code"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 1,
+    "extra_docs": 1,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "paper_positions",
+    "count": 2,
+    "large": false,
+    "key": [
+      "code"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "paper_trades",
+    "count": 4,
+    "large": false,
+    "key": [
+      "code"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 1,
+    "extra_docs": 1,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "quotes_ingestion_status",
+    "count": 1,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "scheduler_executions",
+    "count": 5218,
+    "large": false,
+    "key": [
+      "job_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 20,
+    "extra_docs": 5198,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "scheduler_history",
+    "count": 36,
+    "large": false,
+    "key": [
+      "job_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 7,
+    "extra_docs": 20,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "sector_stocks",
+    "count": 20824,
+    "large": false,
+    "key": [
+      "sector_code",
+      "code",
+      "trade_date"
+    ],
+    "date_min": "2026-06-30",
+    "date_max": "2026-07-04",
+    "cal_cov_pct": 0.18,
+    "cal_missing_days": 1660,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "stock_basic_info",
+    "count": 12540,
+    "large": false,
+    "key": [
+      "code",
+      "source"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "stock_daily_quotes",
+    "count": 17223530,
+    "large": true,
+    "key": [
+      "symbol",
+      "trade_date",
+      "data_source",
+      "period"
+    ],
+    "date_min": "1990-12-19",
+    "date_max": "2026-07-03",
+    "cal_cov_pct": 94.65,
+    "cal_missing_days": 89,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": 18,
+    "error": null
+  },
+  {
+    "collection": "stock_financial_data",
+    "count": 725,
+    "large": false,
+    "key": [
+      "code",
+      "report_period",
+      "report_type",
+      "data_source"
+    ],
+    "date_min": "2025-12-31",
+    "date_max": "2026-06-30",
+    "cal_cov_pct": 0.18,
+    "cal_missing_days": 1660,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "stock_news",
+    "count": 83970,
+    "large": false,
+    "key": [
+      "symbol",
+      "url"
+    ],
+    "date_min": "2025-05-13",
+    "date_max": "2026-07-04",
+    "cal_cov_pct": 0.0,
+    "cal_missing_days": 1663,
+    "dup_groups": 7,
+    "extra_docs": 7,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "stock_screening_view",
+    "count": 12540,
+    "large": false,
+    "key": [
+      "code",
+      "trade_date"
+    ],
+    "date_min": "2026-07-01",
+    "date_max": "2026-07-01",
+    "cal_cov_pct": 0.06,
+    "cal_missing_days": 1662,
+    "dup_groups": 5183,
+    "extra_docs": 5183,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "sync_status",
+    "count": 1,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "system_configs",
+    "count": 70,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "token_usage",
+    "count": 552,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "trade_status",
+    "count": 202,
+    "large": false,
+    "key": [
+      "code",
+      "trade_date"
+    ],
+    "date_min": "2026-06-30",
+    "date_max": "2026-07-04",
+    "cal_cov_pct": 0.18,
+    "cal_missing_days": 1660,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "user_favorites",
+    "count": 1,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "user_tags",
+    "count": 0,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "users",
+    "count": 1,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_backtests",
+    "count": 7,
+    "large": false,
+    "key": [
+      "job_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_capital_flow",
+    "count": 9235394,
+    "large": true,
+    "key": [
+      "code",
+      "trade_date",
+      "period"
+    ],
+    "date_min": "2020-01-02",
+    "date_max": "2026-11-13",
+    "cal_cov_pct": 100.0,
+    "cal_missing_days": 0,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": 13,
+    "error": null
+  },
+  {
+    "collection": "zstock_factor_dragon",
+    "count": 8020184,
+    "large": true,
+    "key": [
+      "code",
+      "trade_date"
+    ],
+    "date_min": "2020-01-02",
+    "date_max": "2026-11-13",
+    "cal_cov_pct": 100.0,
+    "cal_missing_days": 0,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": 13,
+    "error": null
+  },
+  {
+    "collection": "zstock_factor_evals",
+    "count": 3,
+    "large": false,
+    "key": [
+      "job_id"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_factor_force",
+    "count": 8022425,
+    "large": true,
+    "key": [
+      "code",
+      "trade_date"
+    ],
+    "date_min": "2020-01-02",
+    "date_max": "2026-11-13",
+    "cal_cov_pct": 100.0,
+    "cal_missing_days": 0,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": 13,
+    "error": null
+  },
+  {
+    "collection": "zstock_factor_market",
+    "count": 1663,
+    "large": false,
+    "key": [
+      "trade_date"
+    ],
+    "date_min": "2020-01-02",
+    "date_max": "2026-11-13",
+    "cal_cov_pct": 100.0,
+    "cal_missing_days": 0,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_factor_sector",
+    "count": 217853,
+    "large": false,
+    "key": [
+      "sector_code",
+      "trade_date"
+    ],
+    "date_min": "2020-01-02",
+    "date_max": "2026-11-13",
+    "cal_cov_pct": 100.0,
+    "cal_missing_days": 0,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_fundamental_holder",
+    "count": 434360,
+    "large": false,
+    "key": [
+      "code",
+      "ann_date",
+      "end_date",
+      "shareholder"
+    ],
+    "date_min": "2001-03-20",
+    "date_max": "2026-09-17",
+    "cal_cov_pct": 97.84,
+    "cal_missing_days": 36,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_fundamental_pershare",
+    "count": 240113,
+    "large": false,
+    "key": [
+      "code",
+      "ann_date"
+    ],
+    "date_min": "2007-04-06",
+    "date_max": "2026-09-12",
+    "cal_cov_pct": 57.25,
+    "cal_missing_days": 711,
+    "dup_groups": 9525,
+    "extra_docs": 12006,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_jobs",
+    "count": 7,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_lhb",
+    "count": 0,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_ohlcv",
+    "count": 16485612,
+    "large": true,
+    "key": [
+      "code",
+      "trade_date",
+      "period"
+    ],
+    "date_min": "2000-01-04",
+    "date_max": "2026-11-13",
+    "cal_cov_pct": 100.0,
+    "cal_missing_days": 0,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": 12,
+    "error": null
+  },
+  {
+    "collection": "zstock_sector",
+    "count": 5585,
+    "large": false,
+    "key": [
+      "sector_code",
+      "source"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_stock_info",
+    "count": 5604,
+    "large": false,
+    "key": [
+      "code"
+    ],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": 0,
+    "extra_docs": 0,
+    "codes_with_gaps": null,
+    "error": null
+  },
+  {
+    "collection": "zstock_strategies",
+    "count": 1,
+    "large": false,
+    "key": [],
+    "date_min": null,
+    "date_max": null,
+    "cal_cov_pct": null,
+    "cal_missing_days": null,
+    "dup_groups": null,
+    "extra_docs": null,
+    "codes_with_gaps": null,
+    "error": null
+  }
+]

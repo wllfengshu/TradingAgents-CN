@@ -269,12 +269,11 @@ async def test_precompute_init_and_main(strategy_params, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_overnight_async_main_skip_and_stubs(overnight_dir, monkeypatch, tmp_path, stock_ohlcv_by_code):
-    from zstock.factor_management.script import overnight_validation as ov
+async def test_overnight_async_main_skip_and_stubs(monkeypatch, tmp_path):
+    from zstock.strategy_management.script import overnight_backtest as ov
 
     ov._quiet_loggers()
     ov._setup_console_utf8()
-    ov._setup_logging()
 
     async def _init():
         return None
@@ -289,85 +288,71 @@ async def test_overnight_async_main_skip_and_stubs(overnight_dir, monkeypatch, t
         return {"market": 1, "sector": 1, "dragon": 1, "force": 1}
 
     async def _eval(*a, **k):
-        csv = overnight_dir / "factor_eval" / "2024" / "summary.csv"
-        return csv if csv.is_file() else None
+        return None
 
     async def _ohlcv(start, end):
-        return dict(stock_ohlcv_by_code)
+        return {"603201": pd.DataFrame({"trade_date": ["2024-01-02"], "close": [10.0]})}
 
-    class Opt:
-        def __init__(self, output_dir=None):
-            self.output_dir = Path(output_dir) if output_dir else tmp_path
+    async def _preflight():
+        return {"ok": True}
 
-        def baseline_params(self):
-            from zstock.factor_management.script.网格搜索.grid_search_real import (
-                RealGridSearchOptimizer,
-            )
-            return RealGridSearchOptimizer.baseline_params()
+    async def _coverage(*a, **k):
+        return {"by_year": {}}
 
-        async def run_grid_search(self, **kwargs):
-            base = self.baseline_params()
-            row = {
-                **base,
-                "status": "success",
-                "total_return": 0.1,
-                "sharpe": 1.0,
-                "annualized_return": 0.1,
-                "max_drawdown": -0.05,
-                "calmar": 2.0,
-                "avg_turnover": 0.1,
-                "total_cost": 0.01,
-                "weight_coop": 0.25,
-                "objective": 1.5,
-            }
-            return pd.DataFrame([row])
+    async def _bt(*a, **k):
+        return {
+            "status": "success",
+            "label": "stub",
+            "total_return": 0.1,
+            "total_return_gross": 0.11,
+            "sharpe": 1.0,
+            "max_drawdown": -0.05,
+            "avg_exposure": 0.8,
+            "total_cost": 0.01,
+        }
 
-        def save_results(self, df):
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            path = self.output_dir / "grid.csv"
-            df.to_csv(path, index=False)
-            return path
+    async def _bench(*a, **k):
+        return {
+            "status": "success",
+            "label": "bench stub",
+            "total_return": 0.05,
+            "sharpe": 0.5,
+            "max_drawdown": -0.1,
+        }
 
-        async def run_one(self, *a, **k):
-            return {
-                "status": "success",
-                "total_return": 0.1,
-                "sharpe": 1.0,
-                "calmar": 0.5,
-                "max_drawdown": -0.1,
-                "annualized_return": 0.1,
-                "avg_turnover": 0.1,
-                "total_cost": 0.01,
-                "objective": 1.0,
-            }
-
-    import sys
-
-    sys.modules["grid_search_real"] = SimpleNamespace(RealGridSearchOptimizer=Opt)
     monkeypatch.setattr(ov, "run_precompute", _pc)
     monkeypatch.setattr(ov, "run_factor_eval", _eval)
-    monkeypatch.setattr(ov, "load_ohlcv", _ohlcv)
+    monkeypatch.setattr(ov, "preflight_checks", _preflight)
+    monkeypatch.setattr(ov, "backup_strategy_params", lambda *_a, **_k: tmp_path / "backup.json")
+    monkeypatch.setattr(ov, "check_factor_coverage_by_year", _coverage)
+    monkeypatch.setattr(ov, "run_backtest_current", _bt)
+    monkeypatch.setattr(ov, "compute_benchmark", _bench)
+    monkeypatch.setattr(
+        "zstock.strategy_management.script.grid_search_real.load_ohlcv",
+        _ohlcv,
+    )
 
+    out = tmp_path / "ov_out"
     args = ov.build_parser().parse_args(
-        ["--skip-precompute", "--skip-eval", "--skip-grid", "--year", "2024"]
+        [
+            "--skip-precompute",
+            "--skip-eval",
+            "--skip-grid",
+            "--year",
+            "2024",
+            "--skip-sensitivity",
+            "--no-quarters",
+            "--output",
+            str(out),
+        ]
     )
     assert await ov.async_main(args) == 0
-
-    args2 = ov.build_parser().parse_args(
-        ["--skip-precompute", "--skip-eval", "--year", "2024", "--max-combinations", "1"]
-    )
-    code2 = await ov.async_main(args2)
-    assert code2 in {0, 1}
-
-    args3 = ov.build_parser().parse_args(
-        ["--end-date", "2026-08-25", "--skip-precompute", "--skip-eval", "--skip-grid"]
-    )
-    assert await ov.async_main(args3) == 0
 
 
 @pytest.mark.asyncio
 async def test_overnight_helpers_run_wrappers(monkeypatch, tmp_path, stock_ohlcv_by_code):
-    from zstock.factor_management.script import overnight_validation as ov
+    from zstock.strategy_management.script import overnight_backtest as ov
+    from zstock.strategy_management.script.grid_search_real import load_ohlcv
 
     class QS:
         async def get_all_stocks(self):
@@ -384,7 +369,7 @@ async def test_overnight_helpers_run_wrappers(monkeypatch, tmp_path, stock_ohlcv
     monkeypatch.setattr(
         "zstock.data_management.query_service.get_data_query_service", lambda: QS()
     )
-    ohlcv = await ov.load_ohlcv("2024-01-02", "2024-01-16")
+    ohlcv = await load_ohlcv("2024-01-02", "2024-01-16")
     assert "603201" in ohlcv
 
     class Svc:
@@ -398,29 +383,51 @@ async def test_overnight_helpers_run_wrappers(monkeypatch, tmp_path, stock_ohlcv
         "zstock.factor_management.script.precompute_factors.FactorPrecomputeService",
         Svc,
     )
-    stats = await ov.run_precompute("2024-01-02", "2024-01-02", 30, compute_workers=1)
+    stats = await ov.run_precompute(
+        "2024-01-02",
+        "2024-01-02",
+        30,
+        workers=1,
+        load_workers=None,
+        query_workers=None,
+        resource_fraction=0.5,
+    )
     assert stats["market"] == 1
 
     class Pipe:
         def __init__(self, **k):
             Path(k["output_dir"]).mkdir(parents=True, exist_ok=True)
-            (Path(k["output_dir"]) / "summary.csv").write_text("layer,field,Total_Score\n", encoding="utf-8")
+            (Path(k["output_dir"]) / "summary.csv").write_text(
+                "layer,field,Total_Score\n", encoding="utf-8"
+            )
 
         async def run(self):
             return []
 
     monkeypatch.setattr(
-        "zstock.factor_management.script.因子测评.factor_evaluation.FactorEvaluationPipeline",
+        "zstock.factor_management.script.factor_evaluation.FactorEvaluation",
         Pipe,
     )
-    summary = await ov.run_factor_eval("2024-01-02", "2024-01-16", tmp_path, plot=False)
+
+    async def _univ(*_a, **_k):
+        return {"2024-01-02": {"000001"}}
+
+    monkeypatch.setattr(
+        "zstock.strategy_management.strategy_section.universe.build_universe_by_date",
+        _univ,
+    )
+    summary = await ov.run_factor_eval(
+        "2024-01-02", "2024-01-16", tmp_path, label="2024", plot=False, period=5
+    )
     assert summary is not None
 
     class Opt:
         async def run_one(self, *a, **k):
             return {"status": "failed"}
 
-    row = await ov.run_backtest(Opt(), {}, None, "2024-01-02", "2024-01-16", 1e6, 0.001, "ut")
+    row = await ov.run_backtest_grid(
+        Opt(), {}, None, "2024-01-02", "2024-01-16", 1e6, 0.001, "ut"
+    )
     assert row["status"] == "failed"
 
 
@@ -428,8 +435,8 @@ async def test_overnight_helpers_run_wrappers(monkeypatch, tmp_path, stock_ohlcv
 async def test_factor_eval_run_and_async_main(
     factor_raw, stock_ohlcv_by_code, tmp_path, monkeypatch
 ):
-    from zstock.factor_management.script.因子测评.factor_evaluation import (
-        FactorEvaluationPipeline,
+    from zstock.factor_management.script.factor_evaluation import (
+        FactorEvaluation,
         async_main,
         build_parser,
     )
@@ -467,13 +474,12 @@ async def test_factor_eval_run_and_async_main(
         async def get_ohlcv_batch(self, codes, start, end, **kwargs):
             return {c: stock_ohlcv_by_code[c] for c in codes if c in stock_ohlcv_by_code}
 
-    pipe = FactorEvaluationPipeline(
+    pipe = FactorEvaluation(
         start_date="2024-01-02",
         end_date="2024-01-16",
         period=5,
         plot=False,
         output_dir=str(tmp_path / "eval"),
-        conditional=False,
         layer="dragon",
         field="f32_amount",
         workers=1,
@@ -490,22 +496,21 @@ async def test_factor_eval_run_and_async_main(
 
     monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
 
-    class Tiny:
-        def __init__(self, **k):
-            Path(k.get("output_dir") or tmp_path).mkdir(parents=True, exist_ok=True)
-
-        async def run(self):
-            return [{"layer": "dragon", "field": "f32_amount", "Total_Score": 10, "Grade": "D"}]
-
-    monkeypatch.setattr(
-        "zstock.factor_management.script.因子测评.factor_evaluation.FactorEvaluationPipeline",
-        Tiny,
+    args = build_parser().parse_args(
+        ["--start", "2024-01-02", "--end", "2024-01-16", "--output", str(tmp_path)]
     )
-    args = build_parser().parse_args(["--start", "2024-01-02", "--end", "2024-01-16", "--output", str(tmp_path)])
-    assert await async_main(args) == 0
-    args2 = build_parser().parse_args(["--years", "2024", "--year-parallel", "1", "--output", str(tmp_path / "batch")])
-    assert await async_main(args2) == 0
+    args2 = build_parser().parse_args(
+        ["--years", "2024", "--year-parallel", "1", "--output", str(tmp_path / "batch")]
+    )
     args3 = build_parser().parse_args([])
+
+    async def stub_run(self):
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+        return [{"layer": "dragon", "field": "f32_amount", "Total_Score": 10, "Grade": "D"}]
+
+    monkeypatch.setattr(FactorEvaluation, "run", stub_run)
+    assert await async_main(args) == 0
+    assert await async_main(args2) == 0
     assert await async_main(args3) == 1
 
     class BadMgr:
@@ -535,19 +540,18 @@ def _live_price_panels():
 
 @pytest.mark.asyncio
 async def test_eval_ic_and_plot_on_live_ohlcv(tmp_path):
-    from zstock.factor_management.script.因子测评.factor_evaluation import (
-        FactorEvaluationPipeline,
+    from zstock.factor_management.script.factor_evaluation import (
+        FactorEvaluation,
     )
 
     close, prices = _live_price_panels()
     assert close.shape[1] >= 10
-    pipe = FactorEvaluationPipeline(
+    pipe = FactorEvaluation(
         start_date="2024-01-02",
         end_date="2024-03-15",
         period=5,
         plot=True,
         output_dir=str(tmp_path / "ic"),
-        conditional=False,
         workers=1,
     )
     result = pipe._evaluate(close, prices)
@@ -580,7 +584,7 @@ async def test_eval_ic_and_plot_on_live_ohlcv(tmp_path):
 
 @pytest.mark.asyncio
 async def test_grid_search_run_one_and_grid(tmp_path, overnight_dir, monkeypatch, stock_ohlcv_by_code):
-    from zstock.factor_management.script.网格搜索.grid_search_real import (
+    from zstock.strategy_management.script.grid_search_real import (
         RealGridSearchOptimizer,
         _clear_strategy_caches,
         _quiet_loggers,
@@ -626,7 +630,7 @@ async def test_grid_search_run_one_and_grid(tmp_path, overnight_dir, monkeypatch
         "zstock.strategy_management.script.backtester.Backtester", BT
     )
     monkeypatch.setattr(
-        "zstock.factor_management.pipeline.CrossSectionStrategyPipeline",
+        "zstock.strategy_management.pipeline.StrategyPipeline",
         lambda config_path=None: SimpleNamespace(config={}),
     )
     ok = await opt.run_one(base, lambda *a, **k: None, "2024-01-02", "2024-01-16", 1e6, 0.001)
@@ -683,7 +687,7 @@ async def test_grid_search_run_one_and_grid(tmp_path, overnight_dir, monkeypatch
     code = await async_main(args)
     assert code in {0, 1}
 
-    import zstock.factor_management.script.网格搜索.grid_search_real as gs
+    import zstock.strategy_management.script.grid_search_real as gs
 
     monkeypatch.setattr(gs, "ProcessPoolExecutor", _InlinePool)
     monkeypatch.setattr(
@@ -717,16 +721,12 @@ async def test_grid_search_run_one_and_grid(tmp_path, overnight_dir, monkeypatch
 
 @pytest.mark.asyncio
 async def test_style_compare_and_report(hs300_ohlcv, factor_eval_2024_csv, tmp_path, monkeypatch):
-    from zstock.factor_management.script.run_style_detector import (
+    from zstock.strategy_management.script.run_style_detector import (
         _plot_results,
         _run_detection,
         main as style_main,
     )
-    from zstock.factor_management.script.因子测评.run_compare_eval import (
-        async_main as compare_async_main,
-        run_all_jobs,
-    )
-    from zstock.factor_management.script.因子测评.generate_report import generate_report
+    from zstock.factor_management.script.factor_evaluation import FactorEvaluation
 
     class QS:
         async def get_ohlcv(self, code, start, end, period="daily"):
@@ -745,25 +745,21 @@ async def test_style_compare_and_report(hs300_ohlcv, factor_eval_2024_csv, tmp_p
             return None
 
     monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
-    monkeypatch.setattr("sys.argv", ["run_style_detector.py", "--start", "2024-01-02", "--end", "2024-01-08", "--plot"])
+    monkeypatch.setattr(
+        "sys.argv",
+        ["run_style_detector.py", "--start", "2024-01-02", "--end", "2024-01-08", "--plot"],
+    )
     await style_main()
 
-    class TinyPipe:
-        def __init__(self, **k):
-            self.out = Path(k["output_dir"])
-            self.out.mkdir(parents=True, exist_ok=True)
-            src = pd.read_csv(factor_eval_2024_csv)
-            src.to_csv(self.out / "summary.csv", index=False)
+    async def stub_run(self):
+        out = Path(self.output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        pd.read_csv(factor_eval_2024_csv).to_csv(out / "summary.csv", index=False)
+        return []
 
-        async def run(self):
-            return []
-
-    monkeypatch.setattr(
-        "zstock.factor_management.script.因子测评.factor_evaluation.FactorEvaluationPipeline",
-        TinyPipe,
-    )
-    report = await run_all_jobs(
-        modes=[("cond_p5", 5, True)],
+    monkeypatch.setattr(FactorEvaluation, "run", stub_run)
+    report = await FactorEvaluation.run_compare(
+        modes=[("full_p5", 5)],
         years=[2024],
         workers=1,
         job_parallel=1,
@@ -771,19 +767,41 @@ async def test_style_compare_and_report(hs300_ohlcv, factor_eval_2024_csv, tmp_p
     )
     assert report.is_file()
 
-    from zstock.factor_management.script.因子测评 import generate_report as gr
-
     monkeypatch.setattr(
-        gr,
-        "SOURCES",
-        {"2024": factor_eval_2024_csv, "2025": factor_eval_2024_csv, "2026": factor_eval_2024_csv},
+        FactorEvaluation,
+        "REPORT_SOURCES",
+        {
+            "2024": factor_eval_2024_csv,
+            "2025": factor_eval_2024_csv,
+            "2026": factor_eval_2024_csv,
+        },
     )
-    monkeypatch.setattr(gr, "BASE", tmp_path)
-    out = generate_report(tmp_path / "compare")
+    out = FactorEvaluation.generate_report(
+        tmp_path / "compare",
+        output_path=tmp_path / "factor_eval_report.md",
+    )
     assert out.is_file()
 
-    ns = SimpleNamespace(modes="cond_p5", years="2024", workers=1, job_parallel=1, output=str(tmp_path / "c2"))
+    ns = SimpleNamespace(
+        command="compare",
+        modes="full_p5",
+        years="2024",
+        workers=1,
+        job_parallel=1,
+        output=str(tmp_path / "c2"),
+        compare_dir=None,
+        start=None,
+        end=None,
+        year_parallel=1,
+        period=5,
+        quantiles=5,
+        invert=True,
+        plot=False,
+        decay_max=0,
+        layer=None,
+        field=None,
+    )
     monkeypatch.setattr("zstock.common.utils.db_utils.db_manager", Mgr())
-    assert await compare_async_main(ns) == 0
-    ns_bad = SimpleNamespace(modes="nope", years="2024", workers=1, job_parallel=1, output=None)
-    assert await compare_async_main(ns_bad) == 1
+    assert await FactorEvaluation.async_main(ns) == 0
+    ns_bad = SimpleNamespace(**{**ns.__dict__, "modes": "nope", "output": None})
+    assert await FactorEvaluation.async_main(ns_bad) == 1

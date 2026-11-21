@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -13,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 mongo_client: Optional[AsyncIOMotorClient] = None
 mongo_db = None
+
+# 隔离线程/事件循环用的临时库句柄；绝不写入全局 db_manager，避免主循环拿到跨 loop 的 Motor。
+_db_override: ContextVar[Any] = ContextVar("zstock_db_override", default=None)
 
 
 def _load_project_env() -> None:
@@ -75,15 +80,36 @@ class MongoConnection:
         self.mongo_client: Optional[AsyncIOMotorClient] = None
         self.mongo_db = None
 
-    async def init_mongodb(self) -> None:
+    async def init_mongodb(
+        self,
+        *,
+        force: bool = False,
+        max_pool: Optional[int] = None,
+        min_pool: Optional[int] = None,
+    ) -> None:
+        """初始化连接。若已连接且 force=False，仅 ping 复用，避免重复开大连接池。
+
+        隔离会话（ContextVar 已注入）下直接返回，避免在错误的 event loop 上 ping 全局客户端。
+        """
         global mongo_client, mongo_db
+        if _db_override.get() is not None and not force:
+            return
+        if self.mongo_client is not None and not force:
+            try:
+                await self.mongo_client.admin.command("ping")
+                return
+            except Exception:
+                logger.warning("已有 Mongo 客户端 ping 失败，将重建连接")
         cfg = _mongo_settings()
+        pool_max = int(max_pool) if max_pool is not None else int(cfg["max_pool"])
+        pool_min = int(min_pool) if min_pool is not None else int(cfg["min_pool"])
+        pool_min = max(0, min(pool_min, pool_max))
         logger.info("正在初始化 MongoDB 连接")
         try:
             self.mongo_client = AsyncIOMotorClient(
                 cfg["uri"],
-                maxPoolSize=cfg["max_pool"],
-                minPoolSize=cfg["min_pool"],
+                maxPoolSize=pool_max,
+                minPoolSize=pool_min,
                 maxIdleTimeMS=30000,
                 serverSelectionTimeoutMS=cfg["server_selection_timeout_ms"],
                 connectTimeoutMS=cfg["connect_timeout_ms"],
@@ -93,7 +119,12 @@ class MongoConnection:
             await self.mongo_client.admin.command("ping")
             mongo_client = self.mongo_client
             mongo_db = self.mongo_db
-            logger.info("MongoDB 已连接，库 %s，连接池 %s-%s", cfg["database"], cfg["min_pool"], cfg["max_pool"])
+            logger.info(
+                "MongoDB 已连接，库 %s，连接池 %s-%s",
+                cfg["database"],
+                pool_min,
+                pool_max,
+            )
         except Exception as e:
             logger.error("MongoDB 连接失败: %s", e)
             raise
@@ -116,10 +147,52 @@ db_manager = MongoConnection()
 
 
 def get_database():
-    """返回已初始化的 MongoDB 数据库。未初始化时抛出 RuntimeError。"""
+    """返回当前可用的 MongoDB 数据库。
+
+    优先使用隔离会话注入的 ContextVar；否则用进程级 db_manager。
+    未初始化时抛出 RuntimeError。
+    """
+    override = _db_override.get()
+    if override is not None:
+        return override
     if db_manager.mongo_client is None:
         raise RuntimeError("MongoDB客户端未初始化")
     return db_manager.mongo_db
+
+
+@asynccontextmanager
+async def isolated_mongo_session(
+    *,
+    max_pool: int = 8,
+    min_pool: int = 1,
+) -> AsyncIterator[Any]:
+    """在独立事件循环里开临时 Mongo 连接，仅通过 ContextVar 注入。
+
+    不改动全局 db_manager / 模块级 mongo_*，主循环轮询 API 可继续用原客户端。
+    """
+    cfg = _mongo_settings()
+    pool_max = max(1, int(max_pool))
+    pool_min = max(0, min(int(min_pool), pool_max))
+    client = AsyncIOMotorClient(
+        cfg["uri"],
+        maxPoolSize=pool_max,
+        minPoolSize=pool_min,
+        maxIdleTimeMS=30000,
+        serverSelectionTimeoutMS=cfg["server_selection_timeout_ms"],
+        connectTimeoutMS=cfg["connect_timeout_ms"],
+        socketTimeoutMS=cfg["socket_timeout_ms"],
+    )
+    db = client[cfg["database"]]
+    await client.admin.command("ping")
+    token = _db_override.set(db)
+    try:
+        yield db
+    finally:
+        _db_override.reset(token)
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 async def init_zstock_database() -> None:

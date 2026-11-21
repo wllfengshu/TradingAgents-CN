@@ -52,19 +52,169 @@ def is_st(name: str) -> bool:
     """根据股票名称判断是否 ST（含 *ST / ST）。"""
     return 'ST' in (name or '').upper()
 
-def limit_up_threshold(code: str) -> float:
-    """按板块返回涨停判定阈值（略低于法定幅度，兼容四舍五入）。
+# 创业板注册制涨跌幅由 10% 改为 20% 的生效日（含当日）。
+_CHINEXT_20_DATE = "2020-08-24"
 
-    - 主板约 10% → 0.095
-    - 创业板 / 科创板约 20% → 0.195
-    - 北交所约 30% → 0.295
+
+def limit_ratio(code: str, trade_date: Optional[str] = None, name: str = "") -> float:
+    """法定涨跌幅比例。
+
+    主板 10%，主板 ST/*ST 5%，科创板 20%，北交所 30%。
+    创业板在 2020-08-24 之前为 10%（ST 5%），当日及之后为 20%。
     """
     c = normalize_code(code)
-    if c.startswith("688") or c.startswith(("300", "301")):
-        return 0.195
-    if len(c) == 6 and c.startswith(("8", "4")):
-        return 0.295
-    return 0.095
+    st = is_st(name)
+    if c.startswith("688"):
+        return 0.20
+    if c.startswith(("300", "301")):
+        if trade_date and normalize_date(str(trade_date)) < _CHINEXT_20_DATE:
+            return 0.05 if st else 0.10
+        return 0.20
+    if len(c) == 6 and (c.startswith(("8", "4")) or c.startswith("92")):
+        return 0.30
+    if st:
+        return 0.05
+    return 0.10
+
+
+def limit_up_threshold(code: str, trade_date: Optional[str] = None, name: str = "") -> float:
+    """法定涨跌幅比例。成交判定用 is_limit_up / is_limit_down（四舍五入到分）。"""
+    return limit_ratio(code, trade_date, name)
+
+
+def limit_price(pre_close: float, ratio: float, *, up: bool) -> float:
+    """涨跌停价：前收 × (1±比例)，四舍五入到分。"""
+    try:
+        pre = float(pre_close)
+        r = float(ratio)
+    except (TypeError, ValueError):
+        return float("nan")
+    if not (pre > 0) or not math.isfinite(pre) or not math.isfinite(r):
+        return float("nan")
+    raw = pre * (1.0 + r if up else 1.0 - r)
+    return round(raw + 1e-8, 2)
+
+
+def is_limit_up(
+    code: str,
+    pre_close: float,
+    price: float,
+    trade_date: Optional[str] = None,
+    name: str = "",
+) -> bool:
+    """价格是否封在涨停价（含一价涨停）。"""
+    try:
+        px = float(price)
+        pre = float(pre_close)
+    except (TypeError, ValueError):
+        return False
+    if not (px > 0) or not (pre > 0):
+        return False
+    lim = limit_price(pre, limit_ratio(code, trade_date, name), up=True)
+    return math.isfinite(lim) and px + 1e-6 >= lim
+
+
+def is_limit_down(
+    code: str,
+    pre_close: float,
+    price: float,
+    trade_date: Optional[str] = None,
+    name: str = "",
+) -> bool:
+    """价格是否封在跌停价。收盘封跌停视为卖不出。"""
+    try:
+        px = float(price)
+        pre = float(pre_close)
+    except (TypeError, ValueError):
+        return False
+    if not (px > 0) or not (pre > 0):
+        return False
+    lim = limit_price(pre, limit_ratio(code, trade_date, name), up=False)
+    return math.isfinite(lim) and px <= lim + 1e-6
+
+
+def is_equity_etf(code: str) -> bool:
+    """场内 ETF（股票/跨境/商品等）。买卖有佣金，没有股票印花税。"""
+    c = normalize_code(code)
+    return len(c) == 6 and c.startswith(("15", "16", "51", "56", "58"))
+
+
+def average_rank_percentile(values: dict) -> dict:
+    """平均秩百分位，0=最弱，100=最强。并列取平均秩，按样本数而不是不同取值个数。"""
+    finite = []
+    for key, raw in (values or {}).items():
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(val):
+            finite.append((key, val))
+    n = len(finite)
+    if n == 0:
+        return {}
+    if n == 1:
+        return {finite[0][0]: 100.0}
+    finite.sort(key=lambda item: item[1])
+    out = {}
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and finite[j + 1][1] == finite[i][1]:
+            j += 1
+        avg_rank = (i + 1 + j + 1) / 2.0
+        pct = (avg_rank - 1.0) / (n - 1) * 100.0
+        for k in range(i, j + 1):
+            out[finite[k][0]] = pct
+        i = j + 1
+    return out
+
+
+def buy_shares(code: str, raw_shares: int) -> int:
+    """买入申报股数。主板/ETF 整手 100；科创板 200 股起，超过后可以 1 股递增。"""
+    try:
+        shares = int(raw_shares)
+    except (TypeError, ValueError):
+        return 0
+    if shares <= 0:
+        return 0
+    c = normalize_code(code)
+    if c.startswith("688"):
+        return shares if shares >= 200 else 0
+    return (shares // 100) * 100
+
+
+def sell_shares(code: str, want: int, position: int, can_use: Optional[int] = None) -> int:
+    """卖出申报股数，不超过持仓和可用（T+1）。
+
+    主板不足 100 的余股只能整笔卖出。科创板可用不足 200 时必须一次卖光；
+    卖完后若剩余不足 200 且不为 0，改为卖出全部可用。
+    """
+    try:
+        want_n = int(want)
+        pos_n = int(position)
+    except (TypeError, ValueError):
+        return 0
+    tradable = pos_n
+    if can_use is not None:
+        try:
+            tradable = min(pos_n, int(can_use))
+        except (TypeError, ValueError):
+            tradable = pos_n
+    if want_n <= 0 or tradable <= 0:
+        return 0
+    want_n = min(want_n, tradable)
+    c = normalize_code(code)
+    if c.startswith("688"):
+        if tradable < 200:
+            return tradable if want_n >= tradable else 0
+        if want_n < 200:
+            return 0
+        if 0 < tradable - want_n < 200:
+            return tradable
+        return want_n
+    if want_n >= tradable:
+        return tradable
+    return (want_n // 100) * 100
 
 def ensure_ohlcv_sorted(df):
     """保证 OHLCV DataFrame 按 trade_date 升序；无该列则原样返回。"""
@@ -89,7 +239,10 @@ def ohlcv_asof(df, trade_date: Optional[str], *, require_exact: bool = True):
     """
     if df is None or getattr(df, "empty", True):
         return None
-    if not trade_date or "trade_date" not in df.columns:
+    if not trade_date or "trade_date" not in getattr(df, "columns", []):
+        # 调用方要求「恰好当日」但没有日期列时，不能把整段历史当成当日。
+        if require_exact and trade_date:
+            return None
         return ensure_ohlcv_sorted(df)
 
     td = normalize_date(trade_date)

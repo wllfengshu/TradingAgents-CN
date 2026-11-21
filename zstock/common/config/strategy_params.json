@@ -1,16 +1,59 @@
 {
   "strategy_name": "截面日频龙头策略",
-  "description": "v1.31.0 三状态：进攻截面选股，中性行业ETF，防守国债/黄金/政金债；空闲资金买入国债",
-  "version": "1.31.0",
+  "description": "v1.36.0 债基/黄金 ETF 回测零手续费；黄金袖套趋势闸+快出+硬止损",
+  "version": "1.36.0",
   "book_regime": {
     "enabled": true,
-    "confirm_green_days": 3,
+    "confirm_green_days": 2,
+    "gold_ma_confirm_days": 2,
+    "gold_exit_confirm_days": 0,
+    "gold_sleeve_stop_pct": -0.06,
+    "gold_stop_cooldown_days": 5,
+    "gold_ma_short": 20,
+    "gold_ma_trend": 60,
+    "attack_skip_neutral_on_green": true,
+    "industry_stop_loss_pct": -0.06,
+    "industry_rel_index_gate": 0.0,
+    "industry_min_positive_mom": 2,
+    "industry_narrow_max_weight": 0.3,
     "min_utilization": 0.9,
-    "rebalance_band": 0.03,
-    "bond_code": "511260"
+    "rebalance_band": 0.10,
+    "bond_code": "511260",
+    "bond_fallback": "511010",
+    "bond30_code": "511090",
+    "gold_code": "518880",
+    "bank_code": "512800",
+    "policy_code": "511520",
+    "index_code": "399300",
+    "industry_etfs": [
+      "159928",
+      "512010",
+      "512880",
+      "512660",
+      "512400",
+      "512800",
+      "512480"
+    ],
+    "defense_policy_weight": 0.4,
+    "defense_bank_weight": 0.3,
+    "defense_gold_weight": 0.3,
+    "mom_window": 20,
+    "vol_window": 20,
+    "top_n": 3,
+    "rank_buffer": 2,
+    "max_weight": 0.4,
+    "vol_target": 0.25,
+    "attack_idle": "industry",
+    "regime_ma": 120,
+    "regime_confirm": 5,
+    "dd_stop": 0.15,
+    "dd_min_days": 15,
+    "repair_ma": 60,
+    "repair_lookback": 20,
+    "min_history": 60
   },
   "market_selection": {
-    "factor_pipeline_stops_on_red": false,
+    "stops_on_red": false,
     "strategy_blocks_new_on_red": true,
     "position_scale_applied_in": "strategy"
   },
@@ -20,25 +63,26 @@
     "end_date": "2024-12-31",
     "initial_capital": 10000000,
     "fee_rate": 0.0015,
+    "stamp_tax": 0.0005,
     "benchmark": "沪深300",
-    "rebalance_freq": 5
+    "rebalance_freq": 10
   },
   "adaptive_rebalance": {
     "enabled": true,
-    "default_freq": 5,
-    "min_freq": 3,
-    "max_freq": 8,
+    "default_freq": 10,
+    "min_freq": 10,
+    "max_freq": 10,
     "use_min_freq": true,
     "by_regime": {
-      "momentum": 5,
-      "reversal": 3,
-      "neutral": 4,
-      "volatile": 3
+      "momentum": 10,
+      "reversal": 10,
+      "neutral": 10,
+      "volatile": 10
     },
     "by_market_grade": {
-      "green": 5,
-      "yellow": 3,
-      "red": 8
+      "green": 10,
+      "yellow": 10,
+      "red": 10
     }
   },
   "factor_decay": {
@@ -66,6 +110,7 @@
   },
   "cooperative_force": {
     "threshold_pct": 0.01,
+    "min_sustained_days": 1,
     "by_regime": {
       "momentum": {
         "threshold_pct": 0.005
@@ -85,6 +130,7 @@
       "cooperative": 0.25
     },
     "top_k": 5,
+    "rank_hold_buffer": 5,
     "by_regime": {
       "reversal": {
         "top_k": 3
@@ -97,8 +143,9 @@
   },
   "turnover_control": {
     "buffer_threshold": 0.25,
-    "min_hold_days": 3,
-    "fill_open_slots": true
+    "min_hold_days": 8,
+    "fill_open_slots": true,
+    "fee_free_codes": ["511260", "511010", "511090", "511520", "518880"]
   },
   "exit_rules": {
     "hard_stop_loss_pct": -0.08,
@@ -350,6 +397,31 @@
   },
   "portfolio_optimization": {
     "fill_weights_to_position_scale": true,
-    "max_single_stock_cap": 0.4
+    "max_single_stock_cap": 0.2
+  },
+  "intraday_risk": {
+    "default": {
+      "name": "股票",
+      "settle": "T1",
+      "position_dd": 0.10,
+      "intraday_dd": 0.08,
+      "profit_activate_cny": 150000,
+      "profit_dd": 0.04,
+      "limit_pct": 0.10
+    },
+    "codes": [
+      {"code": "159928", "name": "消费", "settle": "T1", "position_dd": 0.08, "intraday_dd": 0.04, "profit_activate_cny": 100000, "profit_dd": 0.04, "limit_pct": 0.10},
+      {"code": "512010", "name": "医药", "settle": "T1", "position_dd": 0.08, "intraday_dd": 0.04, "profit_activate_cny": 100000, "profit_dd": 0.04, "limit_pct": 0.10},
+      {"code": "512880", "name": "证券", "settle": "T1", "position_dd": 0.08, "intraday_dd": 0.04, "profit_activate_cny": 100000, "profit_dd": 0.04, "limit_pct": 0.10},
+      {"code": "512660", "name": "军工", "settle": "T1", "position_dd": 0.08, "intraday_dd": 0.04, "profit_activate_cny": 100000, "profit_dd": 0.04, "limit_pct": 0.10},
+      {"code": "512400", "name": "有色", "settle": "T1", "position_dd": 0.08, "intraday_dd": 0.04, "profit_activate_cny": 100000, "profit_dd": 0.04, "limit_pct": 0.10},
+      {"code": "512800", "name": "银行", "settle": "T1", "position_dd": 0.08, "intraday_dd": 0.04, "profit_activate_cny": 100000, "profit_dd": 0.04, "limit_pct": 0.10},
+      {"code": "512480", "name": "半导体", "settle": "T1", "position_dd": 0.08, "intraday_dd": 0.04, "profit_activate_cny": 100000, "profit_dd": 0.04, "limit_pct": 0.10},
+      {"code": "511260", "name": "十年国债", "settle": "T0", "position_dd": 0.02, "intraday_dd": 0.01, "profit_activate_cny": 30000, "profit_dd": 0.02, "limit_pct": 0.10},
+      {"code": "511010", "name": "五年国债", "settle": "T0", "position_dd": 0.02, "intraday_dd": 0.01, "profit_activate_cny": 30000, "profit_dd": 0.02, "limit_pct": 0.10},
+      {"code": "511090", "name": "三十年国债", "settle": "T0", "position_dd": 0.02, "intraday_dd": 0.01, "profit_activate_cny": 30000, "profit_dd": 0.02, "limit_pct": 0.10},
+      {"code": "511520", "name": "政金债", "settle": "T0", "position_dd": 0.02, "intraday_dd": 0.01, "profit_activate_cny": 30000, "profit_dd": 0.02, "limit_pct": 0.10},
+      {"code": "518880", "name": "黄金", "settle": "T0", "position_dd": 0.06, "intraday_dd": 0.02, "profit_activate_cny": 80000, "profit_dd": 0.03, "limit_pct": 0.10}
+    ]
   }
 }

@@ -11,8 +11,9 @@ import pandas as pd
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SIGNAL_FIXTURE = PROJECT_ROOT / "zstock" / "strategy_management" / "test" / "fixtures" / "score_signals_bundle.json"
-OHLCV_FIXTURE = PROJECT_ROOT / "zstock" / "strategy_management" / "test" / "fixtures" / "ohlcv_bundle.json"
+FIXTURES_DIR = PROJECT_ROOT / "test" / "strategy_management" / "test" / "fixtures"
+SIGNAL_FIXTURE = FIXTURES_DIR / "score_signals_bundle.json"
+OHLCV_FIXTURE = FIXTURES_DIR / "ohlcv_bundle.json"
 PARAMS_PATH = PROJECT_ROOT / "zstock" / "common" / "config" / "strategy_params.json"
 
 
@@ -98,30 +99,38 @@ class FakeDB:
             return docs
         return [d for d in docs if all(d.get(k) == v for k, v in query.items())]
 
+    def _find_oid(self, query: Optional[Dict[str, Any]]) -> Optional[str]:
+        query = query or {}
+        if query.get("order_id") and query["order_id"] in self.store:
+            return query["order_id"]
+        for oid, doc in self.store.items():
+            if all(doc.get(k) == v for k, v in query.items()):
+                return oid
+        return None
+
     async def update_one(self, collection, query, update, upsert: bool = False):
-        oid = (query or {}).get("order_id")
-        # 支持 $set / $setOnInsert / $push 三种最常见的更新算子，
-        # 与生产 DatabaseService 语义对齐（P0#1/P0#5 的 upsert 语义）。
+        # 支持按 order_id / xt_order_id 等字段定位；兼容 $set / $setOnInsert / $push
         set_patch = update.get("$set") if isinstance(update, dict) and "$set" in update else None
         setoninsert = update.get("$setOnInsert") if isinstance(update, dict) else None
         push_patch = update.get("$push") if isinstance(update, dict) else None
-        # 无 $ 操作符时把整个 update 当作 $set
         if set_patch is None and setoninsert is None and push_patch is None:
             set_patch = update if isinstance(update, dict) else None
 
+        oid = self._find_oid(query)
         if not oid:
-            return 0
-        if oid not in self.store:
             if not upsert:
                 return 0
-            # upsert：插入新文档，先写 $setOnInsert，再叠加 $set
             base = dict(setoninsert or {})
             base.update(set_patch or {})
+            if isinstance(query, dict):
+                for k, v in query.items():
+                    if not isinstance(v, dict):
+                        base.setdefault(k, v)
+            oid = base.get("order_id") or f"up-{len(self.store)+1}"
             base.setdefault("order_id", oid)
             self.store[oid] = base
             self.inserted.append(dict(base))
             return 1
-        # 已存在：$set 覆盖，$push 追加到数组字段，$setOnInsert 忽略
         if set_patch:
             self.store[oid].update(set_patch)
         if push_patch:
@@ -192,7 +201,7 @@ def fake_db() -> FakeDB:
 
 @pytest.fixture(scope="session")
 def target_holdings(jan_signals, strategy_params) -> pd.DataFrame:
-    from zstock.strategy_management.portfolio_optimizer import PortfolioOptimizer
+    from zstock.strategy_management.strategy_section.optimizer import PortfolioOptimizer
 
     cap = float(strategy_params["portfolio"]["max_weight_per_stock"])
     top_k = int(strategy_params["final_score"]["top_k"])

@@ -1,0 +1,120 @@
+[
+  {
+    "collection": "capital_flow",
+    "problems": [
+      "missing_days=1660 cov=0.18%"
+    ]
+  },
+  {
+    "collection": "market_data",
+    "problems": [
+      "missing_days=1623 cov=2.41%"
+    ]
+  },
+  {
+    "collection": "market_quotes",
+    "problems": [
+      "missing_days=1662 cov=0.06%"
+    ]
+  },
+  {
+    "collection": "paper_orders",
+    "problems": [
+      "dup_groups=1"
+    ]
+  },
+  {
+    "collection": "paper_trades",
+    "problems": [
+      "dup_groups=1"
+    ]
+  },
+  {
+    "collection": "scheduler_executions",
+    "problems": [
+      "dup_groups=20"
+    ]
+  },
+  {
+    "collection": "scheduler_history",
+    "problems": [
+      "dup_groups=7"
+    ]
+  },
+  {
+    "collection": "sector_stocks",
+    "problems": [
+      "missing_days=1660 cov=0.18%"
+    ]
+  },
+  {
+    "collection": "stock_daily_quotes",
+    "problems": [
+      "missing_days=89 cov=94.65%",
+      "probe_codes_with_gaps=18"
+    ]
+  },
+  {
+    "collection": "stock_financial_data",
+    "problems": [
+      "missing_days=1660 cov=0.18%"
+    ]
+  },
+  {
+    "collection": "stock_news",
+    "problems": [
+      "dup_groups=7",
+      "missing_days=1663 cov=0.0%"
+    ]
+  },
+  {
+    "collection": "stock_screening_view",
+    "problems": [
+      "dup_groups=5183",
+      "missing_days=1662 cov=0.06%"
+    ]
+  },
+  {
+    "collection": "trade_status",
+    "problems": [
+      "missing_days=1660 cov=0.18%"
+    ]
+  },
+  {
+    "collection": "zstock_capital_flow",
+    "problems": [
+      "probe_codes_with_gaps=13"
+    ]
+  },
+  {
+    "collection": "zstock_factor_dragon",
+    "problems": [
+      "probe_codes_with_gaps=13"
+    ]
+  },
+  {
+    "collection": "zstock_factor_force",
+    "problems": [
+      "probe_codes_with_gaps=13"
+    ]
+  },
+  {
+    "collection": "zstock_fundamental_holder",
+    "problems": [
+      "missing_days=36 cov=97.84%"
+    ]
+  },
+  {
+    "collection": "zstock_fundamental_pershare",
+    "problems": [
+      "dup_groups=9525",
+      "missing_days=711 cov=57.25%"
+    ]
+  },
+  {
+    "collection": "zstock_ohlcv",
+    "problems": [
+      "probe_codes_with_gaps=12"
+    ]
+  }
+]

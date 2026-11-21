@@ -1,0 +1,356 @@
+{
+  "strategy_name": "截面日频龙头策略",
+  "description": "v1.31.0 三状态：进攻截面选股，中性行业ETF，防守国债/黄金/政金债；空闲资金买入国债",
+  "version": "1.31.0",
+  "book_regime": {
+    "enabled": true,
+    "confirm_green_days": 3,
+    "min_utilization": 0.9,
+    "rebalance_band": 0.03,
+    "bond_code": "511260"
+  },
+  "market_selection": {
+    "stops_on_red": false,
+    "strategy_blocks_new_on_red": true,
+    "position_scale_applied_in": "strategy"
+  },
+  "style_switching": true,
+  "backtest": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "initial_capital": 10000000,
+    "fee_rate": 0.0015,
+    "benchmark": "沪深300",
+    "rebalance_freq": 5
+  },
+  "adaptive_rebalance": {
+    "enabled": true,
+    "default_freq": 5,
+    "min_freq": 3,
+    "max_freq": 8,
+    "use_min_freq": true,
+    "by_regime": {
+      "momentum": 5,
+      "reversal": 3,
+      "neutral": 4,
+      "volatile": 3
+    },
+    "by_market_grade": {
+      "green": 5,
+      "yellow": 3,
+      "red": 8
+    }
+  },
+  "factor_decay": {
+    "enabled": true,
+    "by_regime": {
+      "reversal": {
+        "field_overrides": {
+          "f33_consecutive_boards": 0.35
+        }
+      }
+    }
+  },
+  "sector_layer": {
+    "top_sectors": 4,
+    "gates": []
+  },
+  "dragon_layer": {
+    "top_per_sector": 2,
+    "gates": [
+      {
+        "field": "f35_bollinger_trend",
+        "op": "finite"
+      }
+    ]
+  },
+  "cooperative_force": {
+    "threshold_pct": 0.01,
+    "min_sustained_days": 1,
+    "by_regime": {
+      "momentum": {
+        "threshold_pct": 0.005
+      },
+      "reversal": {
+        "threshold_pct": 0.01
+      },
+      "neutral": {
+        "threshold_pct": 0.01
+      }
+    }
+  },
+  "final_score": {
+    "weights": {
+      "sector": 0.4,
+      "dragon": 0.35,
+      "cooperative": 0.25
+    },
+    "top_k": 5,
+    "by_regime": {
+      "reversal": {
+        "top_k": 3
+      }
+    }
+  },
+  "portfolio": {
+    "max_weight_per_stock": 0.2,
+    "max_sector_exposure": 0.4
+  },
+  "turnover_control": {
+    "buffer_threshold": 0.25,
+    "min_hold_days": 3,
+    "fill_open_slots": true
+  },
+  "exit_rules": {
+    "hard_stop_loss_pct": -0.08,
+    "rank_percentile_threshold": 0.85,
+    "consecutive_days_out_of_candidates": 3,
+    "flat_after_bad_days": 5,
+    "no_signal_action": "hold",
+    "no_signal_reduce_scale": 0.5
+  },
+  "market_overlay": {
+    "position_scale_yellow": 0.6,
+    "position_scale_green": 1.0,
+    "by_regime": {
+      "momentum": {
+        "position_scale_yellow": 0.85,
+        "position_scale_green": 1.0
+      }
+    }
+  },
+  "target_equity": {
+    "enabled": true,
+    "by_context": {
+      "momentum_green": 1.0,
+      "momentum_yellow": 1.0,
+      "momentum_neutral": 0.95,
+      "reversal_green": 0.7,
+      "reversal_yellow": 0.45,
+      "neutral_green": 0.9,
+      "neutral_yellow": 0.55,
+      "volatile_green": 0.75,
+      "volatile_yellow": 0.4
+    }
+  },
+  "market_factors": {
+    "weights": {
+      "trend_strength": 0.3,
+      "bollinger_position": 0.25,
+      "volume_state": 0.2,
+      "momentum_5day": 0.15,
+      "volatility_suppression": 0.1
+    },
+    "grade_green": 70.0,
+    "grade_yellow": 40.0,
+    "scale_green": 1.0,
+    "scale_yellow": 0.4,
+    "scale_red": 0.0
+  },
+  "style_detector": {
+    "momentum_threshold": 0.05,
+    "reversal_threshold": -0.05,
+    "min_observations": 15,
+    "lookback": 20
+  },
+  "weak_regime_protection": {
+    "enabled": true,
+    "reduce_only": {
+      "enabled": true,
+      "when_regime": [
+        "reversal"
+      ],
+      "when_market_grade": [
+        "yellow"
+      ]
+    },
+    "drawdown_throttle": {
+      "enabled": true,
+      "lookback_days": 20,
+      "drawdown_threshold": 0.1,
+      "scale_factor": 0.7
+    }
+  },
+  "active_factors": {
+    "sector": {
+      "momentum": [
+        {
+          "field": "f28_consistency",
+          "weight": 0.35,
+          "polarity": "negative"
+        },
+        {
+          "field": "f21_rps_20d",
+          "weight": 0.3,
+          "polarity": "negative"
+        },
+        {
+          "field": "f30_sector_concentration",
+          "weight": 0.35,
+          "polarity": "negative"
+        }
+      ],
+      "reversal": [
+        {
+          "field": "f28_consistency",
+          "weight": 0.35,
+          "polarity": "negative"
+        },
+        {
+          "field": "f21_rps_20d",
+          "weight": 0.3,
+          "polarity": "negative"
+        },
+        {
+          "field": "f30_sector_concentration",
+          "weight": 0.35,
+          "polarity": "negative"
+        }
+      ]
+    },
+    "dragon": {
+      "momentum": [
+        {
+          "field": "f33_consecutive_boards",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f34_resonance_pct_5d",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f36_identity_premium",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f38_turnover_anomaly",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f39_pb",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f40_holder_change",
+          "weight": 0.1667,
+          "polarity": "negative"
+        }
+      ],
+      "reversal": [
+        {
+          "field": "f33_consecutive_boards",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f34_resonance_pct_5d",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f36_identity_premium",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f38_turnover_anomaly",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f39_pb",
+          "weight": 0.1667,
+          "polarity": "negative"
+        },
+        {
+          "field": "f40_holder_change",
+          "weight": 0.1667,
+          "polarity": "negative"
+        }
+      ]
+    },
+    "force": {
+      "momentum": [
+        {
+          "field": "fcoop8_main_flow_trend_5d",
+          "weight": 0.276,
+          "polarity": "positive"
+        },
+        {
+          "field": "fcoop7_super_large_net_ratio",
+          "weight": 0.23,
+          "polarity": "positive"
+        },
+        {
+          "field": "fcoop1_main_net_ratio",
+          "weight": 0.23,
+          "polarity": "positive"
+        },
+        {
+          "field": "fcoop6_main_force_aggression",
+          "weight": 0.184,
+          "polarity": "positive"
+        },
+        {
+          "field": "fcoop5_main_flow_acceleration",
+          "weight": 0.08,
+          "polarity": "positive"
+        }
+      ],
+      "reversal": [
+        {
+          "field": "fcoop4_turnover_quality",
+          "weight": 0.55,
+          "polarity": "negative"
+        },
+        {
+          "field": "f_mean_reversion_signal",
+          "weight": 0.45,
+          "polarity": "negative"
+        }
+      ]
+    },
+    "profiles": {
+      "momentum_green": {
+        "dragon": {
+          "momentum": [
+            {
+              "field": "f31b_rps_percentile",
+              "weight": 0.3,
+              "polarity": "positive"
+            },
+            {
+              "field": "f35_bollinger_trend",
+              "weight": 0.25,
+              "polarity": "positive"
+            },
+            {
+              "field": "f33_consecutive_boards",
+              "weight": 0.15,
+              "polarity": "negative"
+            },
+            {
+              "field": "f39_pb",
+              "weight": 0.15,
+              "polarity": "negative"
+            },
+            {
+              "field": "f38_turnover_anomaly",
+              "weight": 0.15,
+              "polarity": "negative"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "portfolio_optimization": {
+    "fill_weights_to_position_scale": true,
+    "max_single_stock_cap": 0.4
+  }
+}

@@ -9,11 +9,23 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { api, type WorkbenchSummary } from '../api'
+import { api, type QuoteItem, type WorkbenchSummary } from '../api'
 
 function fmtPct(v: number | null | undefined) {
   if (v == null || Number.isNaN(v)) return ''
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+}
+
+function fmtPrice(v: number | null | undefined, currency?: string) {
+  if (v == null || Number.isNaN(v)) return '—'
+  const digits = currency === 'USD' ? 2 : v >= 1000 ? 2 : 2
+  const body = v.toLocaleString('zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+  if (currency === 'USD') return `$${body}`
+  if (currency === 'CNY/g') return `${body} 元/克`
+  return body
 }
 
 function shortName(name: string) {
@@ -69,8 +81,13 @@ export default function WorkbenchPage() {
   }
   if (!timeline.length && data) timeline.push({ t: '—', text: '暂无近期活动' })
 
-  const index = data?.market?.index
-  const gold = data?.market?.gold
+  const marketQuotes = useMemo((): QuoteItem[] => {
+    const fromList = data?.market?.quotes
+    if (fromList && fromList.length) return fromList
+    return [data?.market?.index, data?.market?.gold, data?.market?.gold_sge].filter(
+      (q): q is QuoteItem => Boolean(q),
+    )
+  }, [data])
   const news = data?.news || []
   const nightlyOk = data?.nightly?.status && !/disabled|error|fail/i.test(String(data.nightly.status))
   const strategyCount = data?.recent_strategies?.length ?? 0
@@ -140,28 +157,29 @@ export default function WorkbenchPage() {
 
   return (
     <>
-      <div className="welcome">
+      <div className="page-head">
         <div>
-          <h1>欢迎回来</h1>
-          <p>{error || data?.headline || '加载今日状态…'}</p>
+          <p className="page-kicker">Overview</p>
+          <h1 className="page-title">工作台</h1>
+          <p className="page-lead">{error || data?.headline || '加载今日状态…'}</p>
         </div>
-        <div className="muted" style={{ fontSize: '0.9rem' }}>
+        <div className="muted" style={{ fontSize: '0.85rem' }}>
           {today}
         </div>
       </div>
 
       <div className="stat-row">
-        <div className="card hoverable stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">进行中任务</div>
           <div className="value">{data?.running_jobs ?? '—'}</div>
-          <div className="hint">调用 / 异步队列</div>
+          <div className="hint">异步队列</div>
         </div>
-        <div className="card hoverable stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">订单数</div>
           <div className="value">{data?.order_count ?? '—'}</div>
-          <div className="hint">成交与委托总量</div>
+          <div className="hint">委托与成交</div>
         </div>
-        <div className="card hoverable stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">近期回测</div>
           <div className="value">{backtestCount || '—'}</div>
           <div className="hint">研究产出</div>
@@ -193,7 +211,7 @@ export default function WorkbenchPage() {
                   }}
                   formatter={(value) => [Number(value).toLocaleString(), '文档数']}
                 />
-                <Bar dataKey="count" fill="#2563EB" radius={[6, 6, 0, 0]} maxBarSize={42} />
+                <Bar dataKey="count" fill="#18181b" radius={[4, 4, 0, 0]} maxBarSize={36} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -201,27 +219,38 @@ export default function WorkbenchPage() {
 
         <div className="card">
           <h2>行情与状态</h2>
-          <div className="quote-bar">
-            <div className="quote-item">
-              <div className="name">{index?.name || '大盘'}</div>
-              <div className="price mono">
-                {index?.price != null ? index.price.toLocaleString() : '—'}
-                {index?.change_pct != null && (
-                  <span
-                    className={index.change_pct >= 0 ? 'ok' : 'danger'}
-                    style={{ marginLeft: 8, fontSize: '0.95rem' }}
-                  >
-                    {fmtPct(index.change_pct)}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="quote-item">
-              <div className="name">{gold?.name || '国际金价'}</div>
-              <div className="price mono">
-                {gold?.price != null ? gold.price.toLocaleString() : '—'}
-              </div>
-            </div>
+          <div className="quote-grid">
+            {marketQuotes.length ? (
+              marketQuotes.map((q) => (
+                <div key={q.code || q.name} className="quote-tile">
+                  <div className="name">
+                    {q.name}
+                    {q.currency === 'USD' ? ' · 国际' : ''}
+                    {q.code === 'SGE' ? ' · 国内' : ''}
+                  </div>
+                  <div className="price mono">
+                    {fmtPrice(q.price, q.currency)}
+                    {q.change_pct != null && (
+                      <span
+                        className={q.change_pct >= 0 ? 'ok' : 'danger'}
+                        style={{ marginLeft: 8, fontSize: '0.9rem' }}
+                      >
+                        {fmtPct(q.change_pct)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="meta muted">
+                    {q.cny_per_gram != null
+                      ? `约 ${q.cny_per_gram.toFixed(2)} 元/克`
+                      : q.asof
+                        ? q.asof
+                        : q.message || q.source || ''}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="muted">行情加载中或暂不可用</p>
+            )}
           </div>
           <ul className="bench-list" style={{ marginTop: 8 }}>
             <li>
@@ -236,6 +265,10 @@ export default function WorkbenchPage() {
               <span>行情日期</span>
               <span className="mono muted">{data?.ohlcv_latest || '—'}</span>
             </li>
+            <li>
+              <span>行情刷新</span>
+              <span className="mono muted">{data?.market?.fetched_at || '—'}</span>
+            </li>
           </ul>
         </div>
       </div>
@@ -246,7 +279,7 @@ export default function WorkbenchPage() {
         </h2>
         <div className="grid-modules">
           {modules.map((m) => (
-            <Link key={m.href} to={m.href} className="card hoverable module-card">
+            <Link key={m.href} to={m.href} className="card soft-card module-card">
               <div className="top">
                 <div className="title">{m.title}</div>
                 <span className={`status-dot ${m.status === 'ok' ? 'ok' : m.status === 'warn' ? 'warn' : 'idle'}`} />
@@ -265,7 +298,7 @@ export default function WorkbenchPage() {
               <li key={i}>
                 <div className="t">{item.t || '—'}</div>
                 {item.href ? (
-                  <Link to={item.href} style={{ color: 'var(--primary)', fontWeight: 500 }}>
+                  <Link to={item.href} className="text-link">
                     {item.text}
                   </Link>
                 ) : (

@@ -30,24 +30,24 @@ export default function OrdersPage() {
     <div className="orders-page">
       <div className="page-head">
         <div>
+          <p className="page-kicker">交易</p>
           <h1 className="page-title">订单</h1>
           <p className="page-lead">只读查看委托与成交。</p>
         </div>
-        <button className="primary btn-sm" type="button" onClick={() => void load()}>
+        <button className="primary" type="button" onClick={() => void load()}>
           查询
         </button>
       </div>
       {error && <p className="danger">{error}</p>}
 
-      <div className="card compact-card">
-        <div className="row filter-row" style={{ marginBottom: '0.75rem' }}>
+      <div className="data-panel">
+        <div className="row filter-row" style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)' }}>
           <input className="ctl-sm" placeholder="代码" value={code} onChange={(e) => setCode(e.target.value)} />
           <input className="ctl-sm" placeholder="状态" value={status} onChange={(e) => setStatus(e.target.value)} />
           <input className="ctl-sm" placeholder="环境" value={env} onChange={(e) => setEnv(e.target.value)} />
         </div>
-
         <div className="table-scroll">
-          <table className="table-dense">
+          <table className="data-table">
             <thead>
               <tr>
                 <th>order_id</th>
@@ -66,14 +66,16 @@ export default function OrdersPage() {
                   <td>{String(o.code ?? '')}</td>
                   <td>{String(o.side ?? o.direction ?? '')}</td>
                   <td className="mono">{String(o.qty ?? o.volume ?? o.quantity ?? '')}</td>
-                  <td>{String(o.status ?? '')}</td>
+                  <td>
+                    <span className="pill">{String(o.status ?? '—')}</span>
+                  </td>
                   <td>{String(o.env ?? o.account_type ?? o.mode ?? '')}</td>
                   <td className="mono muted">{String(o.created_at ?? o.trade_date ?? o.updated_at ?? '')}</td>
                 </tr>
               ))}
               {!items.length && (
                 <tr>
-                  <td colSpan={7} className="muted">
+                  <td colSpan={7} className="muted" style={{ padding: '1.5rem 1rem' }}>
                     暂无成交/委托
                   </td>
                 </tr>

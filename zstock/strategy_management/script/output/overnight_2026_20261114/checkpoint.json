@@ -1,0 +1,16 @@
+{
+  "completed_steps": [
+    "preflight"
+  ],
+  "results": {
+    "preflight": {
+      "ok": true,
+      "issues": [],
+      "mongo": "ok",
+      "stock_info_count": 5604,
+      "strategy_params_exists": true
+    }
+  },
+  "output_dir": "E:\\TradingAgents-CN\\zstock\\strategy_management\\script\\output\\overnight_2026_20261114",
+  "updated_at": "2026-11-14T22:17:06.107434"
+}

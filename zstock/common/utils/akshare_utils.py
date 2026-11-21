@@ -51,11 +51,6 @@ def _get_ak():
             ) from e
 
 
-# ============================== 代码格式工具 ==============================
-
-# normalize_code, to_yyyymmdd, determine_market, is_index_code 均从 common_utils 导入
-
-
 # ============================== 行情接口 ==============================
 
 def _get_spot_snapshot(ak) -> pd.DataFrame:
@@ -478,10 +473,10 @@ def fetch_trade_status(symbol: str, trade_date: str) -> Optional[Dict[str, Any]]
             row = spot[spot['代码'] == code]
             if not row.empty:
                 r = row.iloc[0]
-                last_price = float(r.get('最新价', 0) or 0)
-                pre_close  = float(r.get('昨收', 0) or 0)
-                high_limit = float(r.get('涨停价', 0) or 0)
-                low_limit  = float(r.get('跌停价', 0) or 0)
+                last_price = _spot_float(r.get('最新价'))
+                pre_close = _spot_float(r.get('昨收'))
+                high_limit = _spot_float(r.get('涨停价'))
+                low_limit = _spot_float(r.get('跌停价'))
                 # 部分版本 akshare 列名不同，兜底用 limit_up_threshold 统一阈值
                 if high_limit == 0 and pre_close > 0:
                     thr = limit_up_threshold(code)
@@ -489,12 +484,21 @@ def fetch_trade_status(symbol: str, trade_date: str) -> Optional[Dict[str, Any]]
                     low_limit  = round(pre_close * (1 - thr), 2)
                 up_stop   = high_limit
                 down_stop = low_limit
-                if last_price > 0 and up_stop > 0:
-                    is_limit_up   = abs(last_price - up_stop)   < 0.005
-                    is_limit_down = abs(last_price - down_stop) < 0.005
-                # 成交量为 0 且非新股视为停牌
-                vol = float(r.get('成交量', 1) or 1)
-                if vol == 0 and days_listed > 5:
+                # 与 fetch_trade_status_batch 一致：触及涨停价/跌停价即判定
+                if high_limit > 0 and last_price > 0:
+                    is_limit_up = last_price >= high_limit
+                    is_limit_down = low_limit > 0 and last_price <= low_limit
+                elif pre_close > 0 and last_price > 0:
+                    pct = (last_price - pre_close) / pre_close
+                    thr = limit_up_threshold(code)
+                    is_limit_up = pct >= thr
+                    is_limit_down = pct <= -thr
+                # 成交量/额为 0：有上市天数时沿用「非新股」；否则与 batch 一样看额
+                vol = _spot_float(r.get('成交量'))
+                amount = _spot_float(r.get('成交额'))
+                if vol == 0 and amount == 0:
+                    is_suspended = days_listed > 5 if days_listed else True
+                elif vol == 0 and days_listed > 5:
                     is_suspended = True
     except Exception as e:
         logger.debug(f"fetch_trade_status 获取实时快照失败 ({code}): {e}")
@@ -517,6 +521,16 @@ def fetch_trade_status(symbol: str, trade_date: str) -> Optional[Dict[str, Any]]
 
 
 # ============================== 批量接口（一次拉全市场）==============================
+
+
+def _spot_float(val: Any, default: float = 0.0) -> float:
+    """快照字段转 float；保留 0（勿用 `x or default`，否则停牌量额会被当成缺失）。"""
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
 
 
 def fetch_trade_status_batch(
@@ -546,14 +560,14 @@ def fetch_trade_status_batch(
         if code not in code_set:
             continue
         name_full = str(r.get('名称', '')).strip()
-        last_price = float(r.get('最新价', 0) or 0)
-        pre_close  = float(r.get('昨收', 0) or 0)
-        high_limit = float(r.get('涨停价', 0) or 0)
-        low_limit  = float(r.get('跌停价', 0) or 0)
-        vol = float(r.get('成交量', 1) or 1)
+        last_price = _spot_float(r.get('最新价'))
+        pre_close = _spot_float(r.get('昨收'))
+        high_limit = _spot_float(r.get('涨停价'))
+        low_limit = _spot_float(r.get('跌停价'))
+        vol = _spot_float(r.get('成交量'))
 
         is_st = 'ST' in name_full.upper()
-        amount = float(r.get('成交额', 1) or 1)
+        amount = _spot_float(r.get('成交额'))
         is_suspended = (vol == 0 and amount == 0)
         is_limit_up = False
         is_limit_down = False

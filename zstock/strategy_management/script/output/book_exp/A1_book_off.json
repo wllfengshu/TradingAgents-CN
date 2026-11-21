@@ -1,0 +1,32 @@
+{
+  "id": "A1_book_off",
+  "book_regime": {
+    "enabled": false
+  },
+  "status": "ok",
+  "started_at": "2026-11-15T22:05:29",
+  "elapsed_sec": 718.0,
+  "total_return": 0.08735248837819998,
+  "annualized_return": 0.044194524700370774,
+  "max_drawdown": -0.13917641997146346,
+  "sharpe": 0.45452350778187767,
+  "rebalance_count": 106,
+  "total_cost": 0.050140000000000004,
+  "output_dir": "output/book_exp/A1_book_off",
+  "2025_ret": 0.16555766024466334,
+  "2025_ann": 0.1594165497487432,
+  "2025_mdd": -0.07254852276540902,
+  "2025_days": 261.0,
+  "2026_ret": -0.06709707116512231,
+  "2026_ann": -0.07420574726271989,
+  "2026_mdd": -0.13661504993144846,
+  "2026_days": 227.0,
+  "avg_w_stock": 0.6462473794549266,
+  "avg_w_ind": 0.0,
+  "attack_day_frac": 0.8364779874213837,
+  "neutral_day_frac": 0.0,
+  "defense_day_frac": 0.16352201257861634,
+  "port_on_attack": 0.06013946306309159,
+  "port_on_neutral": 0.0,
+  "port_on_defense": 0.02566897361452325
+}

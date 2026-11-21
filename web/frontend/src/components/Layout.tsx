@@ -32,7 +32,6 @@ export default function Layout() {
 
         <nav className="side-nav">
           <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
-            <span className="nav-icon">▣</span>
             工作台
           </NavLink>
 

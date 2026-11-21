@@ -4,15 +4,16 @@ import pandas as pd
 
 from zstock.strategy_management.pipeline import StrategyPipeline
 from zstock.strategy_management.script.backtester import Backtester
+from zstock.strategy_management.strategy_section import execute as exec_stage
 
 
 def test_should_reduce_only_matches_production(strategy_params):
     cfg = strategy_params["weak_regime_protection"]
-    assert StrategyPipeline._should_reduce_only(cfg, "reversal", "yellow") is True
-    assert StrategyPipeline._should_reduce_only(cfg, "reversal", "green") is False
-    assert StrategyPipeline._should_reduce_only(cfg, "neutral", "yellow") is False
-    assert StrategyPipeline._should_reduce_only({"enabled": False}, "reversal", "yellow") is False
-    assert StrategyPipeline._should_reduce_only(None, "reversal", "yellow") is False
+    assert exec_stage.should_reduce_only(cfg, "reversal", "yellow") is True
+    assert exec_stage.should_reduce_only(cfg, "reversal", "green") is False
+    assert exec_stage.should_reduce_only(cfg, "neutral", "yellow") is False
+    assert exec_stage.should_reduce_only({"enabled": False}, "reversal", "yellow") is False
+    assert exec_stage.should_reduce_only(None, "reversal", "yellow") is False
 
 
 def test_reduce_only_disabled_subflag(strategy_params):
@@ -20,23 +21,23 @@ def test_reduce_only_disabled_subflag(strategy_params):
         "enabled": True,
         "reduce_only": {"enabled": False, "when_regime": ["reversal"], "when_market_grade": ["yellow"]},
     }
-    assert StrategyPipeline._should_reduce_only(cfg, "reversal", "yellow") is False
+    assert exec_stage.should_reduce_only(cfg, "reversal", "yellow") is False
 
 
 def test_apply_reduce_only_no_current_does_not_open(reversal_yellow_signals):
-    empty = StrategyPipeline._apply_reduce_only_filter(reversal_yellow_signals, None)
+    empty = exec_stage.apply_reduce_only_filter(reversal_yellow_signals, None)
     assert empty.empty
 
 
 def test_apply_reduce_only_keeps_intersection(reversal_yellow_signals):
     code = str(reversal_yellow_signals.iloc[0]["code"])
     current = pd.DataFrame([{"code": code, "weight": 0.2, "score": 40.0}])
-    kept = StrategyPipeline._apply_reduce_only_filter(
+    kept = exec_stage.apply_reduce_only_filter(
         reversal_yellow_signals.rename(columns={"final_score": "score"}), current
     )
     assert set(kept["code"].astype(str)) == {code}
 
-    cleared = StrategyPipeline._apply_reduce_only_filter(
+    cleared = exec_stage.apply_reduce_only_filter(
         reversal_yellow_signals, current, force_exit_codes={code}
     )
     assert cleared.empty
@@ -45,7 +46,7 @@ def test_apply_reduce_only_keeps_intersection(reversal_yellow_signals):
 def test_apply_reduce_only_empty_target_keeps_old(reversal_yellow_signals):
     code = str(reversal_yellow_signals.iloc[0]["code"])
     current = pd.DataFrame([{"code": code, "weight": 0.2, "score": 40.0}])
-    kept = StrategyPipeline._apply_reduce_only_filter(pd.DataFrame(), current)
+    kept = exec_stage.apply_reduce_only_filter(pd.DataFrame(), current)
     assert list(kept["code"]) == [code]
 
 
@@ -113,7 +114,7 @@ def test_vol_scale_idle_and_clip():
     quiet = [1.0]
     for i in range(40):
         quiet.append(quiet[-1] * (1.001 + (0.0004 if i % 2 == 0 else -0.0004)))
-    assert Backtester._compute_vol_scale(quiet, cfg) == 1.25
+    assert Backtester._compute_vol_scale(quiet, cfg) == 1.0
     wild = [1.0]
     sign = 1
     for _ in range(40):

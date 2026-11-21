@@ -1,0 +1,4812 @@
+{
+  "database": "tradingagents",
+  "audited_at": "2026-11-16T09:28:53",
+  "window": {
+    "start": "2020-01-01",
+    "end": "2026-11-13"
+  },
+  "trade_days_calendar": 1663,
+  "trade_calendar_source": "zstock_factor_market.trade_date",
+  "n_collections": 54,
+  "collections": [
+    "ai_selector_schedules",
+    "ai_selector_tasks",
+    "ai_trading_orders",
+    "ai_trading_portfolio_snapshots",
+    "ai_trading_schedules",
+    "ai_trading_tasks",
+    "analysis_reports",
+    "analysis_tasks",
+    "capital_flow",
+    "chat",
+    "financial_data_cache",
+    "llm_providers",
+    "mainboard_stocks",
+    "market_categories",
+    "market_data",
+    "market_quotes",
+    "model_catalog",
+    "notifications",
+    "operation_logs",
+    "paper_accounts",
+    "paper_orders",
+    "paper_positions",
+    "paper_trades",
+    "quotes_ingestion_status",
+    "scheduler_executions",
+    "scheduler_history",
+    "sector_stocks",
+    "stock_basic_info",
+    "stock_daily_quotes",
+    "stock_financial_data",
+    "stock_news",
+    "stock_screening_view",
+    "sync_status",
+    "system_configs",
+    "token_usage",
+    "trade_status",
+    "user_favorites",
+    "user_tags",
+    "users",
+    "zstock_backtests",
+    "zstock_capital_flow",
+    "zstock_factor_dragon",
+    "zstock_factor_evals",
+    "zstock_factor_force",
+    "zstock_factor_market",
+    "zstock_factor_sector",
+    "zstock_fundamental_holder",
+    "zstock_fundamental_pershare",
+    "zstock_jobs",
+    "zstock_lhb",
+    "zstock_ohlcv",
+    "zstock_sector",
+    "zstock_stock_info",
+    "zstock_strategies"
+  ],
+  "large_threshold": 500000,
+  "reports": [
+    {
+      "collection": "ai_selector_schedules",
+      "count": 0,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "ai_selector_tasks",
+      "count": 50,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "current_step",
+        "elapsed_time",
+        "progress",
+        "result",
+        "status",
+        "task_id",
+        "updated_at",
+        "user_id"
+      ],
+      "key_fields": [
+        "task_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "task_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "task_id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "ai_trading_orders",
+      "count": 3,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "action",
+        "amount",
+        "code",
+        "created_at",
+        "error",
+        "mode",
+        "name",
+        "order_id",
+        "price",
+        "simulated_cost",
+        "success",
+        "task_id",
+        "user_id",
+        "volume"
+      ],
+      "key_fields": [
+        "order_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "order_id": 1
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "order_id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "ai_trading_portfolio_snapshots",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "cash",
+        "created_at",
+        "holdings",
+        "initial_capital",
+        "mode",
+        "task_id",
+        "total_value",
+        "updated_at",
+        "user_id"
+      ],
+      "key_fields": [
+        "task_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "task_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "task_id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "ai_trading_schedules",
+      "count": 0,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "ai_trading_tasks",
+      "count": 13,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "current_step",
+        "elapsed_time",
+        "mode",
+        "progress",
+        "result",
+        "status",
+        "task_id",
+        "updated_at",
+        "user_id"
+      ],
+      "key_fields": [
+        "task_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "task_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "task_id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "analysis_reports",
+      "count": 38,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "analysis_date",
+        "analysis_id",
+        "analysts",
+        "confidence_score",
+        "created_at",
+        "decision",
+        "execution_time",
+        "key_points",
+        "market_type",
+        "model_info",
+        "performance_metrics",
+        "recommendation",
+        "reports",
+        "research_depth",
+        "risk_level",
+        "source",
+        "status",
+        "stock_name",
+        "stock_symbol",
+        "summary",
+        "task_id",
+        "timestamp",
+        "tokens_used",
+        "updated_at"
+      ],
+      "key_fields": [
+        "task_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "stock_symbol_1_analysis_date_-1_timestamp_-1",
+        "analysis_id_1",
+        "status_1"
+      ],
+      "null_key_docs": {
+        "task_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "task_id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "analysis_tasks",
+      "count": 86,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "completed_at",
+        "created_at",
+        "current_step",
+        "last_error",
+        "message",
+        "progress",
+        "started_at",
+        "status",
+        "stock_code",
+        "stock_name",
+        "stock_symbol",
+        "task_id",
+        "updated_at",
+        "user_id"
+      ],
+      "key_fields": [
+        "task_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "task_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "task_id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "capital_flow",
+      "count": 202,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "ask_amount",
+        "bid_amount",
+        "code",
+        "last_price",
+        "main_inflow",
+        "medium_inflow",
+        "small_inflow",
+        "trade_date",
+        "turnover_amount",
+        "turnover_volume",
+        "updated_at"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "code": 0,
+        "trade_date": 0
+      },
+      "date_min": "2026-06-30",
+      "date_max": "2026-07-04",
+      "distinct_dates_in_window": 4,
+      "calendar_coverage_pct": 0.18,
+      "calendar_missing_days": 1660,
+      "calendar_missing_sample": [
+        "2020-01-02",
+        "2020-01-03",
+        "2020-01-06",
+        "2020-01-07",
+        "2020-01-08",
+        "2020-01-09",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-17",
+        "2020-01-20",
+        "2020-01-21",
+        "2020-01-22",
+        "2020-01-23",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13"
+      ],
+      "calendar_extra_days": 1,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code",
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "chat",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "financial_data_cache",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "cache_type",
+        "financial_data",
+        "stock_info",
+        "symbol",
+        "updated_at"
+      ],
+      "key_fields": [
+        "symbol"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "symbol": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "symbol"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "llm_providers",
+      "count": 6,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "api_doc_url",
+        "api_key",
+        "created_at",
+        "default_base_url",
+        "description",
+        "display_name",
+        "extra_config",
+        "is_active",
+        "name",
+        "supported_features",
+        "updated_at",
+        "website"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "mainboard_stocks",
+      "count": 3044,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "code",
+        "is_mainboard",
+        "is_st",
+        "updated_at"
+      ],
+      "key_fields": [
+        "code"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "code": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "market_categories",
+      "count": 5,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "description",
+        "display_name",
+        "enabled",
+        "id",
+        "name",
+        "sort_order",
+        "updated_at"
+      ],
+      "key_fields": [
+        "id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "market_data",
+      "count": 2000,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "amount",
+        "close",
+        "code",
+        "high",
+        "low",
+        "open",
+        "preClose",
+        "suspendFlag",
+        "trade_date",
+        "volume"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "code": 0,
+        "trade_date": 0
+      },
+      "date_min": "2026-05-06",
+      "date_max": "2026-07-01",
+      "distinct_dates_in_window": 40,
+      "calendar_coverage_pct": 2.41,
+      "calendar_missing_days": 1623,
+      "calendar_missing_sample": [
+        "2020-01-02",
+        "2020-01-03",
+        "2020-01-06",
+        "2020-01-07",
+        "2020-01-08",
+        "2020-01-09",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-17",
+        "2020-01-20",
+        "2020-01-21",
+        "2020-01-22",
+        "2020-01-23",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13"
+      ],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code",
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "market_quotes",
+      "count": 5868,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "amount",
+        "close",
+        "code",
+        "high",
+        "low",
+        "open",
+        "pct_chg",
+        "pre_close",
+        "symbol",
+        "trade_date",
+        "updated_at",
+        "volume"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_",
+        "code_1",
+        "updated_at_1",
+        "pct_chg_-1",
+        "amount_-1",
+        "updated_at_-1"
+      ],
+      "null_key_docs": {
+        "code": 0,
+        "trade_date": 0
+      },
+      "date_min": "2026-07-01",
+      "date_max": "2026-07-01",
+      "distinct_dates_in_window": 1,
+      "calendar_coverage_pct": 0.06,
+      "calendar_missing_days": 1662,
+      "calendar_missing_sample": [
+        "2020-01-02",
+        "2020-01-03",
+        "2020-01-06",
+        "2020-01-07",
+        "2020-01-08",
+        "2020-01-09",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-17",
+        "2020-01-20",
+        "2020-01-21",
+        "2020-01-22",
+        "2020-01-23",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13"
+      ],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code",
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.1
+    },
+    {
+      "collection": "model_catalog",
+      "count": 3,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "models",
+        "provider",
+        "provider_name",
+        "updated_at"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "notifications",
+      "count": 13,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "content",
+        "created_at",
+        "link",
+        "metadata",
+        "severity",
+        "source",
+        "status",
+        "title",
+        "type",
+        "user_id"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "user_id_1_created_at_-1",
+        "user_id_1_status_1"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "operation_logs",
+      "count": 1330,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "action",
+        "action_type",
+        "created_at",
+        "details",
+        "duration_ms",
+        "error_message",
+        "ip_address",
+        "session_id",
+        "success",
+        "timestamp",
+        "user_agent",
+        "user_id",
+        "username"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "paper_accounts",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "cash",
+        "created_at",
+        "realized_pnl",
+        "updated_at",
+        "user_id"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "paper_orders",
+      "count": 4,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "amount",
+        "code",
+        "commission",
+        "created_at",
+        "currency",
+        "filled_at",
+        "market",
+        "price",
+        "quantity",
+        "side",
+        "status",
+        "user_id"
+      ],
+      "key_fields": [
+        "code"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "code": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code"
+        ],
+        "dup_groups": 1,
+        "extra_docs": 1,
+        "samples": [
+          {
+            "key": {
+              "code": "600000"
+            },
+            "n": 2
+          }
+        ],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "paper_positions",
+      "count": 2,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "available_qty",
+        "avg_cost",
+        "code",
+        "currency",
+        "frozen_qty",
+        "market",
+        "quantity",
+        "updated_at",
+        "user_id"
+      ],
+      "key_fields": [
+        "code"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "code": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "paper_trades",
+      "count": 4,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "amount",
+        "code",
+        "commission",
+        "currency",
+        "market",
+        "pnl",
+        "price",
+        "quantity",
+        "side",
+        "timestamp",
+        "user_id"
+      ],
+      "key_fields": [
+        "code"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "code": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code"
+        ],
+        "dup_groups": 1,
+        "extra_docs": 1,
+        "samples": [
+          {
+            "key": {
+              "code": "600000"
+            },
+            "n": 2
+          }
+        ],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "quotes_ingestion_status",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "data_source",
+        "error_message",
+        "interval_seconds",
+        "job",
+        "last_sync_time",
+        "last_sync_time_iso",
+        "records_count",
+        "success",
+        "updated_at"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "scheduler_executions",
+      "count": 5218,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "execution_time",
+        "is_manual",
+        "job_id",
+        "job_name",
+        "progress",
+        "scheduled_time",
+        "status",
+        "timestamp"
+      ],
+      "key_fields": [
+        "job_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "job_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "job_id"
+        ],
+        "dup_groups": 20,
+        "extra_docs": 5198,
+        "samples": [
+          {
+            "key": {
+              "job_id": "check_zombie_tasks"
+            },
+            "n": 2103
+          },
+          {
+            "key": {
+              "job_id": "quotes_ingestion_service"
+            },
+            "n": 1726
+          },
+          {
+            "key": {
+              "job_id": "tushare_quotes_sync"
+            },
+            "n": 611
+          },
+          {
+            "key": {
+              "job_id": "akshare_status_check"
+            },
+            "n": 175
+          },
+          {
+            "key": {
+              "job_id": "baostock_status_check"
+            },
+            "n": 175
+          },
+          {
+            "key": {
+              "job_id": "tushare_status_check"
+            },
+            "n": 171
+          },
+          {
+            "key": {
+              "job_id": "akshare_quotes_sync"
+            },
+            "n": 98
+          },
+          {
+            "key": {
+              "job_id": "news_sync"
+            },
+            "n": 93
+          },
+          {
+            "key": {
+              "job_id": "ai_selector_schedule_6915dbca0c12b689cfe2fbae"
+            },
+            "n": 8
+          },
+          {
+            "key": {
+              "job_id": "akshare_financial_sync"
+            },
+            "n": 7
+          }
+        ],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "scheduler_history",
+      "count": 36,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "action",
+        "error_message",
+        "job_id",
+        "status",
+        "timestamp"
+      ],
+      "key_fields": [
+        "job_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "job_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "job_id"
+        ],
+        "dup_groups": 7,
+        "extra_docs": 20,
+        "samples": [
+          {
+            "key": {
+              "job_id": "akshare_financial_sync"
+            },
+            "n": 7
+          },
+          {
+            "key": {
+              "job_id": "news_sync"
+            },
+            "n": 6
+          },
+          {
+            "key": {
+              "job_id": "akshare_historical_sync"
+            },
+            "n": 5
+          },
+          {
+            "key": {
+              "job_id": "baostock_daily_quotes_sync"
+            },
+            "n": 3
+          },
+          {
+            "key": {
+              "job_id": "baostock_basic_info_sync"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "job_id": "akshare_basic_info_sync"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "job_id": "quotes_ingestion_service"
+            },
+            "n": 2
+          }
+        ],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "sector_stocks",
+      "count": 20824,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "code",
+        "sector_code",
+        "trade_date",
+        "updated_at"
+      ],
+      "key_fields": [
+        "sector_code",
+        "code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "sector_code": 0,
+        "code": 0,
+        "trade_date": 0
+      },
+      "date_min": "2026-06-30",
+      "date_max": "2026-07-04",
+      "distinct_dates_in_window": 4,
+      "calendar_coverage_pct": 0.18,
+      "calendar_missing_days": 1660,
+      "calendar_missing_sample": [
+        "2020-01-02",
+        "2020-01-03",
+        "2020-01-06",
+        "2020-01-07",
+        "2020-01-08",
+        "2020-01-09",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-17",
+        "2020-01-20",
+        "2020-01-21",
+        "2020-01-22",
+        "2020-01-23",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13"
+      ],
+      "calendar_extra_days": 1,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "sector_code",
+          "code",
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.1
+      },
+      "elapsed_sec": 0.3
+    },
+    {
+      "collection": "stock_basic_info",
+      "count": 12540,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "area",
+        "category",
+        "code",
+        "data_source",
+        "full_symbol",
+        "industry",
+        "last_sync",
+        "list_date",
+        "market",
+        "market_info",
+        "name",
+        "pb",
+        "pe",
+        "ps",
+        "source",
+        "sse",
+        "symbol",
+        "sync_status",
+        "total_mv",
+        "updated_at"
+      ],
+      "key_fields": [
+        "code",
+        "source"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "code_1_source_1",
+        "industry_1",
+        "total_mv_-1",
+        "pe_1",
+        "pb_1"
+      ],
+      "null_key_docs": {
+        "code": 0,
+        "source": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "code_1_source_1",
+        "key": [
+          "code",
+          "source"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "stock_daily_quotes",
+      "count": 17223530,
+      "count_mode": "estimated",
+      "large": true,
+      "sample_fields": [
+        "amount",
+        "change",
+        "close",
+        "code",
+        "created_at",
+        "data_source",
+        "full_symbol",
+        "high",
+        "low",
+        "market",
+        "open",
+        "pct_chg",
+        "period",
+        "pre_close",
+        "symbol",
+        "trade_date",
+        "updated_at",
+        "version",
+        "volume"
+      ],
+      "key_fields": [
+        "symbol",
+        "trade_date",
+        "data_source",
+        "period"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_",
+        "symbol_date_source_period_unique",
+        "symbol_index",
+        "trade_date_index",
+        "symbol_date_index"
+      ],
+      "date_min": "1990-12-19",
+      "date_max": "2026-07-03",
+      "distinct_dates_in_window": 1574,
+      "calendar_coverage_pct": 94.65,
+      "calendar_missing_days": 89,
+      "calendar_missing_sample": [
+        "2026-07-06",
+        "2026-07-07",
+        "2026-07-08",
+        "2026-07-09",
+        "2026-07-10",
+        "2026-07-13",
+        "2026-07-14",
+        "2026-07-15",
+        "2026-07-16",
+        "2026-07-17",
+        "2026-07-20",
+        "2026-07-21",
+        "2026-07-22",
+        "2026-07-23",
+        "2026-07-24",
+        "2026-07-27",
+        "2026-07-28",
+        "2026-07-29",
+        "2026-07-30",
+        "2026-07-31",
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+        "2026-08-07"
+      ],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "symbol_date_source_period_unique",
+        "key": [
+          "symbol",
+          "trade_date",
+          "data_source",
+          "period"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "code_coverage": {
+        "checked": true,
+        "sampled_codes": 18,
+        "trade_days": 1663,
+        "codes_with_gaps": 18,
+        "worst": [
+          {
+            "code": "399300",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "159928",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512010",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512880",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512660",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512400",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512800",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512480",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "511260",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "511010",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "511090",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "518880",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "511520",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "600000",
+            "have": 1454,
+            "expect": 1663,
+            "missing_n": 209,
+            "missing_head": [
+              "2025-12-31",
+              "2026-01-05",
+              "2026-01-06",
+              "2026-01-07",
+              "2026-01-08",
+              "2026-01-09",
+              "2026-01-12",
+              "2026-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 87.43
+          },
+          {
+            "code": "300750",
+            "have": 1454,
+            "expect": 1663,
+            "missing_n": 209,
+            "missing_head": [
+              "2025-12-31",
+              "2026-01-05",
+              "2026-01-06",
+              "2026-01-07",
+              "2026-01-08",
+              "2026-01-09",
+              "2026-01-12",
+              "2026-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 87.43
+          },
+          {
+            "code": "000858",
+            "have": 1545,
+            "expect": 1663,
+            "missing_n": 118,
+            "missing_head": [
+              "2026-05-25",
+              "2026-05-26",
+              "2026-05-27",
+              "2026-05-28",
+              "2026-05-29",
+              "2026-06-01",
+              "2026-06-02",
+              "2026-06-03"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 92.9
+          },
+          {
+            "code": "601318",
+            "have": 1545,
+            "expect": 1663,
+            "missing_n": 118,
+            "missing_head": [
+              "2026-05-25",
+              "2026-05-26",
+              "2026-05-27",
+              "2026-05-28",
+              "2026-05-29",
+              "2026-06-01",
+              "2026-06-02",
+              "2026-06-03"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 92.9
+          },
+          {
+            "code": "000001",
+            "have": 1574,
+            "expect": 1663,
+            "missing_n": 89,
+            "missing_head": [
+              "2026-07-06",
+              "2026-07-07",
+              "2026-07-08",
+              "2026-07-09",
+              "2026-07-10",
+              "2026-07-13",
+              "2026-07-14",
+              "2026-07-15"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 94.65
+          }
+        ],
+        "perfect": []
+      },
+      "elapsed_sec": 0.2
+    },
+    {
+      "collection": "stock_financial_data",
+      "count": 725,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "code",
+        "created_at",
+        "data_source",
+        "full_symbol",
+        "market",
+        "net_income",
+        "report_period",
+        "report_type",
+        "revenue",
+        "symbol",
+        "total_assets",
+        "total_equity",
+        "updated_at",
+        "version"
+      ],
+      "key_fields": [
+        "code",
+        "report_period",
+        "report_type",
+        "data_source"
+      ],
+      "date_field": "report_period",
+      "indexes": [
+        "_id_",
+        "symbol_period_source_unique",
+        "symbol_index",
+        "report_period_index",
+        "symbol_period_index",
+        "report_type_index",
+        "updated_at_index"
+      ],
+      "null_key_docs": {
+        "code": 0,
+        "report_period": 0,
+        "report_type": 0,
+        "data_source": 0
+      },
+      "date_min": "2025-12-31",
+      "date_max": "2026-06-30",
+      "distinct_dates_in_window": 3,
+      "calendar_coverage_pct": 0.18,
+      "calendar_missing_days": 1660,
+      "calendar_missing_sample": [
+        "2020-01-02",
+        "2020-01-03",
+        "2020-01-06",
+        "2020-01-07",
+        "2020-01-08",
+        "2020-01-09",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-17",
+        "2020-01-20",
+        "2020-01-21",
+        "2020-01-22",
+        "2020-01-23",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13"
+      ],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code",
+          "report_period",
+          "report_type",
+          "data_source"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "stock_news",
+      "count": 83970,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "author",
+        "category",
+        "content",
+        "created_at",
+        "data_source",
+        "full_symbol",
+        "importance",
+        "keywords",
+        "market",
+        "publish_time",
+        "sentiment",
+        "sentiment_score",
+        "source",
+        "summary",
+        "symbol",
+        "symbols",
+        "title",
+        "updated_at",
+        "url",
+        "version"
+      ],
+      "key_fields": [
+        "symbol",
+        "url"
+      ],
+      "date_field": "publish_time",
+      "indexes": [
+        "_id_",
+        "url_title_time_unique",
+        "symbol_index",
+        "symbols_index",
+        "publish_time_desc",
+        "symbol_time_index",
+        "data_source_index",
+        "category_index",
+        "sentiment_index",
+        "importance_index",
+        "updated_at_index"
+      ],
+      "null_key_docs": {
+        "symbol": 0,
+        "url": 0
+      },
+      "date_min": "2025-05-13",
+      "date_max": "2026-07-04",
+      "distinct_dates_in_window": 0,
+      "calendar_coverage_pct": 0.0,
+      "calendar_missing_days": 1663,
+      "calendar_missing_sample": [
+        "2020-01-02",
+        "2020-01-03",
+        "2020-01-06",
+        "2020-01-07",
+        "2020-01-08",
+        "2020-01-09",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-17",
+        "2020-01-20",
+        "2020-01-21",
+        "2020-01-22",
+        "2020-01-23",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13"
+      ],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "symbol",
+          "url"
+        ],
+        "dup_groups": 7,
+        "extra_docs": 7,
+        "samples": [
+          {
+            "key": {
+              "symbol": "605183",
+              "url": "http://stock.eastmoney.com/a/202511133563865769.html"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "symbol": "600690",
+              "url": "http://finance.eastmoney.com/a/202511143563972031.html"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "symbol": "600955",
+              "url": "http://finance.eastmoney.com/a/202511133563733440.html"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "symbol": "603993",
+              "url": "http://finance.eastmoney.com/a/202607013790522514.html"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "symbol": "601899",
+              "url": "http://finance.eastmoney.com/a/202512303606029498.html"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "symbol": "002713",
+              "url": "http://finance.eastmoney.com/a/202511143563910313.html"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "symbol": "688981",
+              "url": "http://finance.eastmoney.com/a/202511133563869292.html"
+            },
+            "n": 2
+          }
+        ],
+        "elapsed_sec": 0.5
+      },
+      "elapsed_sec": 0.6
+    },
+    {
+      "collection": "stock_screening_view",
+      "count": 12540,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "amount",
+        "area",
+        "close",
+        "code",
+        "financial_updated_at",
+        "high",
+        "industry",
+        "list_date",
+        "low",
+        "market",
+        "name",
+        "open",
+        "pb",
+        "pct_chg",
+        "pe",
+        "pre_close",
+        "quote_updated_at",
+        "report_period",
+        "source",
+        "total_mv",
+        "trade_date",
+        "updated_at",
+        "volume"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes_error": "Namespace tradingagents.stock_screening_view is a view, not a collection, full error: SON([('ok', 0.0), ('errmsg', 'Namespace tradingagents.stock_screening_view is a view, not a collection'), ('code', 166), ('codeName', 'CommandNotSupportedOnView')])",
+      "null_key_docs": {
+        "code": 0,
+        "trade_date": 1499
+      },
+      "date_min": "2026-07-01",
+      "date_max": "2026-07-01",
+      "distinct_dates_in_window": 1,
+      "calendar_coverage_pct": 0.06,
+      "calendar_missing_days": 1662,
+      "calendar_missing_sample": [
+        "2020-01-02",
+        "2020-01-03",
+        "2020-01-06",
+        "2020-01-07",
+        "2020-01-08",
+        "2020-01-09",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-17",
+        "2020-01-20",
+        "2020-01-21",
+        "2020-01-22",
+        "2020-01-23",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13"
+      ],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code",
+          "trade_date"
+        ],
+        "dup_groups": 5183,
+        "extra_docs": 5183,
+        "samples": [
+          {
+            "key": {
+              "code": "688251",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "688767",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "300711",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "000809",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "002357",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "601188",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "605299",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "002606",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "002719",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          },
+          {
+            "key": {
+              "code": "601369",
+              "trade_date": "20260701"
+            },
+            "n": 2
+          }
+        ],
+        "elapsed_sec": 25.9
+      },
+      "elapsed_sec": 211.5
+    },
+    {
+      "collection": "sync_status",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "data_sources_used",
+        "data_type",
+        "errors",
+        "finished_at",
+        "inserted",
+        "job",
+        "last_trade_date",
+        "message",
+        "source_stats",
+        "started_at",
+        "status",
+        "total",
+        "updated"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "system_configs",
+      "count": 70,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "config_name",
+        "config_type",
+        "created_at",
+        "created_by",
+        "data_source_configs",
+        "database_configs",
+        "default_data_source",
+        "default_llm",
+        "is_active",
+        "llm_configs",
+        "system_settings",
+        "updated_at",
+        "updated_by",
+        "version"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "token_usage",
+      "count": 552,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "_created_at",
+        "analysis_type",
+        "cost",
+        "currency",
+        "input_tokens",
+        "model_name",
+        "output_tokens",
+        "provider",
+        "session_id",
+        "timestamp"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "timestamp_-1_provider_1_model_name_1",
+        "session_id_1",
+        "analysis_type_1"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "trade_status",
+      "count": 202,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "code",
+        "days_listed",
+        "down_stop_price",
+        "is_limit_down",
+        "is_limit_up",
+        "is_st",
+        "is_suspended",
+        "is_trading",
+        "name",
+        "open_date",
+        "pre_close",
+        "trade_date",
+        "up_stop_price",
+        "updated_at"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_"
+      ],
+      "null_key_docs": {
+        "code": 0,
+        "trade_date": 0
+      },
+      "date_min": "2026-06-30",
+      "date_max": "2026-07-04",
+      "distinct_dates_in_window": 4,
+      "calendar_coverage_pct": 0.18,
+      "calendar_missing_days": 1660,
+      "calendar_missing_sample": [
+        "2020-01-02",
+        "2020-01-03",
+        "2020-01-06",
+        "2020-01-07",
+        "2020-01-08",
+        "2020-01-09",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-17",
+        "2020-01-20",
+        "2020-01-21",
+        "2020-01-22",
+        "2020-01-23",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13"
+      ],
+      "calendar_extra_days": 1,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code",
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "user_favorites",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "favorites",
+        "updated_at",
+        "user_id"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "user_tags",
+      "count": 0,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "uniq_user_tag_name",
+        "idx_user_tag_sort"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "users",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "concurrent_limit",
+        "created_at",
+        "daily_quota",
+        "email",
+        "failed_analyses",
+        "favorite_stocks",
+        "hashed_password",
+        "is_active",
+        "is_admin",
+        "is_verified",
+        "last_login",
+        "preferences",
+        "successful_analyses",
+        "total_analyses",
+        "updated_at",
+        "username"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "zstock_backtests",
+      "count": 7,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "end_date",
+        "equity",
+        "error",
+        "finished_at",
+        "job_id",
+        "metrics",
+        "start_date",
+        "status",
+        "strategy_id"
+      ],
+      "key_fields": [
+        "job_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "strategy_id_1_created_at_-1"
+      ],
+      "null_key_docs": {
+        "job_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "job_id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "zstock_capital_flow",
+      "count": 9235394,
+      "count_mode": "estimated",
+      "large": true,
+      "sample_fields": [
+        "close",
+        "code",
+        "high",
+        "l_buy_amount",
+        "l_buy_volume",
+        "l_net",
+        "l_sell_amount",
+        "l_sell_volume",
+        "low",
+        "m_buy_amount",
+        "m_buy_volume",
+        "m_net",
+        "m_sell_amount",
+        "m_sell_volume",
+        "main_net",
+        "name",
+        "open",
+        "period",
+        "rsi1",
+        "rsi2",
+        "rsi3",
+        "s_buy_amount",
+        "s_buy_volume",
+        "s_net",
+        "s_sell_amount",
+        "s_sell_volume",
+        "trade_date",
+        "turnover",
+        "updated_at",
+        "volume"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date",
+        "period"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_",
+        "code_date_period",
+        "trade_date_period",
+        "code_period_date"
+      ],
+      "date_min": "2020-01-02",
+      "date_max": "2026-11-13",
+      "distinct_dates_in_window": 1663,
+      "calendar_coverage_pct": 100.0,
+      "calendar_missing_days": 0,
+      "calendar_missing_sample": [],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "code_date_period",
+        "key": [
+          "code",
+          "trade_date",
+          "period"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "code_coverage": {
+        "checked": true,
+        "sampled_codes": 18,
+        "trade_days": 1663,
+        "codes_with_gaps": 13,
+        "worst": [
+          {
+            "code": "399300",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "159928",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512010",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512880",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512660",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512400",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512800",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "512480",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "511260",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "511010",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "511090",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "518880",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "511520",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "000001",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "600000",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "000858",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "601318",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "300750",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          }
+        ],
+        "perfect": [
+          "000001",
+          "600000",
+          "000858",
+          "601318",
+          "300750"
+        ]
+      },
+      "elapsed_sec": 0.5
+    },
+    {
+      "collection": "zstock_factor_dragon",
+      "count": 8020184,
+      "count_mode": "estimated",
+      "large": true,
+      "sample_fields": [
+        "code",
+        "f31_excess_return",
+        "f31_excess_return_10d",
+        "f31_excess_return_15d",
+        "f31_excess_return_20d",
+        "f31_excess_return_5d",
+        "f31b_rps_percentile",
+        "f32_amount",
+        "f33_consecutive_boards",
+        "f34_resonance_pct",
+        "f34_resonance_pct_10d",
+        "f34_resonance_pct_3d",
+        "f34_resonance_pct_5d",
+        "f35_bollinger_pass",
+        "f35_bollinger_trend",
+        "f36_identity_premium",
+        "f37_relative_strength",
+        "f38_turnover_anomaly",
+        "f39_pb",
+        "f40_holder_change",
+        "sector_code",
+        "stock_name",
+        "trade_date"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_",
+        "date_sector_code",
+        "code_date"
+      ],
+      "date_min": "2020-01-02",
+      "date_max": "2026-11-13",
+      "distinct_dates_in_window": 1663,
+      "calendar_coverage_pct": 100.0,
+      "calendar_missing_days": 0,
+      "calendar_missing_sample": [],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "window_tail_180d",
+        "window": {
+          "start": "2026-05-17",
+          "end": "2026-11-13"
+        },
+        "key": [
+          "code",
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 4.2,
+        "note": "大表仅检查近180日历日窗口内重复"
+      },
+      "code_coverage": {
+        "checked": true,
+        "sampled_codes": 18,
+        "trade_days": 1663,
+        "codes_with_gaps": 13,
+        "worst": [
+          {
+            "code": "399300",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "159928",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512010",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512880",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512660",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512400",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512800",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512480",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "511260",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "511010",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "511090",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "518880",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "511520",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "000001",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "600000",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "000858",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "601318",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "300750",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          }
+        ],
+        "perfect": [
+          "000001",
+          "600000",
+          "000858",
+          "601318",
+          "300750"
+        ]
+      },
+      "elapsed_sec": 4.6
+    },
+    {
+      "collection": "zstock_factor_evals",
+      "count": 3,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "end",
+        "field",
+        "job_id",
+        "layer",
+        "period",
+        "rows",
+        "start",
+        "universe_mode"
+      ],
+      "key_fields": [
+        "job_id"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "created_at_-1",
+        "job_id_1",
+        "layer_1_field_1_created_at_-1"
+      ],
+      "null_key_docs": {
+        "job_id": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "job_id"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 0.0
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "zstock_factor_force",
+      "count": 8022425,
+      "count_mode": "estimated",
+      "large": true,
+      "sample_fields": [
+        "code",
+        "dragon_consistency_5d",
+        "f_main_force_persistence",
+        "f_mean_reversion_signal",
+        "f_power_divergence",
+        "fcoop1_main_net_ratio",
+        "fcoop2_main_retail_ratio",
+        "fcoop3_sustained_days",
+        "fcoop3_sustained_days_10d",
+        "fcoop3_sustained_days_3d",
+        "fcoop3_sustained_days_5d",
+        "fcoop4_turnover_quality",
+        "fcoop5_main_flow_acceleration",
+        "fcoop6_main_force_aggression",
+        "fcoop7_super_large_net_ratio",
+        "fcoop8_main_flow_trend_5d",
+        "longhu_board_bonus",
+        "sector_code",
+        "stock_name",
+        "trade_date"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_",
+        "date_code_unique",
+        "code_date"
+      ],
+      "date_min": "2020-01-02",
+      "date_max": "2026-11-13",
+      "distinct_dates_in_window": 1663,
+      "calendar_coverage_pct": 100.0,
+      "calendar_missing_days": 0,
+      "calendar_missing_sample": [],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "date_code_unique",
+        "key": [
+          "code",
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "code_coverage": {
+        "checked": true,
+        "sampled_codes": 18,
+        "trade_days": 1663,
+        "codes_with_gaps": 13,
+        "worst": [
+          {
+            "code": "399300",
+            "have": 0,
+            "expect": 1663,
+            "missing_n": 1663,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-11-09",
+              "2026-11-10",
+              "2026-11-11",
+              "2026-11-12",
+              "2026-11-13"
+            ],
+            "coverage_pct": 0.0
+          },
+          {
+            "code": "159928",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512010",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512880",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512660",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512400",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512800",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "512480",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "511260",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "511010",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "511090",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "518880",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "511520",
+            "have": 35,
+            "expect": 1663,
+            "missing_n": 1628,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2026-09-11",
+              "2026-09-14",
+              "2026-09-15",
+              "2026-09-16",
+              "2026-09-17"
+            ],
+            "coverage_pct": 2.1
+          },
+          {
+            "code": "000001",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "600000",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "000858",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "601318",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "300750",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          }
+        ],
+        "perfect": [
+          "000001",
+          "600000",
+          "000858",
+          "601318",
+          "300750"
+        ]
+      },
+      "elapsed_sec": 0.4
+    },
+    {
+      "collection": "zstock_factor_market",
+      "count": 1663,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "index_code",
+        "index_name",
+        "mf1_slope_pct",
+        "mf1_slope_pct_10d",
+        "mf1_slope_pct_20d",
+        "mf1_slope_pct_5d",
+        "mf2_boll_pct",
+        "mf2_boll_pct_10d",
+        "mf2_boll_pct_20d",
+        "mf2_boll_pct_30d",
+        "mf3_vol_ratio",
+        "mf3_vol_ratio_10d",
+        "mf3_vol_ratio_20d",
+        "mf3_vol_ratio_5d",
+        "mf4_momentum_10d",
+        "mf4_momentum_3d",
+        "mf4_momentum_5d",
+        "mf5_atr_ratio",
+        "mf5_atr_ratio_10d_10d",
+        "mf5_atr_ratio_20d_20d",
+        "mf5_atr_ratio_30d_30d",
+        "trade_date"
+      ],
+      "key_fields": [
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_",
+        "trade_date_unique"
+      ],
+      "null_key_docs": {
+        "trade_date": 0
+      },
+      "date_min": "2020-01-02",
+      "date_max": "2026-11-13",
+      "distinct_dates_in_window": 1663,
+      "calendar_coverage_pct": 100.0,
+      "calendar_missing_days": 0,
+      "calendar_missing_sample": [],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "trade_date_unique",
+        "key": [
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "zstock_factor_sector",
+      "count": 217853,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "f21_rps_10d",
+        "f21_rps_20d",
+        "f21_rps_60d",
+        "f22_main_flow",
+        "f23_limit_up_density",
+        "f24_max_consecutive",
+        "f25_volume_slope_10d",
+        "f25_volume_slope_3d",
+        "f25_volume_slope_5d",
+        "f26_volume_growth_20d",
+        "f26_volume_growth_5d",
+        "f27_new_high_ratio",
+        "f28_consistency",
+        "f29_sector_breadth",
+        "f30_sector_concentration",
+        "sector_code",
+        "sector_name",
+        "trade_date"
+      ],
+      "key_fields": [
+        "sector_code",
+        "trade_date"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_",
+        "date_sector_unique",
+        "sector_date"
+      ],
+      "null_key_docs": {
+        "sector_code": 0,
+        "trade_date": 0
+      },
+      "date_min": "2020-01-02",
+      "date_max": "2026-11-13",
+      "distinct_dates_in_window": 1663,
+      "calendar_coverage_pct": 100.0,
+      "calendar_missing_days": 0,
+      "calendar_missing_sample": [],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "date_sector_unique",
+        "key": [
+          "sector_code",
+          "trade_date"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "elapsed_sec": 0.3
+    },
+    {
+      "collection": "zstock_fundamental_holder",
+      "count": 434360,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "ann_date",
+        "code",
+        "end_date",
+        "shareholder",
+        "shareholder_a"
+      ],
+      "key_fields": [
+        "code",
+        "ann_date",
+        "end_date",
+        "shareholder"
+      ],
+      "date_field": "ann_date",
+      "indexes": [
+        "_id_",
+        "code_1_end_date_1"
+      ],
+      "null_key_docs": {
+        "code": 0,
+        "ann_date": 0,
+        "end_date": 0,
+        "shareholder": 0
+      },
+      "date_min": "2001-03-20",
+      "date_max": "2026-09-17",
+      "distinct_dates_in_window": 2244,
+      "calendar_coverage_pct": 97.84,
+      "calendar_missing_days": 36,
+      "calendar_missing_sample": [
+        "2020-01-09",
+        "2026-09-18",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+        "2026-09-28",
+        "2026-09-29",
+        "2026-09-30",
+        "2026-10-08",
+        "2026-10-09",
+        "2026-10-12",
+        "2026-10-13",
+        "2026-10-14",
+        "2026-10-15",
+        "2026-10-16",
+        "2026-10-19",
+        "2026-10-20",
+        "2026-10-21",
+        "2026-10-22",
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-27",
+        "2026-10-28",
+        "2026-10-29"
+      ],
+      "calendar_extra_days": 617,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code",
+          "ann_date",
+          "end_date",
+          "shareholder"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "samples": [],
+        "elapsed_sec": 2.9
+      },
+      "elapsed_sec": 5.8
+    },
+    {
+      "collection": "zstock_fundamental_pershare",
+      "count": 240113,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "ann_date",
+        "bps",
+        "code",
+        "debt_ratio",
+        "eps",
+        "gross_margin",
+        "profit_growth",
+        "rev_growth",
+        "roe"
+      ],
+      "key_fields": [
+        "code",
+        "ann_date"
+      ],
+      "date_field": "ann_date",
+      "indexes": [
+        "_id_",
+        "code_1_ann_date_1"
+      ],
+      "null_key_docs": {
+        "code": 0,
+        "ann_date": 0
+      },
+      "date_min": "2007-04-06",
+      "date_max": "2026-09-12",
+      "distinct_dates_in_window": 1172,
+      "calendar_coverage_pct": 57.25,
+      "calendar_missing_days": 711,
+      "calendar_missing_sample": [
+        "2020-01-06",
+        "2020-01-08",
+        "2020-01-10",
+        "2020-01-13",
+        "2020-01-14",
+        "2020-01-15",
+        "2020-01-16",
+        "2020-01-21",
+        "2020-02-03",
+        "2020-02-04",
+        "2020-02-05",
+        "2020-02-06",
+        "2020-02-07",
+        "2020-02-10",
+        "2020-02-11",
+        "2020-02-12",
+        "2020-02-13",
+        "2020-02-17",
+        "2020-02-24",
+        "2020-03-02",
+        "2020-03-04",
+        "2020-05-07",
+        "2020-05-08",
+        "2020-05-11",
+        "2020-05-27"
+      ],
+      "calendar_extra_days": 220,
+      "duplicates": {
+        "checked": true,
+        "scope": "full",
+        "key": [
+          "code",
+          "ann_date"
+        ],
+        "dup_groups": 9525,
+        "extra_docs": 12006,
+        "samples": [
+          {
+            "key": {
+              "code": "688132",
+              "ann_date": "2026-03-20"
+            },
+            "n": 13
+          },
+          {
+            "key": {
+              "code": "000530",
+              "ann_date": "2026-04-24"
+            },
+            "n": 12
+          },
+          {
+            "key": {
+              "code": "000637",
+              "ann_date": "2026-08-06"
+            },
+            "n": 12
+          },
+          {
+            "key": {
+              "code": "688270",
+              "ann_date": "2025-12-25"
+            },
+            "n": 11
+          },
+          {
+            "key": {
+              "code": "603843",
+              "ann_date": "2026-06-30"
+            },
+            "n": 11
+          },
+          {
+            "key": {
+              "code": "688646",
+              "ann_date": "2026-04-18"
+            },
+            "n": 11
+          },
+          {
+            "key": {
+              "code": "002726",
+              "ann_date": "2026-01-31"
+            },
+            "n": 10
+          },
+          {
+            "key": {
+              "code": "300122",
+              "ann_date": "2026-04-28"
+            },
+            "n": 10
+          },
+          {
+            "key": {
+              "code": "688189",
+              "ann_date": "2026-04-30"
+            },
+            "n": 10
+          },
+          {
+            "key": {
+              "code": "920932",
+              "ann_date": "2025-04-29"
+            },
+            "n": 9
+          }
+        ],
+        "elapsed_sec": 1.2
+      },
+      "elapsed_sec": 2.4
+    },
+    {
+      "collection": "zstock_jobs",
+      "count": 7,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "finished_at",
+        "kind",
+        "logs",
+        "message",
+        "result",
+        "status",
+        "updated_at"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "created_at_-1",
+        "status_1_created_at_-1"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "zstock_lhb",
+      "count": 0,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "code_date_desc",
+        "date_desc"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "zstock_ohlcv",
+      "count": 16485612,
+      "count_mode": "estimated",
+      "large": true,
+      "sample_fields": [
+        "amount",
+        "close",
+        "code",
+        "high",
+        "low",
+        "name",
+        "open",
+        "period",
+        "preClose",
+        "suspendFlag",
+        "trade_date",
+        "turnover_rate",
+        "volume"
+      ],
+      "key_fields": [
+        "code",
+        "trade_date",
+        "period"
+      ],
+      "date_field": "trade_date",
+      "indexes": [
+        "_id_",
+        "code_date_period",
+        "code_period_date",
+        "period_date"
+      ],
+      "date_min": "2000-01-04",
+      "date_max": "2026-11-13",
+      "distinct_dates_in_window": 1663,
+      "calendar_coverage_pct": 100.0,
+      "calendar_missing_days": 0,
+      "calendar_missing_sample": [],
+      "calendar_extra_days": 0,
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "code_date_period",
+        "key": [
+          "code",
+          "trade_date",
+          "period"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "code_coverage": {
+        "checked": true,
+        "sampled_codes": 18,
+        "trade_days": 1663,
+        "codes_with_gaps": 12,
+        "worst": [
+          {
+            "code": "159928",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "512010",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "512880",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "512660",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "512400",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "512800",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "512480",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "511260",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "511010",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "511090",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "518880",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "511520",
+            "have": 693,
+            "expect": 1663,
+            "missing_n": 970,
+            "missing_head": [
+              "2020-01-02",
+              "2020-01-03",
+              "2020-01-06",
+              "2020-01-07",
+              "2020-01-08",
+              "2020-01-09",
+              "2020-01-10",
+              "2020-01-13"
+            ],
+            "missing_tail": [
+              "2023-12-25",
+              "2023-12-26",
+              "2023-12-27",
+              "2023-12-28",
+              "2023-12-29"
+            ],
+            "coverage_pct": 41.67
+          },
+          {
+            "code": "399300",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "000001",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "600000",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "000858",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "601318",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          },
+          {
+            "code": "300750",
+            "have": 1663,
+            "expect": 1663,
+            "missing_n": 0,
+            "missing_head": [],
+            "missing_tail": [],
+            "coverage_pct": 100.0
+          }
+        ],
+        "perfect": [
+          "399300",
+          "000001",
+          "600000",
+          "000858",
+          "601318",
+          "300750"
+        ]
+      },
+      "elapsed_sec": 75.0
+    },
+    {
+      "collection": "zstock_sector",
+      "count": 5585,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "sector_code",
+        "sector_name",
+        "sector_type",
+        "source",
+        "stocks",
+        "stocks_updated_at",
+        "updated_at"
+      ],
+      "key_fields": [
+        "sector_code",
+        "source"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "sector_source",
+        "source_sector"
+      ],
+      "null_key_docs": {
+        "sector_code": 0,
+        "source": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "sector_source",
+        "key": [
+          "sector_code",
+          "source"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "zstock_stock_info",
+      "count": 5604,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "code",
+        "is_mainboard",
+        "is_st",
+        "name",
+        "updated_at"
+      ],
+      "key_fields": [
+        "code"
+      ],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "code_unique",
+        "mainboard_st"
+      ],
+      "null_key_docs": {
+        "code": 0
+      },
+      "duplicates": {
+        "checked": true,
+        "scope": "unique_index",
+        "unique_index": "code_unique",
+        "key": [
+          "code"
+        ],
+        "dup_groups": 0,
+        "extra_docs": 0,
+        "note": "唯一索引保证自然键不重复（同键写入会被拒）"
+      },
+      "elapsed_sec": 0.0
+    },
+    {
+      "collection": "zstock_strategies",
+      "count": 1,
+      "count_mode": "exact",
+      "large": false,
+      "sample_fields": [
+        "created_at",
+        "description",
+        "name",
+        "params",
+        "updated_at"
+      ],
+      "key_fields": [],
+      "date_field": null,
+      "indexes": [
+        "_id_",
+        "updated_at_-1",
+        "name_1"
+      ],
+      "duplicates": {
+        "checked": false,
+        "reason": "no_key"
+      },
+      "elapsed_sec": 0.0
+    }
+  ]
+}

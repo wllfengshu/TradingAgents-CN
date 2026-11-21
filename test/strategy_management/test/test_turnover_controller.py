@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from zstock.strategy_management.portfolio_optimizer import PortfolioOptimizer
+from zstock.strategy_management.strategy_section.optimizer import PortfolioOptimizer
 from zstock.strategy_management.turnover_controller import TurnoverController
 
 
@@ -34,7 +34,7 @@ def test_first_entry_adopts_new(real_signals, strategy_params):
 def test_buffer_rejects_weak_newcomer(signals_bundle, strategy_params):
     jan2 = signals_bundle["days"]["2024-01-02"]
     jan3 = signals_bundle["days"]["2024-01-03"]
-    from zstock.strategy_management.test.conftest import signals_from_payload
+    from test.strategy_management.test.conftest import signals_from_payload
 
     cur_sig = signals_from_payload(jan2)
     new_sig = signals_from_payload(jan3)
@@ -98,8 +98,32 @@ def test_normalize_only_downscales():
 
 
 def test_estimate_costs_and_positions(real_signals, strategy_params):
-    ctrl = TurnoverController(fee_rate=0.0015)
+    ctrl = TurnoverController(fee_rate=0.0015, stamp_tax=0.0005, fee_free_codes=())
     new_h = _optimize(real_signals, strategy_params)
     costs = ctrl.estimate_trading_costs(None, new_h, total_capital=1e7)
-    assert costs["turnover"] == pytest.approx(0.5 * float(new_h["weight"].abs().sum()), abs=1e-9)
-    assert costs["cost_pct"] == pytest.approx(costs["turnover"] * 0.0015, abs=1e-12)
+    buy_w = float(new_h["weight"].astype(float).sum())
+    assert costs["turnover"] == pytest.approx(0.5 * buy_w, abs=1e-9)
+    # 从空仓买入：只有买入腿，不含印花税
+    assert costs["cost_pct"] == pytest.approx(buy_w * 0.0015, abs=1e-12)
+    # 清仓：卖出腿含印花税
+    flat = pd.DataFrame(columns=["code", "weight"])
+    sell_costs = ctrl.estimate_trading_costs(new_h, flat, total_capital=1e7)
+    assert sell_costs["cost_pct"] == pytest.approx(buy_w * (0.0015 + 0.0005), abs=1e-12)
+
+
+def test_fee_free_bond_and_gold_zero_cost():
+    ctrl = TurnoverController(fee_rate=0.0015, stamp_tax=0.0005)
+    bond = pd.DataFrame([{"code": "511260", "weight": 1.0}])
+    gold = pd.DataFrame([{"code": "518880", "weight": 0.3}, {"code": "511520", "weight": 0.7}])
+    assert ctrl.estimate_trading_costs(None, bond, 1e7)["cost_pct"] == 0.0
+    assert ctrl.estimate_trading_costs(bond, gold, 1e7)["cost_pct"] == 0.0
+    stock = pd.DataFrame([{"code": "600000", "weight": 1.0}])
+    mixed = pd.DataFrame(
+        [{"code": "511260", "weight": 0.5}, {"code": "600000", "weight": 0.5}]
+    )
+    # 仅股票腿收费：买入 0.5 * fee
+    c = ctrl.estimate_trading_costs(bond, mixed, 1e7)
+    assert c["cost_pct"] == pytest.approx(0.5 * 0.0015, abs=1e-12)
+    assert ctrl.estimate_trading_costs(stock, bond, 1e7)["cost_pct"] == pytest.approx(
+        1.0 * (0.0015 + 0.0005), abs=1e-12
+    )

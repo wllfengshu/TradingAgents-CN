@@ -1,0 +1,32 @@
+{
+  "id": "D6_neu_ma20_exit",
+  "book_regime": {
+    "industry_exit_below_ma20": true
+  },
+  "status": "ok",
+  "started_at": "2026-11-15T23:22:46",
+  "elapsed_sec": 808.3,
+  "total_return": 0.10758171645744352,
+  "annualized_return": 0.0541814279293753,
+  "max_drawdown": -0.15746243471670351,
+  "sharpe": 0.45750223068401463,
+  "rebalance_count": 138,
+  "total_cost": 0.10951091482856404,
+  "output_dir": "output/book_exp/D6_neu_ma20_exit",
+  "2025_ret": 0.1705473022096895,
+  "2025_ann": 0.1642083989314429,
+  "2025_mdd": -0.07964494335533501,
+  "2025_days": 261.0,
+  "2026_ret": -0.05379480804537673,
+  "2026_ann": -0.059539544714249604,
+  "2026_mdd": -0.15746335884995977,
+  "2026_days": 227.0,
+  "avg_w_stock": 0.1762295081967213,
+  "avg_w_ind": 0.20120342270319977,
+  "attack_day_frac": 0.16188524590163936,
+  "neutral_day_frac": 0.3073770491803279,
+  "defense_day_frac": 0.5307377049180327,
+  "port_on_attack": 0.11404858686386765,
+  "port_on_neutral": 0.003388245827378622,
+  "port_on_defense": -0.009165422613323648
+}

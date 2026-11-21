@@ -10,6 +10,8 @@
 - get_neutral_style()            中性风格（动量/反转对半，定义而非交易参数）
 - resolve_active_factors()       当日因子画像（profiles + factor_decay）
 - build_runtime_config()         派生各阶段运行态配置（含弱段保护/自适应/仓位 overlay）
+- resolve_runtime_config()       统一解析：完整 JSON 派生 / 深合并覆盖 / 默认 SSOT
+- get_book_regime_config()       派生账户层（红黄绿）阈值与标的
 - build_risk_limits()            派生风控 limits
 """
 
@@ -57,7 +59,7 @@ def load_strategy_params(path: Optional[str | Path] = None) -> Dict[str, Any]:
             _params_cache = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
         logger.error("❌ 加载策略参数失败: %s, %s", _STRATEGY_PARAMS_PATH, e)
-        _params_cache = {}
+        raise RuntimeError(f"strategy_params 加载失败: {_STRATEGY_PARAMS_PATH}") from e
     return _params_cache
 
 
@@ -123,6 +125,77 @@ def get_neutral_style(
         "momentum_weight": 0.5,
         "reversal_weight": 0.5,
     }
+
+
+def get_book_regime_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """账户层（红黄绿）完整阈值：JSON book_regime 覆盖，缺省与历史代码常量对齐。"""
+    src = params if params is not None else load_strategy_params()
+    br = (src or {}).get("book_regime") or {}
+    industry = br.get("industry_etfs") or [
+        "159928",
+        "512010",
+        "512880",
+        "512660",
+        "512400",
+        "512800",
+        "512480",
+    ]
+    return {
+        "enabled": bool(br.get("enabled", False)),
+        "confirm_green_days": int(br.get("confirm_green_days", 2)),
+        "min_utilization": float(br.get("min_utilization", 0.90)),
+        "rebalance_band": float(br.get("rebalance_band", 0.03)),
+        "bond_code": str(br.get("bond_code") or "511260"),
+        "bond_fallback": str(br.get("bond_fallback") or "511010"),
+        "bond30_code": str(br.get("bond30_code") or "511090"),
+        "gold_code": str(br.get("gold_code") or "518880"),
+        "bank_code": str(br.get("bank_code") or "512800"),
+        "policy_code": str(br.get("policy_code") or "511520"),
+        "index_code": str(br.get("index_code") or "399300"),
+        "industry_etfs": tuple(str(x) for x in industry),
+        "defense_policy_weight": float(br.get("defense_policy_weight", 0.40)),
+        "defense_bank_weight": float(br.get("defense_bank_weight", 0.30)),
+        "defense_gold_weight": float(br.get("defense_gold_weight", 0.30)),
+        "mom_window": int(br.get("mom_window", 20)),
+        "vol_window": int(br.get("vol_window", 20)),
+        "top_n": int(br.get("top_n", 3)),
+        "rank_buffer": int(br.get("rank_buffer", 2)),
+        "max_weight": float(br.get("max_weight", 0.40)),
+        "vol_target": float(br.get("vol_target", 0.25)),
+        "regime_ma": int(br.get("regime_ma", 120)),
+        "regime_confirm": int(br.get("regime_confirm", 5)),
+        "dd_stop": float(br.get("dd_stop", 0.10)),
+        "dd_min_days": int(br.get("dd_min_days", 15)),
+        "repair_ma": int(br.get("repair_ma", 60)),
+        "repair_lookback": int(br.get("repair_lookback", 20)),
+        "min_history": int(br.get("min_history", 60)),
+        # E4 默认：进攻 leave-skip + 行业闸
+        "attack_skip_neutral_on_green": bool(br.get("attack_skip_neutral_on_green", True)),
+        "industry_stop_loss_pct": float(br.get("industry_stop_loss_pct", -0.06)),
+        "industry_rel_index_gate": float(br.get("industry_rel_index_gate", 0.0)),
+        "industry_min_positive_mom": int(br.get("industry_min_positive_mom", 2)),
+        "industry_narrow_max_weight": float(br.get("industry_narrow_max_weight", 0.30)),
+        "industry_exit_below_ma20": bool(br.get("industry_exit_below_ma20", False)),
+        "gold_ma_confirm_days": int(br.get("gold_ma_confirm_days", 2) or 0),
+        "gold_exit_confirm_days": int(br.get("gold_exit_confirm_days", 0) or 0),
+        "gold_sleeve_stop_pct": float(br.get("gold_sleeve_stop_pct", -0.06)),
+        "gold_stop_cooldown_days": int(br.get("gold_stop_cooldown_days", 5) or 0),
+        "gold_ma_short": int(br.get("gold_ma_short", 20) or 20),
+        "gold_ma_trend": int(br.get("gold_ma_trend", 60) or 60),
+        # defense：指数在 MA120 下方仍防守。neutral：黄/绿灯改停在行业 ETF。
+        "ma_below": str(br.get("ma_below") or "defense"),
+        # industry：进攻日剩余权重按行业 ETF 分配。bond：整段买国债。
+        "attack_idle": str(br.get("attack_idle") or "industry"),
+        # target：进攻日用 target_equity。full：绿灯进攻日仓位缩放置 1。
+        "attack_scale": str(br.get("attack_scale") or "target"),
+    }
+
+
+def factor_regime_for_grade(regime: str, grade: Optional[str] = None) -> str:
+    """绿灯的股票打分固定用动量因子，不随风格切到反转。"""
+    if str(grade or "").lower() == "green":
+        return "momentum"
+    return str(regime or "neutral")
 
 
 def resolve_active_factors(
@@ -199,6 +272,28 @@ def _copy_section(params: Dict[str, Any], key: str) -> Dict[str, Any]:
     return copy.deepcopy(raw) if isinstance(raw, dict) else {}
 
 
+def looks_like_strategy_params(d: Optional[Dict[str, Any]]) -> bool:
+    """完整 strategy_params 形（相对已派生 runtime）。
+
+    runtime 也含 portfolio / final_score，故用信号层键区分：
+    backtest / sector_layer / active_factors 只出现在原始 JSON。
+    """
+    if not d:
+        return False
+    return "backtest" in d or "sector_layer" in d or "active_factors" in d
+
+
+def _deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """递归合并 dict；override 赢。list/标量整段替换。"""
+    out = copy.deepcopy(base)
+    for k, v in override.items():
+        if k in out and isinstance(v, dict) and isinstance(out[k], dict):
+            out[k] = _deep_merge_dicts(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
 def build_runtime_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, Dict]:
     """由原始 JSON 派生 pipeline / 回测 / API 共用的运行态配置。
 
@@ -234,7 +329,17 @@ def build_runtime_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, D
             "buffer_threshold": float(tov.get("buffer_threshold", 0.25)),
             "min_hold_days": int(tov.get("min_hold_days", 3)),
             "fee_rate": float(backtest.get("fee_rate", 0.0015)),
+            "stamp_tax": float(
+                tov.get("stamp_tax", backtest.get("stamp_tax", 0.0005))
+            ),
             "fill_open_slots": bool(tov.get("fill_open_slots", True)),
+            "fee_free_codes": tuple(
+                str(c)
+                for c in (
+                    tov.get("fee_free_codes")
+                    or ["511260", "511010", "511090", "511520", "518880"]
+                )
+            ),
         },
         "exit_rules": {
             "hard_stop_loss_pct": float(exit_rules.get("hard_stop_loss_pct", -0.08)),
@@ -254,7 +359,30 @@ def build_runtime_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, D
         "weak_regime_protection": _copy_section(params, "weak_regime_protection"),
         "adaptive_rebalance": _copy_section(params, "adaptive_rebalance"),
         "book_regime": _copy_section(params, "book_regime"),
+        "intraday_risk": _copy_section(params, "intraday_risk"),
     }
+
+
+def resolve_runtime_config(
+    override: Optional[Dict[str, Any]] = None,
+    *,
+    base_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict]:
+    """信号 / 执行 / 回测共用的运行态解析入口。
+
+    - override 为空：由 base_params（None 则生产 SSOT）派生
+    - override 形如完整 strategy_params：先深合并到 base_params 再派生（不丢宿主配置）
+    - 否则：深合并到 base 派生结果上（局部旋钮覆盖）
+    """
+    if looks_like_strategy_params(override):
+        if base_params:
+            merged = _deep_merge_dicts(base_params, override)  # type: ignore[arg-type]
+            return build_runtime_config(merged)
+        return build_runtime_config(override)
+    base = build_runtime_config(base_params)
+    if not override:
+        return base
+    return _deep_merge_dicts(base, override)
 
 
 def build_risk_limits(params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

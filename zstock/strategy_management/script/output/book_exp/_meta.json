@@ -1,0 +1,33 @@
+{
+  "start": "2025-01-01",
+  "end": "2026-11-13",
+  "workers": 2,
+  "n_experiments": 21,
+  "started_at": "2026-11-15T22:05:27",
+  "ids": [
+    "A0_baseline",
+    "A1_book_off",
+    "B1_atk_g1",
+    "B2_atk_g2",
+    "B3_atk_g1_rc3",
+    "B5_atk_g1_leave",
+    "B6_atk_g1_rc3_leave",
+    "D1_neu_dd6",
+    "D2_neu_dd8",
+    "D3_neu_dd6_rel",
+    "D4_neu_dd6_breadth",
+    "D5_neu_dd6_rel_br",
+    "D6_neu_ma20_exit",
+    "F1_neu_vol10",
+    "F2_neu_vol12",
+    "E1_combo_mild",
+    "E2_combo_mid",
+    "E3_combo_strong",
+    "E4_combo_atk_neu",
+    "H1_def_gold_lag2",
+    "H3_E2_gold_lag2"
+  ],
+  "finished_at": "2026-11-16T00:27:37",
+  "ok": 21,
+  "error": 0
+}

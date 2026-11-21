@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from zstock.strategy_management.test.conftest import (  # noqa: E402
+from test.strategy_management.test.conftest import (  # noqa: E402
     CANDIDATE_SIGNAL_DATES,
     FIXTURES_DIR,
     OHLCV_FIXTURE,
@@ -24,11 +24,11 @@ async def main() -> int:
     from zstock.common.utils.common_utils import normalize_date
     from zstock.common.utils.db_utils import close_zstock_database, init_zstock_database
     from zstock.data_management.query_service import get_data_query_service
-    from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
+    from zstock.strategy_management.pipeline import StrategyPipeline
 
     await init_zstock_database()
     try:
-        pipe = CrossSectionStrategyPipeline()
+        pipe = StrategyPipeline()
         days = {}
         nonempty = None
         for td in CANDIDATE_SIGNAL_DATES:

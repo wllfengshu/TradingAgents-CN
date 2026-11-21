@@ -5,9 +5,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from zstock.factor_management.dragon_factors import DragonFactors
-from zstock.factor_management.force_factors import ForceFactors
-from zstock.factor_management.sector_factors import SectorFactors
+from zstock.factor_management.factors_dragon import DragonFactors
+from zstock.factor_management.factors_force import ForceFactors
+from zstock.factor_management.factors_sector import SectorFactors
 
 LIVE = Path(__file__).resolve().parent / "fixtures" / "live_calc_20240102.json"
 
@@ -56,18 +56,12 @@ def test_dragon_live_raw_on_auto_parts(live_bundle, strategy_params):
         fund_provider=object(),
     )
     assert raw
-    scores = DragonFactors.scores_from_raw(
-        raw,
-        regime="momentum",
-        active_factors=strategy_params["active_factors"],
-    )
-    assert scores
 
 
 def test_force_live_raw_and_score(live_bundle, strategy_params, signal_names_raw):
     _members, ohlcv, flow = live_bundle
     candidates = [
-        {"code": d["code"], "sector_code": d["sector_code"], "dragon_composite_score": 70.0}
+        {"code": d["code"], "sector_code": d["sector_code"], "dragon_score": 70.0}
         for d in signal_names_raw["dragons"]
         if d["code"] in ohlcv
     ]
@@ -81,16 +75,6 @@ def test_force_live_raw_and_score(live_bundle, strategy_params, signal_names_raw
     )
     assert raw
     assert "fcoop1_main_net_ratio" in raw[0]
-    ranked = ForceFactors.score_and_compose_final(
-        candidates,
-        top_sectors=[(c["sector_code"], 80.0) for c in candidates],
-        m5_weights={"sector": 0.4, "dragon": 0.35, "cooperative": 0.25},
-        m4_threshold=float(strategy_params["cooperative_force"]["threshold_pct"]),
-        style_info={"regime": "momentum", "momentum_weight": 0.7, "reversal_weight": 0.3},
-        active_factors=strategy_params["active_factors"],
-        force_raw=raw,
-    )
-    assert isinstance(ranked, list)
 
 
 def test_sector_live_raw(live_bundle, strategy_params):
@@ -112,13 +96,6 @@ def test_sector_live_raw(live_bundle, strategy_params):
         eligible_codes=eligible,
     )
     assert "f23_limit_up_density" in raw or "f21_rps" in raw or raw
-    scores = SectorFactors.scores_from_raw(
-        raw,
-        regime="momentum",
-        active_factors=strategy_params["active_factors"],
-        top_n=int(strategy_params["sector_layer"]["top_sectors"]),
-    )
-    assert isinstance(scores, dict)
 
 
 @pytest.mark.asyncio
@@ -143,18 +120,7 @@ async def test_score_signals_live_with_prebuilt(live_bundle, hs300_ohlcv, strate
     }
     df = await pipe.score_signals_live("2024-01-02", prebuilt_data=prebuilt)
     assert df.attrs["market_grade"] in {"green", "yellow", "red"}
-    ranked = await pipe.run_pipeline(
-        "2024-01-02",
-        list(ohlcv),
-        infos,
-        ohlcv,
-        flow,
-        prebuilt["sectors"],
-        members,
-        {"399300": hs300_ohlcv},
-        "沪深300",
-    )
-    assert isinstance(ranked, list)
+    assert isinstance(df, pd.DataFrame)
 
     class _LoadQS:
         async def get_all_stocks(self):

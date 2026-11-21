@@ -1,6 +1,6 @@
 """预过滤：黑名单来自正式 JSON，标的来自真实截面。"""
 
-from zstock.factor_management.prefilters import PreFilters
+from zstock.common.prefilters import PreFilters
 
 
 def test_stock_blacklist_hits_real_codes():
@@ -55,7 +55,7 @@ def test_bollinger_filter_on_real_ohlcv(stock_ohlcv_by_code):
     assert set(kept) <= set(codes)
     pf = PreFilters()
     n = len(pf._normalized_stock_blacklist)
-    pf._reload_blacklists()
+    pf.reload_blacklists()
     assert len(pf._normalized_stock_blacklist) == n
 
 

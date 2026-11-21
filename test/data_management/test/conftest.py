@@ -12,14 +12,14 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-FACTOR_HS300 = PROJECT_ROOT / "zstock" / "factor_management" / "test" / "fixtures" / "hs300_ohlcv.json"
-STRATEGY_OHLCV = PROJECT_ROOT / "zstock" / "strategy_management" / "test" / "fixtures" / "ohlcv_bundle.json"
+FACTOR_HS300 = PROJECT_ROOT / "test" / "factor_management" / "test" / "fixtures" / "hs300_ohlcv.json"
+STRATEGY_OHLCV = PROJECT_ROOT / "test" / "strategy_management" / "test" / "fixtures" / "ohlcv_bundle.json"
 
 
 def _match(doc: Dict[str, Any], query: Dict[str, Any]) -> bool:
     for key, expected in (query or {}).items():
         actual = doc.get(key)
-        if isinstance(expected, dict):
+        if isinstance(expected, dict) and not hasattr(expected, "binary"):
             if "$in" in expected:
                 if actual not in expected["$in"]:
                     return False
@@ -63,6 +63,9 @@ class FakeCursor:
         self.docs = self.docs[: int(n)]
         return self
 
+    def batch_size(self, n):
+        return self
+
     def __aiter__(self):
         self._it = iter(self.docs)
         return self
@@ -104,14 +107,24 @@ class FakeCollection:
         return docs[0] if docs else None
 
     async def insert_one(self, document):
-        self.docs.append(dict(document))
-        return SimpleNamespace(inserted_id=f"id{len(self.docs)}")
+        from bson import ObjectId
+
+        doc = dict(document)
+        if "_id" not in doc:
+            doc["_id"] = ObjectId()
+        self.docs.append(doc)
+        return SimpleNamespace(inserted_id=doc["_id"])
 
     async def insert_many(self, documents, **kwargs):
+        from bson import ObjectId
+
         ids = []
         for d in documents:
-            self.docs.append(dict(d))
-            ids.append(f"id{len(self.docs)}")
+            doc = dict(d)
+            if "_id" not in doc:
+                doc["_id"] = ObjectId()
+            self.docs.append(doc)
+            ids.append(doc["_id"])
         return SimpleNamespace(inserted_ids=ids)
 
     async def update_one(self, query, update, upsert=False, **kwargs):
@@ -263,15 +276,44 @@ class FakeCollection:
         return FakeCursor(docs)
 
     async def bulk_write(self, ops, ordered=False):
-        for op in ops:
-            filt = getattr(op, "_filter", None) or {}
-            doc = getattr(op, "_doc", None) or {}
+        matched = 0
+        modified = 0
+        upserted_ids = {}
+        for i, op in enumerate(ops):
+            filt = getattr(op, "_filter", None)
+            if filt is None:
+                filt = getattr(op, "filter", None) or {}
+            doc = getattr(op, "_doc", None)
+            if doc is None:
+                doc = getattr(op, "doc", None) or getattr(op, "_update", None) or {}
+            # pymongo UpdateOne stores filter/_filter and update/_doc depending on version
+            if hasattr(op, "_filter") and hasattr(op, "_doc"):
+                filt = op._filter
+                doc = op._doc
+            elif hasattr(op, "_filter") and hasattr(op, "_update"):
+                filt = op._filter
+                doc = op._update
+            existing = [d for d in self.docs if _match(d, filt or {})]
             if isinstance(doc, dict) and "$set" in doc:
-                merged = {**filt, **(doc.get("$set") or {})}
-                await self.replace_one(filt, merged, upsert=True)
+                patch = doc.get("$set") or {}
+                merged = {**(filt or {}), **patch}
             else:
-                await self.replace_one(filt, doc, upsert=True)
-        return SimpleNamespace(modified_count=len(ops), upserted_count=len(ops))
+                merged = dict(doc) if isinstance(doc, dict) else {}
+                merged.update(filt or {})
+            if existing:
+                matched += 1
+                await self.replace_one(filt, merged, upsert=False)
+                modified += 1
+            else:
+                result = await self.replace_one(filt, merged, upsert=True)
+                if result.upserted_id:
+                    upserted_ids[i] = result.upserted_id
+        return SimpleNamespace(
+            matched_count=matched,
+            modified_count=modified,
+            upserted_ids=upserted_ids,
+            upserted_count=len(upserted_ids),
+        )
 
 
 class FakeMongoDB:

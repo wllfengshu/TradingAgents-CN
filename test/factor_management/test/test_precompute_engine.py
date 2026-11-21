@@ -9,13 +9,15 @@ import pandas as pd
 import pytest
 
 from zstock.factor_management.script.precompute_factors import (
-    FactorComputeEngine,
     FactorPrecomputeService,
     _apply_resource_budget,
+    _compute_day_sync,
     _error_handler,
+    _is_stock_code,
     _resolve_worker_count,
     _sort_ohlcv_frame,
     _sort_ohlcv_item,
+    compute_day_factor_raws,
 )
 from test.data_management.test.conftest import FakeDatabaseService
 
@@ -53,6 +55,13 @@ def test_worker_budget_and_sort_helpers(hs300_ohlcv, monkeypatch):
         query_workers=1,
     )
     assert compute == 1 and load == 1 and query == 1
+    compute2, _, _ = _apply_resource_budget(
+        resource_fraction=0.9,
+        compute_workers=None,
+        load_workers=None,
+        query_workers=None,
+    )
+    assert compute2 >= 1
     empty = pd.DataFrame()
     code, df = _sort_ohlcv_frame("399300", empty)
     assert code == "399300" and df.empty
@@ -66,10 +75,14 @@ def test_worker_budget_and_sort_helpers(hs300_ohlcv, monkeypatch):
     with pytest.raises(RuntimeError):
         with _error_handler("ut", critical=True):
             raise RuntimeError("critical")
+    assert _is_stock_code("600000")
+    assert not _is_stock_code("")
+    assert not _is_stock_code("399300")
+    assert not _is_stock_code(None)
 
 
-def test_compute_engine_defaults_to_full_universe(hs300_ohlcv):
-    raw = FactorComputeEngine.compute_all_factors_raw_sync(
+def test_compute_day_raws_defaults_to_full_universe(hs300_ohlcv):
+    raw = compute_day_factor_raws(
         trade_date="2024-01-02",
         all_stocks=["399300"],
         stock_infos={},
@@ -82,9 +95,11 @@ def test_compute_engine_defaults_to_full_universe(hs300_ohlcv):
     )
     assert raw["trade_date"] == "2024-01-02"
     assert raw["market_raw"]
+    assert "all_candidates" not in raw
 
 
-def test_compute_all_factors_on_live_calc():
+def test_layers_independent_on_live_calc():
+    """M4 覆盖宇宙内全部有行情个股，不依赖 M3 是否产出。"""
     members, ohlcv, flow, idx = _live_payload()
     compute_universe = {c for codes in members.values() for c in codes if c in ohlcv}
     compute_sectors = [{"sector_code": k, "sector_name": k} for k in members]
@@ -92,7 +107,7 @@ def test_compute_all_factors_on_live_calc():
         c: {"code": c, "name": c, "is_mainboard": True, "is_st": False}
         for c in ohlcv
     }
-    raw = FactorComputeEngine.compute_all_factors_raw_sync(
+    raw = compute_day_factor_raws(
         trade_date="2024-01-02",
         all_stocks=list(ohlcv),
         stock_infos=infos,
@@ -112,6 +127,8 @@ def test_compute_all_factors_on_live_calc():
     assert raw["dragon_raw_by_sector"]
     assert raw["force_raw"]
     assert raw["stock_last_close"]
+    force_codes = {r["code"] for r in raw["force_raw"]}
+    assert force_codes == compute_universe
 
 
 @pytest.mark.asyncio
@@ -149,7 +166,7 @@ async def test_slice_and_store_with_live_preload():
     assert sliced["index_ohlcv"]
     assert sliced["stock_ohlcv"]
 
-    raw = FactorComputeEngine.compute_all_factors_raw_sync(
+    raw = compute_day_factor_raws(
         **sliced,
         assume_sorted=True,
         compute_sectors=preload["compute_sectors"],
@@ -167,6 +184,60 @@ async def test_slice_and_store_with_live_preload():
     assert empty == {"market": 0, "sector": 0, "dragon": 0, "force": 0}
 
 
+def test_compute_day_sync_on_live_slice():
+    members, ohlcv, flow, idx = _live_payload()
+    dates_index = {
+        c: sorted(df["trade_date"].astype(str).tolist()) for c, df in ohlcv.items()
+    }
+    flow_dates = {
+        c: sorted(str(d.get("trade_date")) for d in rows) for c, rows in flow.items()
+    }
+    preload = {
+        "flow_days": 5,
+        "stock_ohlcv_full": ohlcv,
+        "ohlcv_dates_index": dates_index,
+        "index_ohlcv_full": {"399300": idx},
+        "index_dates_index": {"399300": sorted(idx["trade_date"].astype(str).tolist())},
+        "stock_flow_full": flow,
+        "flow_dates_index": flow_dates,
+        "stock_lhb_full": {},
+        "lhb_dates_index": {},
+        "sector_ohlcv_full": {},
+        "sector_dates_index": {},
+        "all_stocks": list(ohlcv),
+        "stock_infos": {c: {"code": c, "name": c} for c in ohlcv},
+        "sectors": [{"sector_code": k} for k in members],
+        "sector_stocks": members,
+        "index_name": "沪深 300",
+        "compute_sectors": [{"sector_code": k} for k in members],
+        "compute_universe": set(ohlcv),
+    }
+    raw = _compute_day_sync(preload, "2024-01-02", 90, quiet=True)
+    assert raw["market_raw"] and raw["sector_raw"]
+
+
+@pytest.mark.asyncio
+async def test_fundamental_for_date_paths():
+    svc = FactorPrecomputeService.__new__(FactorPrecomputeService)
+    svc._load_fundamentals = False
+    assert await svc._fundamental_for_date("2024-01-02") is None
+    svc._load_fundamentals = True
+
+    class QS:
+        async def get_fundamental_asof(self, td):
+            return {"600000": {"bps": 1.0}}
+
+    svc.query_service = QS()
+    assert await svc._fundamental_for_date("2024-01-02")
+
+    class BadQS:
+        async def get_fundamental_asof(self, td):
+            raise RuntimeError("boom")
+
+    svc.query_service = BadQS()
+    assert await svc._fundamental_for_date("2024-01-02") is None
+
+
 @pytest.mark.asyncio
 async def test_store_force_drops_score_fields():
     from zstock.data_management.query_service import COL_FACTOR_FORCE
@@ -181,9 +252,9 @@ async def test_store_force_drops_score_fields():
                     "code": "601921",
                     "sector_code": "SW2出版",
                     "fcoop1_main_net_ratio": 0.12,
-                    "strategy_signal_score": 99.0,
+                    "final_score": 99.0,
                     "force_composite_score": 80.0,
-                    "dragon_composite_score": 70.0,
+                    "dragon_score": 70.0,
                 }
             ]
         },
@@ -192,6 +263,6 @@ async def test_store_force_drops_score_fields():
     assert n == 1
     stored = svc.query_service.db[COL_FACTOR_FORCE].docs[0]
     assert stored["fcoop1_main_net_ratio"] == 0.12
-    assert "strategy_signal_score" not in stored
+    assert "final_score" not in stored
     assert "force_composite_score" not in stored
-    assert "dragon_composite_score" not in stored
+    assert "dragon_score" not in stored

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from zstock.order_management.execution_strategy import ExecutionStrategy
+from zstock.order_management.timing import ExecutionStrategy
 from zstock.common.entity.order_entity import Order
 
 

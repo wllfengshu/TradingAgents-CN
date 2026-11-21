@@ -202,10 +202,13 @@ scheduler = NightlyScheduler()
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(levelname)-7s  %(message)s",
-        datefmt="%H:%M:%S",
+    from zstock.common.logging_setup import setup_logging
+
+    setup_logging(
+        "nightly_scheduler",
+        stamped=False,
+        file_fmt="%(asctime)s  %(levelname)-7s  %(message)s",
+        console_fmt="%(asctime)s  %(levelname)-7s  %(message)s",
     )
     p = argparse.ArgumentParser(description="ZStock Python 夜跑调度")
     p.add_argument("--time", default="21:00", help="每日运行时间 HH:MM")

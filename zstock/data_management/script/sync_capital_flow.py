@@ -28,11 +28,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from zstock.data_management.query_service import COL_CAPITAL_FLOW, COL_OHLCV, PERIOD_L2_DAILY
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s  %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOOKBACK_DAYS = 15
@@ -194,6 +189,14 @@ async def sync_capital_flow_range(
 
 
 async def main(argv: Optional[List[str]] = None) -> int:
+    from zstock.common.logging_setup import setup_logging
+
+    setup_logging(
+        "sync_capital_flow",
+        stamped=False,
+        file_fmt="%(asctime)s  %(levelname)-7s  %(message)s",
+        console_fmt="%(asctime)s  %(levelname)-7s  %(message)s",
+    )
     args = _parse_args(argv)
     try:
         await sync_capital_flow_range(

@@ -2,7 +2,7 @@
 
 import pytest
 
-from zstock.strategy_management.script import signal_consistency_check as scc
+from web.backend import signal_consistency_check as scc
 
 
 def test_main_requires_date(monkeypatch):

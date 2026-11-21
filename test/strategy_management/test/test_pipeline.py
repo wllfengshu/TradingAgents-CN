@@ -3,13 +3,17 @@
 import pandas as pd
 import pytest
 
-from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
 from zstock.strategy_management.pipeline import StrategyPipeline
-from zstock.strategy_management.test.conftest import make_offline_pipeline
+from test.strategy_management.test.conftest import make_offline_pipeline
+from zstock.strategy_management.strategy_section import schema as signal_schema
+from zstock.strategy_management.strategy_section import execute as exec_stage
+from zstock.strategy_management.strategy_section import exit as exit_policy
 
 
 def test_default_config_matches_ssot(strategy_params):
-    cfg = StrategyPipeline._default_config()
+    from zstock.common.config.strategy_config import build_runtime_config
+
+    cfg = build_runtime_config()
     top_k = int(strategy_params["final_score"]["top_k"])
     assert cfg["portfolio_optimization"]["max_holdings"] == top_k
     assert cfg["portfolio_optimization"]["max_weight_per_stock"] == float(
@@ -38,21 +42,21 @@ def test_default_config_matches_ssot(strategy_params):
 
 
 def test_resolve_effective_top_k(strategy_params):
-    assert StrategyPipeline._resolve_effective_top_k(strategy_params, "reversal") == 3
-    assert StrategyPipeline._resolve_effective_top_k(strategy_params, "neutral") == 5
-    assert StrategyPipeline._resolve_effective_top_k(strategy_params, "momentum") == 5
+    assert exec_stage.resolve_effective_top_k(strategy_params, "reversal") == 3
+    assert exec_stage.resolve_effective_top_k(strategy_params, "neutral") == 5
+    assert exec_stage.resolve_effective_top_k(strategy_params, "momentum") == 5
 
 
 def test_extract_market_grade_from_attrs_and_columns(green_signals):
-    assert StrategyPipeline._extract_market_grade(green_signals) == "green"
-    assert StrategyPipeline._extract_market_grade(None) == "unknown"
+    assert exec_stage.extract_market_grade(green_signals) == "green"
+    assert exec_stage.extract_market_grade(None) == "unknown"
     empty = pd.DataFrame()
-    assert StrategyPipeline._extract_market_grade(empty) == "unknown"
+    assert exec_stage.extract_market_grade(empty) == "unknown"
 
 
 @pytest.mark.asyncio
 async def test_empty_precomputed_on_red_is_defense_book():
-    empty = CrossSectionStrategyPipeline._empty_signals_df("2024-01-02", "red", 0.0)
+    empty = signal_schema.empty_signals_df("2024-01-02", "red", 0.0)
     pipe = make_offline_pipeline()
     out = await pipe.execute_full_pipeline(trade_date="2024-01-02", precomputed_signals=empty)
     assert out["status"] == "success"
@@ -100,7 +104,9 @@ async def test_reversal_yellow_reduce_only_blocks_new_entry(
 @pytest.mark.asyncio
 async def test_reduce_only_with_runtime_config_only(reversal_yellow_signals):
     """黄灯走中性行业 ETF 账户，不再在这一层开新股票。"""
-    runtime = StrategyPipeline._default_config()
+    from zstock.common.config.strategy_config import build_runtime_config
+
+    runtime = build_runtime_config()
     assert runtime.get("weak_regime_protection")
     td = str(reversal_yellow_signals.iloc[0]["trade_date"])
     pipe = make_offline_pipeline()
@@ -121,7 +127,7 @@ async def test_rank_force_exit_on_worst_jan_name(real_signals, strategy_params):
     current = pd.DataFrame(
         [{"code": worst["code"], "weight": 0.2, "score": float(worst["final_score"])}]
     )
-    force = StrategyPipeline._rank_force_exit_codes(
+    force = exit_policy.rank_force_exit_codes(
         current, real_signals, strategy_params["exit_rules"]
     )
     n = len(real_signals)
@@ -140,8 +146,10 @@ async def test_optimization_failure_status(real_signals, real_trade_date):
 
     from zstock.strategy_management.market_book import BookDecision
 
+    from test.strategy_management.test.conftest import DummySignalPipeline
+
     pipe = StrategyPipeline(
-        factor_pipeline=make_offline_pipeline()._factor_pipeline,
+        signals=DummySignalPipeline(),
         portfolio_optimizer=_Boom(),  # type: ignore[arg-type]
     )
     pipe.book.step = lambda *args, **kwargs: BookDecision("attack", None, "green")  # type: ignore[method-assign]
@@ -150,13 +158,13 @@ async def test_optimization_failure_status(real_signals, real_trade_date):
 
 
 def test_rank_force_exit_guards(real_signals, strategy_params):
-    assert StrategyPipeline._rank_force_exit_codes(None, real_signals, {}) == set()
+    assert exit_policy.rank_force_exit_codes(None, real_signals, {}) == set()
     tiny = real_signals.head(1)
     current = pd.DataFrame([{"code": tiny.iloc[0]["code"], "weight": 0.2}])
-    assert StrategyPipeline._rank_force_exit_codes(current, tiny, strategy_params["exit_rules"]) == set()
+    assert exit_policy.rank_force_exit_codes(current, tiny, strategy_params["exit_rules"]) == set()
 
 
 def test_extract_grade_from_column(green_signals):
     df = green_signals.copy()
     df.attrs.clear()
-    assert StrategyPipeline._extract_market_grade(df) == "green"
+    assert exec_stage.extract_market_grade(df) == "green"

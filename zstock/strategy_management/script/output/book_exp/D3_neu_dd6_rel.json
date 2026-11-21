@@ -1,0 +1,33 @@
+{
+  "id": "D3_neu_dd6_rel",
+  "book_regime": {
+    "industry_stop_loss_pct": -0.06,
+    "industry_rel_index_gate": -0.03
+  },
+  "status": "ok",
+  "started_at": "2026-11-15T22:56:55",
+  "elapsed_sec": 812.9,
+  "total_return": 0.19670164558924763,
+  "annualized_return": 0.09716362647427346,
+  "max_drawdown": -0.1354471842822188,
+  "sharpe": 0.7437858471305434,
+  "rebalance_count": 118,
+  "total_cost": 0.10222612849287349,
+  "output_dir": "output/book_exp/D3_neu_dd6_rel",
+  "2025_ret": 0.2122799677546814,
+  "2025_ann": 0.20425946709530862,
+  "2025_mdd": -0.07964494335533534,
+  "2025_days": 261.0,
+  "2026_ret": -0.012854050079223467,
+  "2026_ann": -0.014259555208984254,
+  "2026_mdd": -0.13544796009649474,
+  "2026_days": 227.0,
+  "avg_w_stock": 0.1762295081967213,
+  "avg_w_ind": 0.23759677873388418,
+  "attack_day_frac": 0.16188524590163936,
+  "neutral_day_frac": 0.33811475409836067,
+  "defense_day_frac": 0.5,
+  "port_on_attack": 0.1331559025773299,
+  "port_on_neutral": 0.08024931139077163,
+  "port_on_defense": -0.022378749395673747
+}

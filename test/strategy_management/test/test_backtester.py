@@ -13,8 +13,8 @@ from zstock.strategy_management.script.backtester import (
     make_ohlcv_provider_from_dict,
     make_signal_provider_from_pipeline_data,
 )
-from zstock.strategy_management.test.conftest import (
-    ReplayFactorPipeline,
+from test.strategy_management.test.conftest import (
+    ReplaySignalPipeline,
     make_offline_pipeline,
 )
 
@@ -63,6 +63,72 @@ def test_update_out_of_list_days(real_signals):
     missing = buy - dropped
     assert st2[next(iter(missing))] == 1
     assert Backtester._update_out_of_list_days(st, pd.DataFrame(), buy) == {}
+
+
+def test_light_book_is_not_rewritten_by_stock_candidate_list():
+    holdings = pd.DataFrame(
+        {
+            "code": ["511090", "511260", "512800", "512480"],
+            "weight": [0.35, 0.35, 0.30, 0.20],
+        }
+    )
+    force_out = set(holdings["code"])
+    kept = Backtester._drop_out_of_candidates(holdings, force_out, book_on=True)
+    assert list(kept["code"]) == ["511090", "511260", "512800", "512480"]
+    dropped = Backtester._drop_out_of_candidates(holdings, force_out, book_on=False)
+    assert dropped.empty
+    untouched = Backtester._drop_out_of_candidates(holdings, set(), book_on=False)
+    assert untouched is holdings
+
+
+def test_light_book_keeps_names_through_entry_stop():
+    bt = Backtester(strategy_pipeline=make_offline_pipeline())
+    holdings = pd.DataFrame(
+        [{"code": "512800", "weight": 0.4, "entry_price": 1.0, "score": 0.0}]
+    )
+    day = {
+        "512800": pd.DataFrame(
+            [
+                {
+                    "trade_date": "2025-04-07",
+                    "open": 0.93,
+                    "high": 0.94,
+                    "low": 0.90,
+                    "close": 0.94,
+                }
+            ]
+        )
+    }
+    out, day_ret, turn, _cost, _px = bt._apply_hard_stops(
+        holdings,
+        {"512800": 1.0},
+        {"512800": -0.06},
+        {"512800": 1.0},
+        day,
+        "2025-04-07",
+        -0.08,
+        industry_stop_pct=-0.06,
+        industry_codes={"512800"},
+        enabled=False,
+    )
+    assert list(out["code"]) == ["512800"]
+    assert float(out["weight"].iloc[0]) == 0.4
+    assert turn == 0.0
+    assert abs(day_ret - (-0.06 * 0.4)) < 1e-9
+    sold, _ret, sold_turn, _sold_cost, _sold_px = bt._apply_hard_stops(
+        holdings,
+        {"512800": 1.0},
+        {"512800": -0.06},
+        {"512800": 1.0},
+        day,
+        "2025-04-07",
+        -0.08,
+        industry_stop_pct=-0.06,
+        industry_codes={"512800"},
+        enabled=True,
+    )
+    assert sold.empty
+    assert sold_turn > 0.0
 
 
 def test_handle_no_signal_hold_is_production(real_signals, strategy_params):
@@ -121,20 +187,63 @@ def test_hard_stop_on_real_price_path(ohlcv_by_code, strategy_params):
             break
     if triggered is None:
         code, df = next(iter(ohlcv_by_code.items()))
+        td = str(df.iloc[-1]["trade_date"])
+        entry = float(df.iloc[0]["close"])
+        last = float(df.iloc[-1]["close"])
         holdings = pd.DataFrame(
-            [{"code": code, "weight": 0.2, "entry_price": float(df.iloc[0]["close"]), "score": 1.0}]
+            [{"code": code, "weight": 0.2, "entry_price": entry, "score": 1.0}]
         )
-        last_px = {code: float(df.iloc[-1]["close"])}
-        out, turn, cost = bt._apply_hard_stops(holdings, last_px, str(df.iloc[-1]["trade_date"]), stop)
+        day = {
+            code: pd.DataFrame(
+                [
+                    {
+                        "trade_date": td,
+                        "open": last,
+                        "high": last,
+                        "low": last,
+                        "close": last,
+                    }
+                ]
+            )
+        }
+        out, _day_ret, turn, cost, _px = bt._apply_hard_stops(
+            holdings,
+            {code: last},
+            {code: last / entry - 1.0},
+            {code: entry},
+            day,
+            td,
+            stop,
+        )
         assert turn == 0.0
         assert len(out) == 1
         return
     code, entry, last, td = triggered
     holdings = pd.DataFrame([{"code": code, "weight": 0.2, "entry_price": entry, "score": 1.0}])
-    out, turn, cost = bt._apply_hard_stops(holdings, {code: last}, td, stop)
-    assert out.empty
-    assert turn == pytest.approx(0.1)
-    assert cost == pytest.approx(0.2 * 0.0015)
+    day = {
+        code: pd.DataFrame(
+            [{"trade_date": td, "open": last, "high": last, "low": last, "close": last}]
+        )
+    }
+    out, _day_ret, turn, cost, _px = bt._apply_hard_stops(
+        holdings,
+        {code: last},
+        {code: last / entry - 1.0},
+        {code: entry},
+        day,
+        td,
+        stop,
+    )
+    from zstock.common.utils.common_utils import is_limit_down
+
+    if is_limit_down(code, entry, last, td):
+        # 收盘已经封在跌停价，止损卖不出
+        assert len(out) == 1
+        assert turn == 0.0
+    else:
+        assert out.empty
+        assert turn == pytest.approx(0.1)
+        assert cost == pytest.approx(0.2 * (0.0015 + bt.stamp_tax))
 
 
 def test_attach_entry_meta_inherits(real_signals, ohlcv_by_code, real_trade_date):
@@ -210,7 +319,7 @@ def test_result_summary_matches_overnight_2024(overnight_results, tmp_path):
     assert png and Path(png).is_file()
 
 
-class _ReplayFactors(ReplayFactorPipeline):
+class _ReplayFactors(ReplaySignalPipeline):
     pass
 
 
@@ -222,7 +331,7 @@ async def test_run_jan_window_with_exported_signals(
         strategy_pipeline=make_offline_pipeline(),
         fee_rate=0.0015,
         initial_capital=float(strategy_params["backtest"]["initial_capital"]),
-        factor_pipeline=_ReplayFactors(signals_bundle),  # type: ignore[arg-type]
+        signal_pipeline=_ReplayFactors(signals_bundle),  # type: ignore[arg-type]
     )
     result = await bt.run(
         start_date="2024-01-02",
@@ -329,7 +438,9 @@ def test_handle_no_signal_empty_and_flat(real_signals, strategy_params):
 def test_apply_hard_stops_without_entry_price(real_signals):
     bt = Backtester(strategy_pipeline=make_offline_pipeline(), fee_rate=0.0015)
     holdings = pd.DataFrame({"code": [str(real_signals.iloc[0]["code"])], "weight": [0.2]})
-    out, turn, cost = bt._apply_hard_stops(holdings, {}, "2024-01-02", -0.08)
+    out, _day_ret, turn, cost, _px = bt._apply_hard_stops(
+        holdings, {}, {}, {}, {}, "2024-01-02", -0.08
+    )
     assert turn == 0.0
     assert out is holdings
 
@@ -346,7 +457,7 @@ async def test_run_raises_when_pipeline_errors(ohlcv_by_code, strategy_params):
 
     from zstock.strategy_management.pipeline import StrategyPipeline
 
-    pipe = StrategyPipeline(factor_pipeline=_BoomFP())  # type: ignore[arg-type]
+    pipe = StrategyPipeline(signals=_BoomFP())  # type: ignore[arg-type]
     bt = Backtester(strategy_pipeline=pipe, fee_rate=0.0015, initial_capital=1_000_000)
     result = await bt.run(
         start_date="2024-01-02",
@@ -362,12 +473,15 @@ async def test_run_raises_when_pipeline_errors(ohlcv_by_code, strategy_params):
 @pytest.mark.asyncio
 async def test_run_real_data_uses_exported_codes(monkeypatch, ohlcv_by_code, signals_bundle):
     """用导出的 9 只真实票替代全市场主板列表，走 run_real_data 装载循环。"""
-    from zstock.strategy_management.test.conftest import ReplayFactorPipeline
+    from test.strategy_management.test.conftest import ReplaySignalPipeline
 
     class _QS:
-        async def get_all_stocks(self):
+        async def get_all_stocks(self, as_of=None):
             docs = [{"code": c, "is_mainboard": True, "is_st": False} for c in ohlcv_by_code]
             return docs, None
+
+        async def get_traded_codes_between(self, start_date, end_date, period="daily"):
+            return list(ohlcv_by_code.keys())
 
         async def get_ohlcv_batch(self, chunk, start_date, end_date, **kwargs):
             return {c: ohlcv_by_code[c] for c in chunk if c in ohlcv_by_code}
@@ -377,10 +491,9 @@ async def test_run_real_data_uses_exported_codes(monkeypatch, ohlcv_by_code, sig
         lambda: _QS(),
     )
     bt = Backtester(
-        strategy_pipeline=make_offline_pipeline(),
         fee_rate=0.0015,
         initial_capital=1_000_000,
-        factor_pipeline=ReplayFactorPipeline(signals_bundle),  # type: ignore[arg-type]
+        signal_pipeline=ReplaySignalPipeline(signals_bundle),  # type: ignore[arg-type]
     )
     result = await bt.run_real_data(
         start_date="2024-01-02",
@@ -412,13 +525,13 @@ async def test_run_cli_success_prints_recorded_summary(monkeypatch, overnight_re
         print(canned.summary())
         return canned
 
-    from zstock.strategy_management.test.conftest import DummyFactorPipeline
+    from test.strategy_management.test.conftest import DummySignalPipeline
 
     monkeypatch.setattr("zstock.common.utils.db_utils.init_zstock_database", _ok)
     monkeypatch.setattr("zstock.common.utils.db_utils.close_zstock_database", _ok)
     monkeypatch.setattr(
-        "zstock.strategy_management.pipeline.CrossSectionStrategyPipeline",
-        lambda *a, **k: DummyFactorPipeline(),
+        "zstock.strategy_management.pipeline.StrategyPipeline",
+        lambda *a, **k: DummySignalPipeline(),
     )
     monkeypatch.setattr(Backtester, "run_real_data", _canned)
     rc = await Backtester.run_cli(

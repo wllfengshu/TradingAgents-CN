@@ -226,15 +226,19 @@ class DataQueryService:
         Args:
             collection: 集合名称
             query: 查询条件
-            **kwargs: 其他查询参数（skip, limit, sort 等）
+            **kwargs: 其他查询参数（skip, limit, sort, projection, batch_size 等）
 
         Returns:
             查询结果列表
         """
         if query is None:
             query = {}
+        batch_size = kwargs.pop("batch_size", None)
         try:
-            result = await self.db[collection].find(query, **kwargs).to_list(None)
+            cursor = self.db[collection].find(query, **kwargs)
+            if batch_size:
+                cursor = cursor.batch_size(int(batch_size))
+            result = await cursor.to_list(None)
             if result is None:
                 result = []
             logger.debug(f"查询 {collection}: 找到 {len(result)} 条记录")
@@ -856,21 +860,97 @@ class DataQueryService:
 
         raise ValueError(f"get_stock_info无法获取数据: {symbol}")
 
-    async def get_all_stocks(self) -> Tuple[List[Dict], str]:
-        """获取全 A 股完整信息列表（含创业板/科创板/北交所，含 ST）。"""
+    async def get_traded_codes_on(
+        self,
+        trade_date: str,
+        period: str = "daily",
+    ) -> List[str]:
+        """指定交易日有日线 bar 的代码（PIT 宇宙交集用）。"""
+        td = normalize_date(trade_date)
+        period_key = _PERIOD_MAP.get(period, period)
+        try:
+            codes = await self.db[COL_OHLCV].distinct(
+                "code",
+                {"trade_date": td, "period": period_key},
+            )
+            return [normalize_code(c) for c in (codes or []) if c]
+        except Exception as e:
+            logger.warning("get_traded_codes_on(%s) 失败: %s", td, e)
+            return []
+
+    async def get_traded_codes_between(
+        self,
+        start_date: str,
+        end_date: str,
+        period: str = "daily",
+    ) -> List[str]:
+        """区间内任意交易日有日线的代码（回测加载宇宙，减轻幸存者偏差）。"""
+        start = normalize_date(start_date)
+        end = normalize_date(end_date)
+        period_key = _PERIOD_MAP.get(period, period)
+        try:
+            codes = await self.db[COL_OHLCV].distinct(
+                "code",
+                {
+                    "period": period_key,
+                    "trade_date": {"$gte": start, "$lte": end},
+                },
+            )
+            return [normalize_code(c) for c in (codes or []) if c]
+        except Exception as e:
+            logger.warning(
+                "get_traded_codes_between(%s~%s) 失败: %s", start, end, e
+            )
+            return []
+
+    async def get_all_stocks(
+        self, as_of: Optional[str] = None
+    ) -> Tuple[List[Dict], str]:
+        """获取全 A 股信息列表（含创业板/科创板/北交所，含 ST）。
+
+        as_of 非空时做 Point-in-Time 过滤：
+        1) 若有 list_date / delist_date 字段则按上市/退市截断；
+        2) 与当日有 OHLCV 的代码求交（排除尚未上市/已无行情的票）。
+        """
         try:
             docs = await self.query(
                 COL_STOCK_INFO,
                 {},
                 projection={"_id": 0},
             )
-            if docs:
-                return [d for d in docs if d.get("code")], "mongodb"
+            if not docs:
+                raise ValueError("get_all_stocks无法获取数据")
+            out = [d for d in docs if d.get("code")]
+            if as_of:
+                td = normalize_date(as_of)
+                filtered: List[Dict] = []
+                for d in out:
+                    code = normalize_code(d.get("code"))
+                    d = {**d, "code": code}
+                    ld = d.get("list_date")
+                    dd = d.get("delist_date")
+                    try:
+                        if ld and normalize_date(str(ld)) > td:
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        if dd and normalize_date(str(dd)) <= td:
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                    filtered.append(d)
+                traded = await self.get_traded_codes_on(td)
+                if traded:
+                    traded_set = set(traded)
+                    filtered = [d for d in filtered if d.get("code") in traded_set]
+                out = filtered
+            return out, "mongodb"
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"从 MongoDB 获取全市场股票列表失败: {e}")
             raise ValueError("get_all_stocks无法获取数据") from e
-
-        raise ValueError("get_all_stocks无法获取数据")
 
     # =========================== 资金流 ===========================
 
@@ -1298,20 +1378,21 @@ class DataQueryService:
 
     @staticmethod
     def _factor_range_concurrency(cap: int = 8) -> int:
-        """因子窗口并发。大集合必须低并发，避免 Mongo 超时 / 连接池打满。
+        """因子窗口并发。大集合必须低并发，避免 Mongo OOM / 超时 / 连接池打满。
 
-        优先读 ZSTOCK_FACTOR_CONCURRENCY，回退到 ZSTOCK_OHLCV_CONCURRENCY
-        （与 backtester / overnight_risk_validate 共用的并发配置）。
+        优先读 ZSTOCK_FACTOR_CONCURRENCY，回退到 ZSTOCK_OHLCV_CONCURRENCY。
+        允许 1（M3/M4 全市场按日文档量极大，并发>1 易把本机 mongod 打崩）。
         """
         raw = os.environ.get("ZSTOCK_FACTOR_CONCURRENCY") or os.environ.get("ZSTOCK_OHLCV_CONCURRENCY")
         if raw:
             try:
                 n = int(raw)
             except ValueError:
-                n = _default_query_concurrency()
+                n = min(4, _default_query_concurrency())
         else:
-            n = _default_query_concurrency()
-        return max(2, min(cap, n))
+            # 未配置时偏保守，不再默认跟 OHLCV 一样开到 4~12
+            n = min(4, _default_query_concurrency())
+        return max(1, min(cap, n))
 
     async def _query_window_with_retry(
         self,
@@ -1320,24 +1401,35 @@ class DataQueryService:
         win_end: str,
         *,
         attempts: int = 5,
+        projection: Optional[Dict[str, int]] = None,
     ) -> List[Dict]:
         last_err: Optional[BaseException] = None
+        proj = projection if projection is not None else {"_id": 0}
         for attempt in range(1, attempts + 1):
             try:
                 docs = await self.query(
                     collection,
                     {"trade_date": {"$gte": win_start, "$lte": win_end}},
-                    projection={"_id": 0},
-                    batch_size=4000,
+                    projection=proj,
+                    batch_size=2000,
                 )
                 return docs or []
             except Exception as e:
                 last_err = e
                 msg = str(e).lower()
-                retryable = "timed out" in msg or "timeout" in msg or "connection" in msg
+                retryable = (
+                    "timed out" in msg
+                    or "timeout" in msg
+                    or "connection" in msg
+                    or "10054" in msg
+                    or "10061" in msg
+                    or "actively refused" in msg
+                    or "forcibly closed" in msg
+                    or "server selection" in msg
+                )
                 if not retryable or attempt >= attempts:
                     raise
-                wait = min(30, 2 ** (attempt - 1))
+                wait = min(45, 2 ** (attempt - 1))
                 logger.warning(
                     "  %s 窗口 %s~%s 失败，%ds 后重试 (%d/%d): %s",
                     collection,
@@ -1460,13 +1552,16 @@ class DataQueryService:
         *,
         sink: Optional[Callable[[List[Dict]], None]] = None,
     ) -> List[Dict]:
-        """获取 M3 龙头因子预计算文档（区间）。"""
+        """获取 M3 龙头因子预计算文档（区间）。
+
+        默认单窗口串行 + 7 日切片：全年约 127 万文档，并发拉取曾导致本机 mongod OOM。
+        """
         return await self._query_docs_by_date_windows(
             COL_FACTOR_DRAGON,
             start_date,
             end_date,
-            date_chunk_days=14,
-            query_concurrency=self._factor_range_concurrency(4),
+            date_chunk_days=7,
+            query_concurrency=self._factor_range_concurrency(1),
             sink=sink,
         )
 
@@ -1477,13 +1572,13 @@ class DataQueryService:
         *,
         sink: Optional[Callable[[List[Dict]], None]] = None,
     ) -> List[Dict]:
-        """获取 M4 合力因子预计算文档（区间）。"""
+        """获取 M4 合力因子预计算文档（区间）。同 M3，默认串行低峰值。"""
         return await self._query_docs_by_date_windows(
             COL_FACTOR_FORCE,
             start_date,
             end_date,
-            date_chunk_days=14,
-            query_concurrency=self._factor_range_concurrency(4),
+            date_chunk_days=7,
+            query_concurrency=self._factor_range_concurrency(1),
             sink=sink,
         )
 
@@ -1531,6 +1626,5 @@ class DataQueryService:
         return self._fundamental_asof_map(pershare or [], holder or [])
 
 
-# 兼容旧 import：from ...query_service import get_data_query_service
 get_data_query_service = DataQueryService.get_data_query_service
 

@@ -12,7 +12,7 @@ class Order:
         self.volume = volume
         self.price_type = price_type
         self.price = price
-        self.status = 'pending'
+        self.status = 'created'
         self.filled_volume = 0
         self.filled_price = None
         now_str = datetime.now(timezone.utc).isoformat()

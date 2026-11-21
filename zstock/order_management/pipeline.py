@@ -23,9 +23,29 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from .order_generator import OrderGenerator
+from .orders import OrderGenerator, TradeSettlement
+from .broker import XtQuantExecutor
+from .timing import ExecutionStrategy
 
 logger = logging.getLogger(__name__)
+
+
+def _volume_map(frame: pd.DataFrame) -> Dict[str, int]:
+    from zstock.common.utils.common_utils import normalize_code
+
+    if frame is None or frame.empty:
+        return {}
+    code_col = "stock_code" if "stock_code" in frame.columns else "code"
+    out: Dict[str, int] = {}
+    for _, row in frame.iterrows():
+        code = normalize_code(str(row.get(code_col, "")))
+        if not code:
+            continue
+        try:
+            out[code] = int(row.get("volume", 0) or 0)
+        except (TypeError, ValueError):
+            out[code] = 0
+    return out
 
 
 class OrderManagementPipeline:
@@ -44,18 +64,12 @@ class OrderManagementPipeline:
             order_generator = OrderGenerator()
 
         if xtquant_executor is None:
-            from .xtquant_executor import XtQuantExecutor
-
             xtquant_executor = XtQuantExecutor(allow_mock=allow_mock)
 
         if trade_settlement is None:
-            from .trade_settlement import TradeSettlement
-
             trade_settlement = TradeSettlement()
 
         if execution_strategy is None:
-            from .execution_strategy import ExecutionStrategy
-
             execution_strategy = ExecutionStrategy()
 
         self.allow_mock = allow_mock
@@ -82,6 +96,10 @@ class OrderManagementPipeline:
                 out.append(str(v))
             return out
         return []
+
+    @staticmethod
+    def _same_position_book(left: pd.DataFrame, right: pd.DataFrame) -> bool:
+        return _volume_map(left) == _volume_map(right)
 
     async def execute_full_pipeline(
         self,
@@ -114,17 +132,21 @@ class OrderManagementPipeline:
                 }
 
             account_info = self._xtquant_executor.get_account_info() or {}
+            available_cash = None
             if total_capital is None:
-                raw_capital = account_info.get("total_value") or account_info.get("cash")
                 try:
-                    total_capital = float(raw_capital) if raw_capital is not None else 0.0
+                    total_capital = float(account_info.get("total_value") or 0.0)
                 except (TypeError, ValueError):
                     total_capital = 0.0
                 if total_capital <= 0:
                     return {
                         "status": "failed",
-                        "error": "无法获取有效账户资金，拒绝用默认资金下单",
+                        "error": "无法获取有效总资产，拒绝用现金或默认资金换算目标股数",
                     }
+            try:
+                available_cash = float(account_info.get("cash") or 0.0)
+            except (TypeError, ValueError):
+                available_cash = 0.0
 
             broker_positions = self._xtquant_executor.get_positions()
             if broker_positions is None:
@@ -132,12 +154,23 @@ class OrderManagementPipeline:
                     "status": "failed",
                     "error": "无法获取券商持仓，拒绝当成空仓下单",
                 }
-            if current_positions is None or current_positions.empty:
-                if current_positions is not None:
-                    logger.warning("传入的 current_positions 为空，改用券商持仓，避免当成空仓全买")
-                current_positions = pd.DataFrame(
-                    [{"code": p["code"], "volume": p["volume"]} for p in broker_positions]
-                )
+            broker_frame = pd.DataFrame(
+                [
+                    {
+                        "code": p["code"],
+                        "volume": p["volume"],
+                        "can_use_volume": p.get("can_use_volume", p["volume"]),
+                    }
+                    for p in broker_positions
+                ]
+            )
+            if current_positions is not None and not current_positions.empty:
+                if not self._same_position_book(current_positions, broker_frame):
+                    return {
+                        "status": "failed",
+                        "error": "传入持仓与券商持仓不一致，拒绝按调用方账本下单",
+                    }
+            current_positions = broker_frame
 
             if price_map is None:
                 codes = self._codes_from_frame(target_positions)
@@ -156,6 +189,7 @@ class OrderManagementPipeline:
                 trade_date=trade_date,
                 price_map=price_map,
                 total_capital=total_capital,
+                available_cash=available_cash,
             )
             target_lots = self._order_generator.lots_from_positions(
                 target_positions,
@@ -181,7 +215,17 @@ class OrderManagementPipeline:
                 }
 
             results["orders"] = orders
-            await self._order_generator.persist_orders(orders, self._database_service)
+            saved = await self._order_generator.persist_orders(orders, self._database_service)
+            if not saved:
+                return {
+                    "status": "failed",
+                    "error": "订单落库失败，拒绝提交，避免未记账的委托",
+                    "statistics": {
+                        "target_positions": len(target_positions),
+                        "orders_generated": len(orders),
+                        "orders_submitted": 0,
+                    },
+                }
 
             logger.info("\n" + "=" * 60)
             logger.info("第二步：🎯 策略执行")
@@ -233,20 +277,25 @@ class OrderManagementPipeline:
 
             positions = self._xtquant_executor.get_positions()
             if positions is None:
-                logger.error("提交后无法刷新券商持仓")
-                positions = []
-            logger.info(f"   当前持仓: {len(positions)} 只股票")
-            results["current_positions"] = positions
+                logger.error("提交后无法刷新券商持仓，不做空仓对账")
+                results["current_positions"] = None
+                results["reconciliation"] = {
+                    "status": "error",
+                    "error": "提交后无法刷新券商持仓",
+                }
+            else:
+                logger.info(f"   当前持仓: {len(positions)} 只股票")
+                results["current_positions"] = positions
 
-            logger.info("\n" + "=" * 60)
-            logger.info("第五步：🔍 目标 vs 券商对账")
-            logger.info("=" * 60)
+                logger.info("\n" + "=" * 60)
+                logger.info("第五步：🔍 目标 vs 券商对账")
+                logger.info("=" * 60)
 
-            reconcile_result = self._trade_settlement.reconcile_target_vs_broker(
-                target_lots,
-                positions,
-            )
-            results["reconciliation"] = reconcile_result
+                reconcile_result = self._trade_settlement.reconcile_target_vs_broker(
+                    target_lots,
+                    positions,
+                )
+                results["reconciliation"] = reconcile_result
 
             cash = float((account_info or {}).get("cash", 0.0) or 0.0)
             total_value = float((account_info or {}).get("total_value", 0.0) or 0.0)
@@ -277,10 +326,10 @@ class OrderManagementPipeline:
                     "orders_submitted": submitted_count,
                     "orders_deferred": deferred_count,
                     "orders_failed": failed_count,
-                    "positions_count": len(positions),
+                    "positions_count": 0 if positions is None else len(positions),
                     "cash_available": cash,
                     "total_value": total_value,
-                    "reconciliation_status": reconcile_result["status"],
+                    "reconciliation_status": (results.get("reconciliation") or {}).get("status", "error"),
                 },
                 "results": results,
             }

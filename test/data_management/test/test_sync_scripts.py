@@ -1,21 +1,23 @@
-"""同步 / 检查脚本的纯函数与参数解析，不跑全市场 xtquant。"""
+"""同步脚本的纯函数与参数解析，不跑全市场 xtquant。"""
 
 import sys
 
-from zstock.data_management.script.check_ohlcv_coverage import INDEX_CODES as CHECK_INDEXES
+import pandas as pd
+
 from zstock.data_management.script.sync_ohlcv import (
     INDEX_CODES as SYNC_INDEXES,
     _enrich_turnover_rate,
+    _iter_day_windows,
+    _iter_year_windows,
     _parse_args,
+    _parse_freqs,
 )
-import pandas as pd
 
 
 def test_index_codes_include_hs300():
     sync_codes = {c for c, _ in SYNC_INDEXES}
-    check_codes = {c for c, _ in CHECK_INDEXES}
     assert "399300" in sync_codes
-    assert "399300" in check_codes
+    assert "399001" in sync_codes
 
 
 def test_parse_args_defaults(monkeypatch):
@@ -23,6 +25,30 @@ def test_parse_args_defaults(monkeypatch):
     args = _parse_args()
     assert args.start == "2025-01-01"
     assert args.end
+
+
+def test_parse_freqs_aliases_and_invalid():
+    assert _parse_freqs("1d,d,day") == ["1d"]
+    assert _parse_freqs("5m,1m") == ["5m", "1m"]
+    try:
+        _parse_freqs("bad")
+        assert False, "应拒绝非法 freq"
+    except SystemExit:
+        pass
+
+
+def test_iter_windows_edges():
+    years = list(_iter_year_windows("2024-01-02", "2024-03-15", 1))
+    assert years[0][0] == "2024-01-02"
+    assert years[-1][1] == "2024-03-15"
+    days = list(_iter_day_windows("2024-01-02", "2024-01-10", 5))
+    assert len(days) >= 2
+    assert list(_iter_year_windows("2024-01-02", "2024-01-02", 0)) == [
+        ("2024-01-02", "2024-01-02")
+    ]
+    assert list(_iter_day_windows("2024-01-02", "2024-01-02", 0)) == [
+        ("2024-01-02", "2024-01-02")
+    ]
 
 
 def test_enrich_turnover_empty():

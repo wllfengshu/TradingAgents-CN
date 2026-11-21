@@ -45,21 +45,22 @@ def _days_ago(n: int) -> str:
     return (datetime.now() - timedelta(days=max(0, n))).strftime("%Y-%m-%d")
 
 
-def _setup_logging(log_dir: Path) -> Path:
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"nightly_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%H:%M:%S")
-    for h in list(root.handlers):
-        root.removeHandler(h)
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    root.addHandler(sh)
-    fh = logging.FileHandler(log_path, encoding="utf-8")
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
-    return log_path
+def _setup_logging(log_dir: Optional[Path] = None) -> Path:
+    """默认写项目 ``logs/``；传入目录时在该目录下生成 nightly_*.log（单测）。"""
+    from zstock.common.logging_setup import default_log_path, setup_logging
+
+    if log_dir is not None:
+        log_dir = Path(log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"nightly_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    else:
+        path = default_log_path("nightly_pipeline")
+    return setup_logging(
+        "nightly_pipeline",
+        log_file=path,
+        file_fmt="%(asctime)s  %(levelname)-7s  %(message)s",
+        console_fmt="%(asctime)s  %(levelname)-7s  %(message)s",
+    )
 
 
 async def _run_ohlcv_sync(start: str, end: str) -> None:
@@ -107,8 +108,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--skip-factors", action="store_true", help="跳过因子预计算")
     p.add_argument(
         "--log-dir",
-        default=str(PROJECT_ROOT / "zstock" / "data_management" / "script" / "output" / "nightly"),
-        help="日志目录",
+        default=None,
+        help="日志目录（默认项目根 logs/）",
     )
     return p.parse_args(argv)
 
@@ -189,7 +190,7 @@ async def run_nightly(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
-    log_path = _setup_logging(Path(args.log_dir))
+    log_path = _setup_logging(Path(args.log_dir) if args.log_dir else None)
     logger.info("日志文件: %s", log_path)
     return asyncio.run(run_nightly(args))
 

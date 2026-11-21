@@ -1,0 +1,32 @@
+{
+  "id": "D2_neu_dd8",
+  "book_regime": {
+    "industry_stop_loss_pct": -0.08
+  },
+  "status": "ok",
+  "started_at": "2026-11-15T22:55:58",
+  "elapsed_sec": 801.7,
+  "total_return": 0.182484901826087,
+  "annualized_return": 0.09041338202943039,
+  "max_drawdown": -0.13459551303575812,
+  "sharpe": 0.7020272030782524,
+  "rebalance_count": 117,
+  "total_cost": 0.1014116334360281,
+  "output_dir": "output/book_exp/D2_neu_dd8",
+  "2025_ret": 0.20298383891501182,
+  "2025_ann": 0.1953420952713214,
+  "2025_mdd": -0.07964494335533534,
+  "2025_days": 261.0,
+  "2026_ret": -0.017043326672636083,
+  "2026_ann": -0.01890249761217455,
+  "2026_mdd": -0.1345960118230355,
+  "2026_days": 227.0,
+  "avg_w_stock": 0.1762295081967213,
+  "avg_w_ind": 0.23806466508128152,
+  "attack_day_frac": 0.16188524590163936,
+  "neutral_day_frac": 0.33811475409836067,
+  "defense_day_frac": 0.5,
+  "port_on_attack": 0.1331559025773299,
+  "port_on_neutral": 0.07101407246424407,
+  "port_on_defense": -0.025662706381724742
+}

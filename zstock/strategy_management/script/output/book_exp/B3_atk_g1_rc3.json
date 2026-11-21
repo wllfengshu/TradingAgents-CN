@@ -1,0 +1,33 @@
+{
+  "id": "B3_atk_g1_rc3",
+  "book_regime": {
+    "confirm_green_days": 1,
+    "regime_confirm": 3
+  },
+  "status": "ok",
+  "started_at": "2026-11-15T22:29:51",
+  "elapsed_sec": 781.7,
+  "total_return": 0.2567289750180102,
+  "annualized_return": 0.1252466432591035,
+  "max_drawdown": -0.09995022719511715,
+  "sharpe": 0.9479503615010899,
+  "rebalance_count": 128,
+  "total_cost": 0.12149151134264241,
+  "output_dir": "output/book_exp/B3_atk_g1_rc3",
+  "2025_ret": 0.1799484829911362,
+  "2025_ann": 0.17323499941127318,
+  "2025_mdd": -0.07815897760949453,
+  "2025_days": 261.0,
+  "2026_ret": 0.06506810775975236,
+  "2026_ann": 0.07248817000833085,
+  "2026_mdd": -0.09995022719511693,
+  "2026_days": 227.0,
+  "avg_w_stock": 0.24139344262295084,
+  "avg_w_ind": 0.19520439188455965,
+  "attack_day_frac": 0.21311475409836064,
+  "neutral_day_frac": 0.2827868852459016,
+  "defense_day_frac": 0.5040983606557377,
+  "port_on_attack": 0.11041853317936146,
+  "port_on_neutral": 0.012965069633477766,
+  "port_on_defense": 0.11727287540109987
+}

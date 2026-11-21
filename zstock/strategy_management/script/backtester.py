@@ -9,7 +9,11 @@
 回测假设：
 - T 日生成信号，按 T+1 开盘价建仓 / 调仓；当日收益用 T+1 的开盘到收盘；
 - 后续持仓日的收益用每日 close→close；
-- 单次换手成本 = turnover * fee_rate，单边费率配在 TurnoverController 上。
+- 成本：买入腿 fee_rate，卖出腿 fee_rate + stamp_tax（印花税）；
+  债基/黄金等 fee_free_codes 买卖成本为 0；
+- 硬止损按当日 low 触发，成交价取 open（跳空）或止损价；收盘封跌停或停牌卖不出；
+- 开盘封涨停买不进。当日买入的份额当天不能卖。加仓只吃开盘到收盘，不吃隔夜缺口；
+- 仍未建模：整手、冲击成本。
 
 入口：
 - Backtester.run() — 注入 ohlcv_provider / signal_provider 的编程接口
@@ -31,22 +35,25 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
+from zstock.common.utils.common_utils import (
+    is_equity_etf,
+    is_limit_down,
+    is_limit_up,
+    normalize_code,
+    normalize_date,
+)
+from zstock.common.book_codes import BOOK_OHLCV_CODES, INDEX_CODE, is_t0
 from zstock.strategy_management.market_book import (
-    BOOK_OHLCV_CODES,
-    INDEX_CODE,
     holdings_frame,
     needs_book_trade,
     park_treasury,
     weight_map,
 )
-
-if TYPE_CHECKING:
-    from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
 
 import logging
 
@@ -56,52 +63,27 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from zstock.strategy_management.pipeline import StrategyPipeline
+from zstock.strategy_management.strategy_section import exit as exit_policy
+from zstock.strategy_management.strategy_section.execute import extract_market_grade
+from zstock.strategy_management.pipeline import StrategyPipeline, _state_for_grade
 from zstock.common.config.strategy_config import (
-    build_runtime_config,
     load_strategy_params,
+    resolve_runtime_config,
 )
 
 
 # ─────────────────────────────────────────────────────────────────
-# 配置加载（从 StrategyPipeline 中提出的脚本实用函数）
+# 配置加载：唯一入口 resolve_runtime_config（strategy_config SSOT）
 # ─────────────────────────────────────────────────────────────────
 
-_CONFIG_CACHE: Optional[Dict[str, Dict]] = None
 
-
-def _get_default_config() -> Dict[str, Dict]:
-    """从 strategy_params.json 加载策略参数，转换为 pipeline 各阶段所需的配置结构。
-
-    派生逻辑统一委托给 zstock.common.config.strategy_config.build_runtime_config()。
-    """
-    global _CONFIG_CACHE
-    if _CONFIG_CACHE is not None:
-        return _CONFIG_CACHE
-
-    cfg = build_runtime_config()
-    _CONFIG_CACHE = cfg
-    return cfg
-
-
-def load_runtime_config(override: Optional[Dict] = None) -> Dict[str, Dict]:
-    """加载策略配置（backtester 脚本专用）。
-
-    传入完整 strategy_params 时走 build_runtime_config，与隔夜/API 同一派生路径。
-    只传某几段覆盖时再浅合并到默认 runtime。
-    """
-    import copy
-    if not override:
-        return copy.deepcopy(_get_default_config())
-    if "portfolio" in override and "final_score" in override:
-        return build_runtime_config(override)
-    base = copy.deepcopy(_get_default_config())
-    for k, v in override.items():
-        if k in base and isinstance(v, dict) and isinstance(base[k], dict):
-            base[k] = {**base[k], **v}
-        else:
-            base[k] = v
-    return base
+def load_runtime_config(
+    override: Optional[Dict] = None,
+    *,
+    base_params: Optional[Dict] = None,
+) -> Dict[str, Dict]:
+    """回测脚本用的运行态配置，委托 strategy_config.resolve_runtime_config。"""
+    return resolve_runtime_config(override, base_params=base_params)
 
 
 @dataclass
@@ -316,11 +298,27 @@ class Backtester:
         strategy_pipeline: Optional[StrategyPipeline] = None,
         fee_rate: Optional[float] = None,
         initial_capital: Optional[float] = None,
-        factor_pipeline: Optional["CrossSectionStrategyPipeline"] = None,
+        signal_pipeline=None,
     ):
-        self.strategy = strategy_pipeline or StrategyPipeline(factor_pipeline=factor_pipeline)
+        if strategy_pipeline is not None:
+            self.strategy = strategy_pipeline
+            # 允许打分用 duck replay、执行为完整 StrategyPipeline
+            self.signal_pipeline = (
+                signal_pipeline if signal_pipeline is not None else strategy_pipeline
+            )
+        elif signal_pipeline is not None and hasattr(signal_pipeline, "execute_full_pipeline"):
+            self.strategy = signal_pipeline
+            self.signal_pipeline = signal_pipeline
+        elif signal_pipeline is not None:
+            # test duck: only scoring
+            self.signal_pipeline = signal_pipeline
+            self.strategy = StrategyPipeline(signals=signal_pipeline)
+        else:
+            p = StrategyPipeline()
+            self.strategy = p
+            self.signal_pipeline = p
+        bt_cfg = (load_strategy_params() or {}).get("backtest") or {}
         if fee_rate is None or initial_capital is None:
-            bt_cfg = (load_strategy_params() or {}).get("backtest") or {}
             fee_rate = fee_rate if fee_rate is not None else float(bt_cfg.get("fee_rate", 0.0015))
             initial_capital = (
                 initial_capital
@@ -328,10 +326,14 @@ class Backtester:
                 else float(bt_cfg.get("initial_capital", 1e7))
             )
         self.fee_rate = fee_rate
+        self.stamp_tax = float(bt_cfg.get("stamp_tax", 0.0005))
         self.initial_capital = initial_capital
-        self.factor_pipeline = factor_pipeline or self.strategy._factor_pipeline
         self.strategy._turnover_controller.fee_rate = fee_rate
-        logger.info(f"✅ Backtester 初始化完成: fee={fee_rate} init_capital={initial_capital}")
+        self.strategy._turnover_controller.stamp_tax = self.stamp_tax
+        logger.info(
+            f"✅ Backtester 初始化完成: fee={fee_rate} stamp={self.stamp_tax} "
+            f"init_capital={initial_capital}"
+        )
 
     # ============================== 真实数据 / CLI ==============================
 
@@ -438,7 +440,7 @@ class Backtester:
         lookback = int(vt.get("lookback_days", 40))
         target = float(vt.get("target_vol", 0.12))
         floor = float(vt.get("scale_floor", 0.25))
-        ceiling = float(vt.get("scale_cap", 1.25))
+        ceiling = min(1.0, float(vt.get("scale_cap", 1.0)))
         min_obs = int(vt.get("min_obs", 20))
         rets: List[float] = []
         for i in range(1, len(equity_series)):
@@ -456,9 +458,9 @@ class Backtester:
 
     @staticmethod
     def _configure_cli_logging() -> None:
-        for h in list(logging.getLogger().handlers):
-            logging.getLogger().removeHandler(h)
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        from zstock.common.logging_setup import setup_logging
+
+        setup_logging("backtester", console_fmt="%(message)s")
         logging.getLogger("zstock.data_management").setLevel(logging.INFO)
         logging.getLogger("zstock.factor_management").setLevel(logging.INFO)
         logging.getLogger("zstock.strategy_management").setLevel(logging.INFO)
@@ -507,6 +509,8 @@ class Backtester:
         sectors: Optional[List[str]] = None,
         max_stocks: Optional[int] = None,
         save_outputs: bool = True,
+        ohlcv_query_concurrency: Optional[int] = None,
+        ohlcv_batch_size: Optional[int] = None,
     ) -> BacktestResult:
         """
         真实数据回测：从 MongoDB 加载 OHLCV，可选预计算因子，运行回测并保存图表/CSV。
@@ -529,10 +533,8 @@ class Backtester:
             )
             logger.info("=" * 70)
 
-        if use_precomputed_factors and self.factor_pipeline is None:
-            from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
-
-            self.factor_pipeline = CrossSectionStrategyPipeline()
+        if use_precomputed_factors and self.signal_pipeline is None:
+            self.signal_pipeline = StrategyPipeline()
 
         qs = get_data_query_service()
 
@@ -540,46 +542,95 @@ class Backtester:
             logger.info("📦 加载 OHLCV 数据...")
 
         all_stocks_docs, _ = await qs.get_all_stocks()
-        mainboard_codes = [
-            d["code"] for d in all_stocks_docs
-            if d.get("is_mainboard") and not d.get("is_st")
-        ]
+        info_by_code = {
+            normalize_code(d["code"]): d for d in all_stocks_docs if d.get("code")
+        }
+        # 区间内真实有行情的代码 ∩ 主板非 ST，减轻「用今日股票池回测历史」的幸存者偏差
+        traded_in_range: List[str] = []
+        getter = getattr(qs, "get_traded_codes_between", None)
+        if callable(getter):
+            traded_in_range = await getter(start_date, end_date)
+        start_norm = normalize_date(start_date)
+        end_norm = normalize_date(end_date)
+
+        def _alive_in_window(info: Dict[str, Any]) -> bool:
+            if not info.get("is_mainboard"):
+                return False
+            listed = info.get("list_date")
+            delisted = info.get("delist_date")
+            try:
+                if listed and normalize_date(str(listed)) > end_norm:
+                    return False
+            except (TypeError, ValueError):
+                pass
+            try:
+                if delisted and normalize_date(str(delisted)) < start_norm:
+                    return False
+            except (TypeError, ValueError):
+                pass
+            return True
+
+        # 不用今天的 ST 标记删历史行情。后来被 ST 的票若从样本里消失，会抬高回测。
+        if traded_in_range:
+            mainboard_codes = [
+                c for c in traded_in_range if _alive_in_window(info_by_code.get(c, {}))
+            ]
+        else:
+            mainboard_codes = [
+                normalize_code(str(d["code"]))
+                for d in all_stocks_docs
+                if d.get("code") and _alive_in_window(d)
+            ]
         if verbose:
-            logger.info(f"   主板非ST: {len(mainboard_codes)} 只")
+            logger.info(f"   主板(区间有行情，含后来 ST): {len(mainboard_codes)} 只")
+
+        # universe_mode 只影响信号漏斗；OHLCV 始终全主板（测评宇宙收窄在 test 侧）。
+        # Book 账户还需要指数 / 行业 ETF / 债基日线，一并加载。
+        book_codes = [str(c) for c in BOOK_OHLCV_CODES]
+        codes_to_load = list(dict.fromkeys([*mainboard_codes, *book_codes]))
 
         ohlcv_data: Dict[str, pd.DataFrame] = {}
         chunk_size = 500
-        ohlcv_batch_size = 80
         import os
 
         cpu = os.cpu_count() or 4
-        ohlcv_query_concurrency = int(
-            os.environ.get("ZSTOCK_OHLCV_CONCURRENCY", str(min(12, max(6, cpu))))
-        )
-        total_chunks = (len(mainboard_codes) + chunk_size - 1) // chunk_size
+        if ohlcv_batch_size is None:
+            ohlcv_batch_size = int(os.environ.get("ZSTOCK_OHLCV_BATCH", "80"))
+        if ohlcv_query_concurrency is None:
+            ohlcv_query_concurrency = int(
+                os.environ.get("ZSTOCK_OHLCV_CONCURRENCY", str(min(12, max(6, cpu))))
+            )
+        ohlcv_batch_size = max(10, int(ohlcv_batch_size))
+        ohlcv_query_concurrency = max(1, int(ohlcv_query_concurrency))
+        total_chunks = max(1, (len(codes_to_load) + chunk_size - 1) // chunk_size)
         failed_chunks = 0
 
-        for ci, i in enumerate(range(0, len(mainboard_codes), chunk_size), 1):
-            chunk = mainboard_codes[i : i + chunk_size]
+        for ci, i in enumerate(range(0, len(codes_to_load), chunk_size), 1):
+            chunk = codes_to_load[i : i + chunk_size]
             if verbose:
                 logger.info(f"   OHLCV [{ci}/{total_chunks}] {len(chunk)} 只...")
             try:
+                warm_days = max(int(lookback_days or 0), 250)
+                load_start = (
+                    datetime.strptime(start_norm, "%Y-%m-%d") - timedelta(days=warm_days)
+                ).strftime("%Y-%m-%d")
                 batch = await qs.get_ohlcv_batch(
                     chunk,
-                    start_date,
+                    load_start,
                     end_date,
                     batch_size=ohlcv_batch_size,
                     query_concurrency=ohlcv_query_concurrency,
                 )
                 if batch:
-                    ohlcv_data.update(batch)
+                    for code, df in batch.items():
+                        code_s = normalize_code(str(code))
+                        if "trade_date" in df.columns:
+                            df = df.copy()
+                            df["trade_date"] = df["trade_date"].map(normalize_date)
+                        ohlcv_data[code_s] = _slim_ohlcv_frame(df)
             except Exception as e:
                 logger.warning(f"   ⚠️ 批次 {ci} 加载失败（跳过）: {e}")
                 failed_chunks += 1
-
-        for code, df in ohlcv_data.items():
-            if "trade_date" in df.columns:
-                df["trade_date"] = df["trade_date"].apply(normalize_date)
 
         if verbose:
             logger.info(
@@ -596,17 +647,25 @@ class Backtester:
         if verbose:
             logger.info("🚀 回测开始...")
 
-        result = await self.run(
-            start_date=start_date,
-            end_date=end_date,
-            ohlcv_provider=ohlcv_provider,
-            rebalance_freq=rebalance_freq,
-            strategy_config=strategy_config,
-            sectors=sectors,
-            max_stocks=max_stocks,
-            verbose=verbose,
-            use_precomputed_factors=use_precomputed_factors,
-        )
+        try:
+            result = await self.run(
+                start_date=start_date,
+                end_date=end_date,
+                ohlcv_provider=ohlcv_provider,
+                rebalance_freq=rebalance_freq,
+                strategy_config=strategy_config,
+                sectors=sectors,
+                max_stocks=max_stocks,
+                verbose=verbose,
+                use_precomputed_factors=use_precomputed_factors,
+            )
+        finally:
+            try:
+                import gc
+
+                gc.collect()
+            except Exception:
+                pass
 
         if save_outputs and output_dir is not None:
             out = Path(__file__).resolve().parent / output_dir
@@ -689,26 +748,44 @@ class Backtester:
                 {code: DataFrame(trade_date, open, close, ...)}。
                 只需要覆盖 [start_date - lookback, end_date+1] 区间。
             signal_provider: 可选；同步函数，给定交易日返回 prebuilt_data
-                直接喂进 factor pipeline（离线/确定性回测用）。None 时走
+                直接喂进信号计算（离线/确定性回测用）。None 时走
                 StrategyPipeline 默认的真实数据拉取。
             rebalance_freq: 每隔几个交易日再平衡一次（1=日频）。
             strategy_config: 透传给 StrategyPipeline 的 config。
             sectors / max_stocks: 透传。
             verbose: True 时每个交易日都打印日志。
-            use_precomputed_factors: True 时用 factor_pipeline.score_signals 读预计算因子。
+            use_precomputed_factors: True 时用 signal_pipeline.score_signals 读预计算因子。
 
         Returns:
             BacktestResult
         """
-        trade_dates = self._gen_trade_dates(start_date, end_date)
+        trade_dates = self._resolve_trade_dates(start_date, end_date)
         if not trade_dates:
             raise ValueError(f"start_date={start_date} ~ end_date={end_date} 无可用交易日")
 
-        # 打印开场 banner（无 strategy_config 时用 StrategyPipeline 默认配置）
-        cfg_print = load_runtime_config(strategy_config)
-        opt_cfg = (cfg_print.get('portfolio_optimization') or {})
-        tov_cfg = (cfg_print.get('turnover_control') or {})
-        _adaptive_banner = bool((cfg_print.get("adaptive_rebalance") or {}).get("enabled"))
+        tc = getattr(self.strategy, "_turnover_controller", None)
+        if tc is not None and hasattr(tc, "set_trading_calendar"):
+            tc.set_trading_calendar(trade_dates)
+        if tc is not None:
+            tc.fee_rate = self.fee_rate
+            tc.stamp_tax = float(getattr(self, "stamp_tax", getattr(tc, "stamp_tax", 0.0005)))
+
+        # 显式 strategy_config 时同步进 pipeline，避免信号读 A、执行读 B
+        if strategy_config:
+            seen: set[int] = set()
+            for pipe in (self.signal_pipeline, self.strategy):
+                if pipe is None or id(pipe) in seen:
+                    continue
+                seen.add(id(pipe))
+                apply = getattr(pipe, "_apply_config_override", None)
+                if callable(apply):
+                    apply(strategy_config)
+        # 与 strategy 实例同源：未显式传入时用 pipeline.config 派生
+        pipe_params = getattr(self.strategy, "config", None) or None
+        cfg_runtime = load_runtime_config(strategy_config, base_params=pipe_params)
+        opt_cfg = (cfg_runtime.get('portfolio_optimization') or {})
+        tov_cfg = (cfg_runtime.get('turnover_control') or {})
+        _adaptive_banner = bool((cfg_runtime.get("adaptive_rebalance") or {}).get("enabled"))
         if verbose:
             logger.info("=" * 70)
             logger.info("🚀 回测启动")
@@ -726,13 +803,6 @@ class Backtester:
             logger.info(f"  最大股票数  : {max_stocks or '不限'}")
             logger.info("=" * 70)
 
-        if use_precomputed_factors and self.factor_pipeline:
-            if verbose:
-                logger.info("📦 预加载区间预计算因子（减少 Mongo 逐日查询）...")
-            await self.factor_pipeline.preload_precomputed_factors(
-                start_date, end_date
-            )
-
         equity = self.initial_capital
         last_holdings: Optional[pd.DataFrame] = None
         last_prices: Dict[str, float] = {}
@@ -744,12 +814,6 @@ class Backtester:
         trades: List[Dict[str, Any]] = []
         turnover_records: List[float] = []
         cost_records: List[float] = []
-
-        cfg_runtime = (
-            load_runtime_config(strategy_config)
-            if strategy_config is not None
-            else load_runtime_config()
-        )
         exit_cfg = cfg_runtime.get("exit_rules") or {}
         hard_stop_pct = float(
             exit_cfg.get(
@@ -777,6 +841,9 @@ class Backtester:
         use_adaptive = bool(adaptive_cfg.get("enabled"))
         target_freq = rebalance_freq
         days_since_rebalance = rebalance_freq  # 首个交易日触发再平衡
+        refresh_satellites = True
+        last_industry: Optional[Dict[str, float]] = None
+        last_low_vol: Optional[Dict[str, float]] = None
         last_regime = "neutral"
         last_market_grade = "green"
         book_cfg = cfg_runtime.get("book_regime") or {}
@@ -784,59 +851,66 @@ class Backtester:
         book_band = float(book_cfg.get("rebalance_band", 0.03))
         book_min_util = float(book_cfg.get("min_utilization", 0.90))
         book_bond = str(book_cfg.get("bond_code") or "511260")
+        industry_stop_pct = float(book_cfg.get("industry_stop_loss_pct", 0.0) or 0.0)
+        industry_codes = {
+            normalize_code(str(c))
+            for c in (book_cfg.get("industry_etfs") or [])
+        }
         index_rows: List[dict] = []
         asset_hist: Dict[str, List[float]] = {}
         prev_book_state: Optional[str] = None
+
+        self._warmup_book_history(index_rows, asset_hist, trade_dates[0])
 
         for i, td in enumerate(trade_dates):
             day_ohlcv = ohlcv_provider(td) or {}
             nav_for_book = equity
 
-            # === 第一步：用昨日的持仓 + 今日收盘价计算今日收益 ===
+            # === 第一步：用昨日持仓定价；新仓按开盘成交并写入 entry_price ===
             day_return = 0.0
             stocks_priced = 0
-            if last_holdings is not None and not last_holdings.empty:
-                for _, row in last_holdings.iterrows():
-                    code = row['code']
-                    weight = float(row['weight'])
-                    today_df = day_ohlcv.get(code)
-                    if today_df is None or today_df.empty:
-                        continue
-                    today_row = self._row_for_date(today_df, td)
-                    if today_row is None:
-                        continue
-                    close_today = float(today_row.get('close', np.nan))
-                    if np.isnan(close_today) or close_today <= 0:
-                        continue
-                    prev_close = last_prices.get(code)
-                    if prev_close is None or prev_close <= 0:
-                        open_today = float(today_row.get('open', close_today))
-                        if open_today <= 0:
-                            continue
-                        ret = close_today / open_today - 1.0
-                    else:
-                        ret = close_today / prev_close - 1.0
-                    day_return += weight * ret
-                    last_prices[code] = close_today
-                    stocks_priced += 1
-
-            equity_before_cost = equity * (1.0 + day_return)
-            equity = equity_before_cost
-
-            # === 1.5 硬止损：相对入场价跌破阈值则当日卖出，留现金 ===
             day_cost = 0.0
             day_turnover = 0.0
+            name_rets: Dict[str, float] = {}
+            equity_at_open = equity
             if last_holdings is not None and not last_holdings.empty:
-                last_holdings, stop_turnover, stop_cost = self._apply_hard_stops(
-                    last_holdings, last_prices, td, hard_stop_pct
+                last_holdings, name_rets, bases, last_prices, stocks_priced = (
+                    self._mark_to_market_and_fill_entries(
+                        last_holdings, last_prices, day_ohlcv, td
+                    )
+                )
+                (
+                    last_holdings,
+                    day_return,
+                    stop_turnover,
+                    stop_cost,
+                    last_prices,
+                ) = self._apply_hard_stops(
+                    last_holdings,
+                    last_prices,
+                    name_rets,
+                    bases,
+                    day_ohlcv,
+                    td,
+                    hard_stop_pct,
+                    industry_stop_pct=industry_stop_pct,
+                    industry_codes=industry_codes,
+                    enabled=not book_on,
                 )
                 if stop_cost > 0:
-                    equity *= (1.0 - stop_cost)
                     day_cost += stop_cost
                     day_turnover += stop_turnover
 
+            equity = equity * (1.0 + day_return)
+            if day_cost > 0:
+                equity *= 1.0 - day_cost
+
             prev_td = trade_dates[i - 1] if i > 0 else None
-            if last_holdings is not None and not last_holdings.empty:
+            if (
+                not book_on
+                and last_holdings is not None
+                and not last_holdings.empty
+            ):
                 last_holdings, tr_t, tr_c = self._apply_trend_exits(
                     last_holdings,
                     td,
@@ -849,6 +923,9 @@ class Backtester:
                     day_cost += tr_c
                     day_turnover += tr_t
 
+            if last_holdings is not None and not last_holdings.empty:
+                last_holdings = self._drift_weights(last_holdings, name_rets, day_return)
+
             # === 第二步：决定今天要不要再平衡 ===
             if use_adaptive:
                 do_rebalance = days_since_rebalance >= target_freq
@@ -857,68 +934,36 @@ class Backtester:
             rebalance_status = '-'
             n_holdings_today = len(last_holdings) if last_holdings is not None else 0
             decision = None
-            book_managed = False
             if book_on:
-                from zstock.strategy_management.market_book import grade_from_index_bars
-
-                grade_b = grade_from_index_bars(index_rows)
                 index_closes = [float(row["close"]) for row in index_rows]
                 held_codes: List[str] = []
                 if last_holdings is not None and not last_holdings.empty and "code" in last_holdings.columns:
                     held_codes = [str(code) for code in last_holdings["code"].tolist()]
-                decision = self.strategy.book.step(
+                decision = await self.strategy.note_market_day(
                     td,
-                    grade_b,
-                    index_closes,
-                    nav_for_book,
-                    asset_hist,
-                    held_codes,
-                    confirm_green_days=int(book_cfg.get("confirm_green_days", 3)),
+                    index_closes=index_closes,
+                    asset_closes=asset_hist,
+                    held=held_codes,
+                    nav=nav_for_book,
+                    confirm_green_days=int(book_cfg.get("confirm_green_days", 2)),
                 )
-                state_changed = decision.state != prev_book_state
-                prev_book_state = decision.state
-                if decision.weights is not None:
-                    if state_changed or needs_book_trade(
-                        weight_map(last_holdings),
-                        decision.weights,
-                        band=book_band,
-                        min_utilization=book_min_util,
-                    ):
-                        do_rebalance = True
-                    else:
-                        do_rebalance = False
-                elif state_changed:
-                    do_rebalance = True
+                light_state = _state_for_grade(decision.grade)
+                state_changed = light_state != prev_book_state
+                prev_book_state = light_state
+                # 截面每天排名。行业 ETF 和低波按间隔更新，红灯当天更新。
+                entering_red = state_changed and light_state == "defense"
+                refresh_satellites = (
+                    days_since_rebalance >= target_freq or entering_red
+                )
+                do_rebalance = True
 
             if do_rebalance:
                 precomputed_signals = None
-                if book_on and decision is not None and decision.weights is not None:
-                    book_managed = True
-                    new_book = holdings_frame(decision.weights)
-                    book_costs = self.strategy._turnover_controller.estimate_trading_costs(
-                        current_holdings=last_holdings,
-                        new_holdings=new_book,
-                        total_capital=equity,
-                    )
-                    summary = {
-                        "status": "success",
-                        "market_grade": decision.grade,
-                        "style_regime": last_regime,
-                        "regime": last_regime,
-                        "book_state": decision.state,
-                        "results": {
-                            "final_holdings": new_book,
-                            "signals": pd.DataFrame(),
-                            "trading_costs": book_costs,
-                            "risk_check": {"status": "passed", "issues": []},
-                        },
-                        "statistics": {"position_scale": 1.0},
-                    }
-                elif use_precomputed_factors and self.factor_pipeline:
+                if use_precomputed_factors and self.signal_pipeline:
                     # ── 快速路径：从 MongoDB 读预计算信号 ──
                     # 缺日（节假日/未预计算）跳过再平衡，继续持有，不中断整段回测
                     try:
-                        precomputed_signals = await self.factor_pipeline.score_signals(td)
+                        precomputed_signals = await self.signal_pipeline.score_signals(td)
                     except ValueError as e:
                         logger.warning(f"⚠️ {td} 无预计算因子，跳过再平衡: {e}")
                         summary = {
@@ -936,6 +981,17 @@ class Backtester:
                                 ],
                                 "asset_closes": dict(asset_hist),
                             }
+                        if book_on and decision is not None:
+                            extra = {**extra, "book_decision": decision}
+                        if book_on:
+                            extra["respect_book_rebalance_band"] = True
+                            if (
+                                not refresh_satellites
+                                and last_industry is not None
+                                and last_low_vol is not None
+                            ):
+                                extra["industry_weights"] = last_industry
+                                extra["low_vol_weights"] = last_low_vol
                         summary = await self.strategy.execute_full_pipeline(
                             trade_date=td,
                             current_positions=last_holdings,
@@ -958,6 +1014,16 @@ class Backtester:
                                 ],
                                 "asset_closes": dict(asset_hist),
                             }
+                            if decision is not None:
+                                extra["book_decision"] = decision
+                            extra["respect_book_rebalance_band"] = True
+                            if (
+                                not refresh_satellites
+                                and last_industry is not None
+                                and last_low_vol is not None
+                            ):
+                                extra["industry_weights"] = last_industry
+                                extra["low_vol_weights"] = last_low_vol
                         summary = await self.strategy.execute_full_pipeline(
                             trade_date=td,
                             current_positions=last_holdings,
@@ -974,7 +1040,7 @@ class Backtester:
 
                 rebalance_status = summary.get('status', 'failed')
                 market_grade = summary.get('market_grade') or (
-                    StrategyPipeline._extract_market_grade(precomputed_signals)
+                    extract_market_grade(precomputed_signals)
                     if precomputed_signals is not None
                     else "unknown"
                 )
@@ -990,7 +1056,15 @@ class Backtester:
                         market_grade=last_market_grade,
                         default_freq=rebalance_freq,
                     )
-                days_since_rebalance = 0
+                if refresh_satellites and rebalance_status == "success":
+                    cached = (summary.get("results") or {}) if isinstance(summary, dict) else {}
+                    if cached.get("industry_weights") is not None:
+                        last_industry = cached.get("industry_weights")
+                    if cached.get("low_vol_weights") is not None:
+                        last_low_vol = cached.get("low_vol_weights")
+                    days_since_rebalance = 0
+                elif book_on:
+                    days_since_rebalance += 1
 
                 # ── 更新「跌出买入名单」连续天数 ──
                 # 仅在有真实买入名单的成功日累计；无信号/缺因子日不计入
@@ -1009,6 +1083,7 @@ class Backtester:
                     force_out = {
                         c for c, d in out_of_list_days.items() if d >= out_of_cand_days
                     }
+                    force_out -= _unsellable_codes(last_holdings, td)
 
                 # ── 无信号 / 坏环境：减仓或清仓（不再傻持）──
                 if rebalance_status == "no_signals":
@@ -1051,6 +1126,9 @@ class Backtester:
                         "risk_status": exit_reason,
                         "risk_issues": f"bad_streak={bad_streak};grade={market_grade}",
                         "position_scale": 0.0,
+                        "book_state": decision.state if decision is not None else "",
+                        "market_grade": market_grade,
+                        "regime": last_regime,
                     })
                     holdings_log.append({
                         "trade_date": td,
@@ -1074,22 +1152,18 @@ class Backtester:
                 elif rebalance_status == 'success':
                     bad_streak = 0 if market_grade != "red" else bad_streak + 1
                     new_holdings = summary['results']['final_holdings'].copy() if 'final_holdings' in summary['results'] else pd.DataFrame()
-                    # 连续跌出买入名单 → 从目标持仓剔除
-                    if (
-                        not book_managed
-                        and force_out
-                        and new_holdings is not None
-                        and not new_holdings.empty
-                    ):
-                        before = len(new_holdings)
-                        new_holdings = new_holdings[~new_holdings["code"].isin(force_out)].copy()
-                        if len(new_holdings) < before:
-                            logger.info(
-                                f"🚪 {td} 连续{out_of_cand_days}日跌出候选，剔除 "
-                                f"{sorted(force_out)}"
-                            )
-                            if not new_holdings.empty:
-                                new_holdings = self._clip_weights(new_holdings)
+                    # 灯开着时目标仓已经是三策略合成结果，不再按股票候选名单改仓。
+                    dropped = self._drop_out_of_candidates(
+                        new_holdings, force_out, book_on=book_on
+                    )
+                    if dropped is not new_holdings and len(dropped) < len(new_holdings):
+                        logger.info(
+                            f"🚪 {td} 连续{out_of_cand_days}日跌出候选，剔除 "
+                            f"{sorted(force_out)}"
+                        )
+                        new_holdings = dropped
+                        if not new_holdings.empty:
+                            new_holdings = self._clip_weights(new_holdings)
                     # 若仍处于坏环境连击且达到清仓阈值（防御：成功但红灯）
                     if (
                         not book_on
@@ -1101,28 +1175,29 @@ class Backtester:
                             f"🛑 {td} 连续{bad_streak}日坏环境，强制清仓"
                         )
 
-                    wrp = cfg_runtime.get("weak_regime_protection")
-                    eq_path = equity_records + [equity]
-                    dd_scale = self._compute_drawdown_scale(eq_path, wrp)
-                    vol_scale = self._compute_vol_scale(eq_path, wrp)
-                    risk_scale = dd_scale * vol_scale
-                    if (
-                        not book_on
-                        and abs(risk_scale - 1.0) > 1e-9
-                        and new_holdings is not None
-                        and not new_holdings.empty
-                    ):
-                        new_holdings = new_holdings.copy()
-                        new_holdings["weight"] = (
-                            new_holdings["weight"].astype(float) * risk_scale
-                        )
-                        logger.info(
-                            f"📉 {td} 风险缩放 dd={dd_scale:.2f} vol={vol_scale:.2f} "
-                            f"敞口={new_holdings['weight'].sum():.2%}"
-                        )
+                    if not book_on:
+                        wrp = cfg_runtime.get("weak_regime_protection")
+                        eq_path = equity_records + [equity]
+                        dd_scale = self._compute_drawdown_scale(eq_path, wrp)
+                        vol_scale = self._compute_vol_scale(eq_path, wrp)
+                        risk_scale = dd_scale * vol_scale
+                        if (
+                            abs(risk_scale - 1.0) > 1e-9
+                            and new_holdings is not None
+                            and not new_holdings.empty
+                        ):
+                            new_holdings = new_holdings.copy()
+                            new_holdings["weight"] = (
+                                new_holdings["weight"].astype(float) * risk_scale
+                            )
+                            logger.info(
+                                f"📉 {td} 风险缩放 dd={dd_scale:.2f} vol={vol_scale:.2f} "
+                                f"敞口={new_holdings['weight'].sum():.2%}"
+                            )
 
+                    new_holdings = self._enforce_t1(last_holdings, new_holdings, td)
                     costs = summary['results'].get('trading_costs', {})
-                    # 若因 force_out / 清仓改变了目标，重算成本
+                    # 若因 force_out / 清仓 / T+1 锁仓改变了目标，重算成本
                     costs = self.strategy._turnover_controller.estimate_trading_costs(
                         current_holdings=last_holdings,
                         new_holdings=new_holdings,
@@ -1150,6 +1225,9 @@ class Backtester:
                         'risk_status': risk_info.get('status', '-'),
                         'risk_issues': '; '.join(risk_info.get('issues', [])) if risk_info.get('issues') else '',
                         'position_scale': summary.get('statistics', {}).get('position_scale', 1.0),
+                        'book_state': summary.get('book_state') or (decision.state if decision is not None else ''),
+                        'market_grade': summary.get('market_grade') or '',
+                        'regime': summary.get('regime') or last_regime,
                     })
                     holdings_log.append({
                         'trade_date': td,
@@ -1175,7 +1253,8 @@ class Backtester:
                 days_since_rebalance += 1
 
             _append_book_bars(index_rows, asset_hist, day_ohlcv)
-            if book_on and last_holdings is not None and not last_holdings.empty:
+            # 空仓也 park：主动清仓后补国债，避免现金闲置
+            if book_on and last_holdings is not None:
                 parked = park_treasury(last_holdings, book_bond)
                 if abs(float(parked["weight"].sum()) - float(last_holdings["weight"].sum())) > 1e-8:
                     fill_costs = self.strategy._turnover_controller.estimate_trading_costs(
@@ -1190,7 +1269,9 @@ class Backtester:
                     last_holdings = parked
 
             equity_records.append(equity)
-            net_return = (1.0 + day_return) * (1.0 - day_cost) - 1.0
+            net_return = (
+                equity / equity_at_open - 1.0 if equity_at_open > 0 else day_return
+            )
             return_records.append(net_return)
             gross_return_records.append(day_return)
             turnover_records.append(day_turnover)
@@ -1269,6 +1350,24 @@ class Backtester:
         return set(df.head(max_holdings)["code"].astype(str))
 
     @staticmethod
+    def _drop_out_of_candidates(
+        holdings: Optional[pd.DataFrame],
+        force_out: set,
+        *,
+        book_on: bool,
+    ) -> pd.DataFrame:
+        """截面回测才按股票候选名单剔除。三策略账户的目标仓不再改。"""
+        if (
+            book_on
+            or not force_out
+            or holdings is None
+            or holdings.empty
+            or "code" not in holdings.columns
+        ):
+            return holdings if holdings is not None else pd.DataFrame()
+        return holdings[~holdings["code"].isin(force_out)].copy()
+
+    @staticmethod
     def _update_out_of_list_days(
         state: Dict[str, int],
         holdings: Optional[pd.DataFrame],
@@ -1338,6 +1437,126 @@ class Backtester:
             out["weight"] = out["weight"] / total
         return out.reset_index(drop=True)
 
+    def _enforce_t1(
+        self,
+        current: Optional[pd.DataFrame],
+        target: pd.DataFrame,
+        trade_date: str,
+    ) -> pd.DataFrame:
+        """股票和股票 ETF 当天买入的份额当天不能卖。国债和黄金不受这条限制。"""
+        if current is None or current.empty:
+            return target
+        td = normalize_date(trade_date)
+        floors: Dict[str, float] = {}
+        meta: Dict[str, Dict[str, Any]] = {}
+        for _, row in current.iterrows():
+            code = normalize_code(str(row["code"]))
+            weight = float(row.get("weight") or 0.0)
+            meta[code] = row.to_dict()
+            if is_t0(code) or weight <= 1e-8:
+                continue
+            entry = str(row.get("entry_date") or "")[:10]
+            locked = float(row.get("locked_weight") or 0.0)
+            floor = 0.0
+            if entry == td:
+                floor = weight
+            elif locked > 1e-8:
+                floor = min(locked, weight)
+            if floor > 1e-8:
+                floors[code] = floor
+        if not floors:
+            return target
+        desired: Dict[str, float] = {}
+        rows_by_code: Dict[str, Dict[str, Any]] = {}
+        if target is not None and not target.empty:
+            for _, row in target.iterrows():
+                code = normalize_code(str(row["code"]))
+                desired[code] = float(row.get("weight") or 0.0)
+                rows_by_code[code] = row.to_dict()
+        for code, floor in floors.items():
+            desired[code] = max(desired.get(code, 0.0), floor)
+            if code not in rows_by_code:
+                rows_by_code[code] = meta[code]
+        total = sum(desired.values())
+        if total > 1.0 + 1e-8:
+            flexible = {c: desired[c] - floors.get(c, 0.0) for c in desired}
+            flex_sum = sum(max(0.0, v) for v in flexible.values())
+            excess = total - 1.0
+            if flex_sum > 1e-8:
+                keep = max(0.0, flex_sum - excess) / flex_sum
+                for code in desired:
+                    desired[code] = floors.get(code, 0.0) + max(0.0, flexible[code]) * keep
+        out_rows = []
+        for code, weight in desired.items():
+            if weight <= 1e-8:
+                continue
+            row = dict(rows_by_code.get(code) or {"code": code, "score": 0.0})
+            row["code"] = code
+            row["weight"] = weight
+            out_rows.append(row)
+        if not out_rows:
+            return target
+        return pd.DataFrame(out_rows).reset_index(drop=True)
+
+    def _drift_weights(
+        self,
+        holdings: pd.DataFrame,
+        name_rets: Dict[str, float],
+        day_return: float,
+    ) -> pd.DataFrame:
+        """持仓权重随当日涨跌漂移。没有再平衡的日子不再按目标权重免费再平衡。"""
+        if holdings is None or holdings.empty:
+            return holdings
+        denom = 1.0 + float(day_return)
+        if denom <= 1e-8:
+            return holdings
+        out = holdings.copy()
+        weights = []
+        locked_out = []
+        for _, row in out.iterrows():
+            code = normalize_code(str(row["code"]))
+            old_w = float(row["weight"])
+            factor = (1.0 + float(name_rets.get(code, 0.0))) / denom
+            weights.append(old_w * factor)
+            locked = float(row.get("locked_weight") or 0.0)
+            locked_out.append(locked * factor)
+        out["weight"] = weights
+        out["basis_weight"] = out["weight"]
+        out["locked_weight"] = locked_out
+        return out
+
+    def _warmup_book_history(
+        self,
+        index_rows: List[dict],
+        asset_hist: Dict[str, List[float]],
+        first_trade_date: str,
+    ) -> None:
+        """回测起点之前的指数和 ETF 收盘先喂给账户，均线防守才有 120 日历史。"""
+        full = getattr(self, "_ohlcv_full", None) or {}
+        if not full:
+            return
+        first = normalize_date(first_trade_date)
+        dates = set()
+        frames: Dict[str, pd.DataFrame] = {}
+        for code in BOOK_OHLCV_CODES:
+            df = full.get(code)
+            if df is None or getattr(df, "empty", True) or "trade_date" not in df.columns:
+                continue
+            frames[code] = df
+            for raw in df["trade_date"].tolist():
+                nd = normalize_date(str(raw))
+                if nd < first:
+                    dates.add(nd)
+        for td in sorted(dates):
+            day: Dict[str, pd.DataFrame] = {}
+            for code, df in frames.items():
+                mask = df["trade_date"].map(lambda x: normalize_date(str(x))) == td
+                hit = df.loc[mask]
+                if not hit.empty:
+                    day[code] = hit
+            if day:
+                _append_book_bars(index_rows, asset_hist, day)
+
     def _commit_holdings(
         self,
         new_holdings: pd.DataFrame,
@@ -1356,61 +1575,311 @@ class Backtester:
                 pd.DataFrame(columns=["code", "weight", "score"]),
                 {},
             )
-        new_codes = set(new_holdings["code"].astype(str))
+        holdings = new_holdings.copy()
+        holdings["code"] = holdings["code"].map(lambda c: normalize_code(str(c)))
+        new_codes = set(holdings["code"].astype(str))
         # 只延续已有持仓的价格；新买入的票不加入 last_prices，
         # 次日「第一步」中 last_prices.get(code) 返回 None → 使用 open
-        prices = {c: p for c, p in last_prices.items() if c in new_codes}
-        return new_holdings, prices
+        prices = {
+            normalize_code(str(c)): p
+            for c, p in last_prices.items()
+            if normalize_code(str(c)) in new_codes
+        }
+        return holdings, prices
 
-    def _apply_hard_stops(
+    def _mark_to_market_and_fill_entries(
         self,
         holdings: pd.DataFrame,
         last_prices: Dict[str, float],
+        day_ohlcv: Dict[str, pd.DataFrame],
         trade_date: str,
-        hard_stop_pct: float,
     ) -> tuple:
-        """相对入场价止损；返回 (新持仓, 止损换手, 止损成本占比)。留现金不归一化。"""
-        if holdings is None or holdings.empty or hard_stop_pct is None:
-            return holdings, 0.0, 0.0
-        if "entry_price" not in holdings.columns:
-            return holdings, 0.0, 0.0
+        """按日定价；新开仓用开盘价成交并回填 entry_price。
 
-        keep_rows = []
-        sold_w = 0.0
-        for _, row in holdings.iterrows():
-            code = row["code"]
+        返回 (holdings, name_rets, bases, last_prices, priced_count)。
+        bases[code] = 当日收益分母（新仓=open，旧仓=昨收）。
+        """
+        if holdings is None or holdings.empty:
+            return holdings, {}, {}, last_prices, 0
+        df = holdings.copy()
+        df["code"] = df["code"].map(lambda c: normalize_code(str(c)))
+        if "entry_price" not in df.columns:
+            df["entry_price"] = np.nan
+        name_rets: Dict[str, float] = {}
+        bases: Dict[str, float] = {}
+        prices = dict(last_prices)
+        priced = 0
+        entry_prices = []
+        weights_out: List[float] = []
+        basis_out: List[float] = []
+        locked_out: List[float] = []
+        entry_dates_out: List[Any] = []
+
+        def _keep_unfilled(row_w, basis_w, entry_d, entry_p) -> None:
+            entry_prices.append(entry_p)
+            weights_out.append(row_w)
+            basis_out.append(basis_w)
+            locked_out.append(0.0)
+            entry_dates_out.append(entry_d)
+
+        for _, row in df.iterrows():
+            code = str(row["code"])
+            today_df = _day_bar_frame(day_ohlcv, code)
             ep = row.get("entry_price")
             try:
                 ep_f = float(ep)
             except (TypeError, ValueError):
                 ep_f = float("nan")
-            px = last_prices.get(code)
-            if ep_f == ep_f and ep_f > 0 and px is not None and px > 0:
-                ret = px / ep_f - 1.0
-                if ret <= hard_stop_pct:
-                    sold_w += float(row["weight"])
-                    logger.info(
-                        f"🛑 {trade_date} 硬止损 {code}: 入场后收益 {ret:.2%} "
-                        f"≤ {hard_stop_pct:.2%}"
-                    )
+            if today_df is None or today_df.empty:
+                name_rets[code] = 0.0
+                basis_w = _positive(row.get("basis_weight"))
+                _keep_unfilled(
+                    basis_w if basis_w is not None else float(row["weight"]),
+                    basis_w if basis_w is not None else float(row["weight"]),
+                    row.get("entry_date"),
+                    ep_f,
+                )
+                continue
+            today_row = self._row_for_date(today_df, trade_date)
+            if today_row is None:
+                name_rets[code] = 0.0
+                basis_w = _positive(row.get("basis_weight"))
+                _keep_unfilled(
+                    basis_w if basis_w is not None else float(row["weight"]),
+                    basis_w if basis_w is not None else float(row["weight"]),
+                    row.get("entry_date"),
+                    ep_f,
+                )
+                continue
+            close_today = float(today_row.get("close", np.nan))
+            open_today = float(today_row.get("open", close_today))
+            if np.isnan(close_today) or close_today <= 0:
+                name_rets[code] = 0.0
+                basis_w = _positive(row.get("basis_weight"))
+                _keep_unfilled(
+                    basis_w if basis_w is not None else float(row["weight"]),
+                    basis_w if basis_w is not None else float(row["weight"]),
+                    row.get("entry_date"),
+                    ep_f,
+                )
+                continue
+            prev_close = prices.get(code)
+            pre_close = _positive(today_row.get("pre_close")) or (
+                float(prev_close) if prev_close and prev_close > 0 else None
+            )
+            held_basis = _positive(row.get("basis_weight"))
+            if held_basis is None:
+                held_basis = float(row["weight"]) if prev_close and prev_close > 0 else 0.0
+            held_basis = min(held_basis, float(row["weight"]))
+            add_w = float(row["weight"]) - held_basis
+            buy_blocked = add_w > 1e-8 and _open_is_limit_up(
+                code, pre_close or open_today, open_today, trade_date
+            )
+            if buy_blocked:
+                add_w = 0.0
+                if held_basis <= 1e-8:
+                    name_rets[code] = 0.0
+                    entry_prices.append(ep_f)
+                    weights_out.append(0.0)
+                    basis_out.append(0.0)
+                    locked_out.append(0.0)
+                    entry_dates_out.append(row.get("entry_date"))
                     continue
+            weight_today = held_basis + add_w
+            if prev_close is None or prev_close <= 0:
+                if open_today <= 0 or weight_today <= 1e-8:
+                    name_rets[code] = 0.0
+                    entry_prices.append(ep_f)
+                    weights_out.append(0.0)
+                    basis_out.append(0.0)
+                    locked_out.append(0.0)
+                    entry_dates_out.append(row.get("entry_date"))
+                    continue
+                ep_f = open_today
+                bases[code] = open_today
+                name_rets[code] = close_today / open_today - 1.0
+                entry_dates_out.append(trade_date)
+                locked_out.append(weight_today)
+            else:
+                denom = pre_close if pre_close and pre_close > 0 else float(prev_close)
+                bases[code] = denom
+                ret_held = close_today / denom - 1.0
+                ret_add = close_today / open_today - 1.0 if open_today > 0 else ret_held
+                if weight_today <= 1e-8:
+                    name_rets[code] = 0.0
+                else:
+                    name_rets[code] = (
+                        held_basis * ret_held + add_w * ret_add
+                    ) / weight_today
+                entry_dates_out.append(row.get("entry_date"))
+                locked_out.append(add_w if add_w > 1e-8 else 0.0)
+            prices[code] = close_today
+            weights_out.append(weight_today)
+            basis_out.append(weight_today)
+            entry_prices.append(ep_f)
+            priced += 1
+        df["entry_price"] = entry_prices
+        df["weight"] = weights_out
+        df["basis_weight"] = basis_out
+        df["locked_weight"] = locked_out
+        df["entry_date"] = entry_dates_out
+        df = df[df["weight"].astype(float) > 1e-8].reset_index(drop=True)
+        return df, name_rets, bases, prices, priced
+
+    def _apply_hard_stops(
+        self,
+        holdings: pd.DataFrame,
+        last_prices: Dict[str, float],
+        name_rets: Dict[str, float],
+        bases: Dict[str, float],
+        day_ohlcv: Dict[str, pd.DataFrame],
+        trade_date: str,
+        hard_stop_pct: float,
+        *,
+        industry_stop_pct: Optional[float] = None,
+        industry_codes: Optional[set] = None,
+        enabled: bool = True,
+    ) -> tuple:
+        """相对入场价止损（按当日 low 触发）。
+
+        返回 (新持仓, day_return, 止损换手, 止损成本占比, last_prices)。
+        跳空低开则按开盘价成交，否则按止损价。
+        三策略账户关闭这条止损，当日收益仍按收盘计价。
+        """
+        def _held_day_return(frame: Optional[pd.DataFrame]) -> float:
+            if frame is None or frame.empty:
+                return 0.0
+            total = 0.0
+            for _, r in frame.iterrows():
+                code = normalize_code(str(r["code"]))
+                total += float(r["weight"]) * float(name_rets.get(code, 0.0))
+            return total
+
+        if not enabled or holdings is None or holdings.empty or hard_stop_pct is None:
+            return holdings, _held_day_return(holdings), 0.0, 0.0, last_prices
+        if "entry_price" not in holdings.columns:
+            return holdings, _held_day_return(holdings), 0.0, 0.0, last_prices
+
+        ind_set = industry_codes or set()
+        ind_stop = industry_stop_pct if industry_stop_pct is not None else 0.0
+        stamp = float(getattr(self, "stamp_tax", 0.0005))
+
+        keep_rows = []
+        sold_w = 0.0
+        stop_cost = 0.0
+        day_return = 0.0
+        prices = dict(last_prices)
+        tc = getattr(self.strategy, "_turnover_controller", None)
+        for _, row in holdings.iterrows():
+            code = normalize_code(str(row["code"]))
+            weight = float(row["weight"])
+            ep = row.get("entry_price")
+            try:
+                ep_f = float(ep)
+            except (TypeError, ValueError):
+                ep_f = float("nan")
+            close_ret = float(name_rets.get(code, 0.0))
+            stop = hard_stop_pct
+            if ind_stop < 0 and code in ind_set:
+                stop = ind_stop
+
+            triggered = False
+            stop_ret = close_ret
+            today_row = None
+            if ep_f == ep_f and ep_f > 0 and stop is not None:
+                stop_px = ep_f * (1.0 + float(stop))
+                today_df = _day_bar_frame(day_ohlcv, code)
+                today_row = (
+                    self._row_for_date(today_df, trade_date)
+                    if today_df is not None and not today_df.empty
+                    else None
+                )
+                if today_row is not None:
+                    try:
+                        low_today = float(
+                            today_row.get("low", today_row.get("close", np.nan))
+                        )
+                        open_today = float(
+                            today_row.get("open", today_row.get("close", np.nan))
+                        )
+                    except (TypeError, ValueError):
+                        low_today = open_today = float("nan")
+                    base = float(bases.get(code) or 0.0)
+                    if (
+                        low_today == low_today
+                        and low_today > 0
+                        and low_today <= stop_px + 1e-12
+                        and base > 0
+                    ):
+                        fill = (
+                            open_today
+                            if open_today == open_today
+                            and open_today > 0
+                            and open_today <= stop_px + 1e-12
+                            else stop_px
+                        )
+                        if fill > 0:
+                            stop_ret = fill / base - 1.0
+                            triggered = True
+
+            locked = _positive(row.get("locked_weight")) or 0.0
+            same_day = str(row.get("entry_date") or "") == str(trade_date)
+            sealed_down = False
+            if today_row is not None:
+                pre = _positive(today_row.get("pre_close")) or _positive(bases.get(code))
+                close_px = _positive(today_row.get("close"))
+                if pre and close_px and is_limit_down(code, pre, close_px, trade_date):
+                    sealed_down = True
+            if same_day or sealed_down or locked >= weight - 1e-8:
+                triggered = False
+            free = bool(tc is not None and tc.is_fee_free(code))
+            sell_rate = 0.0 if free else (
+                self.fee_rate if is_equity_etf(code) else self.fee_rate + stamp
+            )
+
+            if triggered and locked > 1e-8:
+                sell_w = max(0.0, weight - locked)
+                day_return += sell_w * stop_ret + locked * close_ret
+                sold_w += sell_w
+                stop_cost += sell_w * sell_rate
+                kept = row.copy()
+                kept["weight"] = locked
+                kept["basis_weight"] = locked
+                kept["locked_weight"] = locked
+                keep_rows.append(kept)
+                logger.info(
+                    f"🛑 {trade_date} 硬止损 {code}: 当日买入 {locked:.2%} 不可卖，"
+                    f"卖出 {sell_w:.2%}"
+                )
+                continue
+
+            if triggered:
+                sold_w += weight
+                day_return += weight * stop_ret
+                prices.pop(code, None)
+                stop_cost += weight * sell_rate
+                logger.info(
+                    f"🛑 {trade_date} 硬止损 {code}: stop={stop:.2%} "
+                    f"day_ret={stop_ret:.2%} (替代收盘 {close_ret:.2%})"
+                )
+                continue
+            day_return += weight * close_ret
             keep_rows.append(row)
 
         if sold_w <= 0:
-            return holdings, 0.0, 0.0
+            return holdings, day_return, 0.0, 0.0, last_prices
 
-        stop_turnover = 0.5 * sold_w  # 与 estimate_trading_costs 口径一致（单边卖出）
-        # 卖出成本按卖出权重 * 单边费率
-        stop_cost = sold_w * self.fee_rate
+        stop_turnover = 0.5 * sold_w
         if not keep_rows:
             return (
                 pd.DataFrame(columns=list(holdings.columns)),
+                day_return,
                 stop_turnover,
                 stop_cost,
+                prices,
             )
         out = pd.DataFrame(keep_rows).reset_index(drop=True)
-        # 不把剩余权重归一化回 1，现金降低风险敞口
-        return out, stop_turnover, stop_cost
+        return out, day_return, stop_turnover, stop_cost, prices
 
     def _apply_trend_exits(
         self,
@@ -1421,13 +1890,13 @@ class Backtester:
         regime: Optional[str] = None,
     ) -> tuple:
         empty = last_holdings.iloc[0:0]
-        if not StrategyPipeline._trend_exit_enabled(exit_cfg, regime=regime) or last_holdings is None or last_holdings.empty:
+        if not exit_policy.trend_exit_enabled(exit_cfg, regime=regime) or last_holdings is None or last_holdings.empty:
             return last_holdings, 0.0, 0.0
 
         held = set(last_holdings["code"].astype(str))
         f35_map: Dict[str, float] = {}
         prev_f35: Dict[str, float] = {}
-        fp = self.factor_pipeline
+        fp = self.signal_pipeline
         field_fn = getattr(fp, "dragon_field_by_code", None) if fp else None
         if field_fn is not None:
             if trade_date:
@@ -1437,7 +1906,30 @@ class Backtester:
 
         full = getattr(self, "_ohlcv_full", None) or {}
         ohlcv_by = {c: full[c] for c in held if c in full}
-        force = StrategyPipeline._trend_force_exit_codes(
+        # 漏斗缓存缺失时用日线补 f35 / 昨 f35，避免非再平衡日趋势退出空转
+        if ohlcv_by:
+            missing = {
+                c
+                for c in held
+                if not np.isfinite(float(f35_map.get(c, float("nan"))))
+            }
+            if missing and trade_date:
+                f35_map.update(
+                    exit_policy.f35_map_from_ohlcv(ohlcv_by, trade_date, missing)
+                )
+            if prev_trade_date:
+                miss_prev = {
+                    c
+                    for c in held
+                    if not np.isfinite(float(prev_f35.get(c, float("nan"))))
+                }
+                if miss_prev:
+                    prev_f35.update(
+                        exit_policy.f35_map_from_ohlcv(
+                            ohlcv_by, prev_trade_date, miss_prev
+                        )
+                    )
+        force = exit_policy.trend_force_exit_codes(
             held,
             trade_date,
             exit_cfg,
@@ -1446,6 +1938,10 @@ class Backtester:
             prev_f35_by_code=prev_f35,
             regime=regime,
         )
+        if not force:
+            return last_holdings, 0.0, 0.0
+        blocked = _unsellable_codes(last_holdings, trade_date)
+        force = {c for c in force if normalize_code(str(c)) not in blocked}
         if not force:
             return last_holdings, 0.0, 0.0
 
@@ -1473,7 +1969,7 @@ class Backtester:
         full = getattr(self, "_ohlcv_full", None) or {}
         ohlcv_by = {c: full[c] for c in held if c in full}
         prev_f35: Dict[str, float] = {}
-        fp = self.factor_pipeline
+        fp = self.signal_pipeline
         field_fn = getattr(fp, "dragon_field_by_code", None) if fp else None
         if field_fn is not None and prev_trade_date and held:
             prev_f35 = field_fn(prev_trade_date, "f35_bollinger_trend", held)
@@ -1490,44 +1986,94 @@ class Backtester:
         day_ohlcv: Dict[str, pd.DataFrame],
         trade_date: str,
     ) -> pd.DataFrame:
-        """为持仓写入/继承 entry_date、entry_price。"""
+        """为持仓写入/继承 entry_date、entry_price。
+
+        新开仓 entry_price 留 NaN，等次日开盘成交时由
+        `_mark_to_market_and_fill_entries` 回填为实际 open。
+        """
         if new_holdings is None or new_holdings.empty:
             return new_holdings
 
         old_map: Dict[str, Dict[str, Any]] = {}
         if old_holdings is not None and not old_holdings.empty:
             for _, r in old_holdings.iterrows():
-                old_map[str(r["code"])] = {
+                old_map[normalize_code(str(r["code"]))] = {
                     "entry_date": r.get("entry_date"),
                     "entry_price": r.get("entry_price"),
+                    "weight": float(r.get("weight") or 0.0),
                 }
 
         df = new_holdings.copy()
         entry_dates = []
         entry_prices = []
+        basis_weights = []
         for _, r in df.iterrows():
-            code = str(r["code"])
+            code = normalize_code(str(r["code"]))
+            new_w = float(r.get("weight") or 0.0)
             prev = old_map.get(code)
-            if prev and prev.get("entry_date") and prev.get("entry_price") == prev.get("entry_price"):
-                entry_dates.append(prev["entry_date"])
-                entry_prices.append(prev["entry_price"])
-                continue
-            px = last_prices.get(code)
-            if px is None or px <= 0:
-                odf = day_ohlcv.get(code)
-                if odf is not None and not odf.empty:
-                    rec = Backtester._row_for_date(odf, trade_date)
-                    if rec is not None:
-                        px = float(rec.get("close", np.nan))
-            entry_dates.append(trade_date)
-            entry_prices.append(px if px is not None else np.nan)
+            inherited = False
+            if prev and prev.get("entry_date") is not None:
+                try:
+                    prev_ep = float(prev.get("entry_price"))
+                except (TypeError, ValueError):
+                    prev_ep = float("nan")
+                if prev_ep == prev_ep and prev_ep > 0:
+                    entry_dates.append(prev["entry_date"])
+                    entry_prices.append(prev_ep)
+                    prev_w = float(prev.get("weight") or 0.0)
+                    # 加仓的新份额次日开盘才有，不能吃隔夜缺口
+                    basis_weights.append(prev_w if new_w > prev_w + 1e-12 else new_w)
+                    inherited = True
+            if not inherited:
+                entry_dates.append(None)
+                entry_prices.append(np.nan)
+                basis_weights.append(0.0)
+        df["code"] = df["code"].map(lambda c: normalize_code(str(c)))
         df["entry_date"] = entry_dates
         df["entry_price"] = entry_prices
+        df["basis_weight"] = basis_weights
+        df["locked_weight"] = 0.0
         return df
+
+    def _resolve_trade_dates(self, start_date: str, end_date: str) -> List[str]:
+        """优先用指数/已加载 OHLCV 的真实交易日，否则退回工作日并告警。"""
+        start = normalize_date(start_date)
+        end = normalize_date(end_date)
+        full = getattr(self, "_ohlcv_full", None) or {}
+        for key in (INDEX_CODE, normalize_code(INDEX_CODE), "000300"):
+            df = full.get(key)
+            if df is None or getattr(df, "empty", True) or "trade_date" not in getattr(df, "columns", []):
+                continue
+            dates = sorted(
+                {
+                    normalize_date(str(d))
+                    for d in df["trade_date"].tolist()
+                    if start <= normalize_date(str(d)) <= end
+                }
+            )
+            if dates:
+                return dates
+        # 任意一只股票的交易日并集（测试注入用）
+        union: set = set()
+        for df in full.values():
+            if df is None or getattr(df, "empty", True):
+                continue
+            if "trade_date" not in getattr(df, "columns", []):
+                continue
+            for d in df["trade_date"].tolist():
+                td = normalize_date(str(d))
+                if start <= td <= end:
+                    union.add(td)
+        if union:
+            return sorted(union)
+        logger.warning(
+            "未找到指数/OHLCV 交易日历，回退周一~周五（含节假日偏差）"
+        )
+        return self._gen_trade_dates(start, end)
 
     @staticmethod
     def _gen_trade_dates(start_date: str, end_date: str) -> List[str]:
-        """生成日期列表，简单按工作日过滤（周一~周五）。"""
+        """生成日期列表：工作日过滤（仅作无行情日历时的回退）。"""
         start = datetime.strptime(start_date, '%Y-%m-%d')
         end = datetime.strptime(end_date, '%Y-%m-%d')
         out: List[str] = []
@@ -1615,6 +2161,56 @@ class Backtester:
 
 # ============================== 便捷数据 provider ==============================
 
+def _positive(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number > 0 and number == number:
+        return number
+    return None
+
+
+def _open_is_limit_up(code: str, pre_close: Optional[float], open_px: float, trade_date: str) -> bool:
+    pre = _positive(pre_close)
+    opened = _positive(open_px)
+    if pre is None or opened is None:
+        return False
+    return is_limit_up(code, pre, opened, trade_date)
+
+
+def _unsellable_codes(holdings: Optional[pd.DataFrame], trade_date: str) -> set:
+    """当日才成交、或当日买入份额占满仓位的代码，当天不能卖。"""
+    blocked: set = set()
+    if holdings is None or getattr(holdings, "empty", True):
+        return blocked
+    for _, row in holdings.iterrows():
+        code = normalize_code(str(row["code"]))
+        if str(row.get("entry_date") or "") == str(trade_date):
+            blocked.add(code)
+            continue
+        locked = _positive(row.get("locked_weight")) or 0.0
+        weight = float(row.get("weight") or 0.0)
+        if locked > 0 and locked >= weight - 1e-8:
+            blocked.add(code)
+    return blocked
+
+
+def _day_bar_frame(
+    day_ohlcv: Dict[str, pd.DataFrame],
+    code: str,
+) -> Optional[pd.DataFrame]:
+    """按 6 位代码取当日 bar；兼容未补零的旧键。"""
+    code_s = normalize_code(str(code))
+    frame = (day_ohlcv or {}).get(code_s)
+    if frame is not None:
+        return frame
+    raw = str(code)
+    if raw != code_s:
+        return (day_ohlcv or {}).get(raw)
+    return None
+
+
 def _append_book_bars(
     index_rows: List[dict],
     asset_hist: Dict[str, List[float]],
@@ -1631,7 +2227,7 @@ def _append_book_bars(
             continue
         if not close > 0:
             continue
-        code_s = str(code)
+        code_s = normalize_code(str(code))
         if code_s not in BOOK_OHLCV_CODES:
             continue
         asset_hist.setdefault(code_s, []).append(close)
@@ -1645,7 +2241,9 @@ def _append_book_bars(
             if value != value:
                 return default
             return value
+        bar_date = row.get("trade_date", "")
         index_rows.append({
+            "trade_date": normalize_date(str(bar_date)) if bar_date else "",
             "close": close,
             "high": _num("high", close),
             "low": _num("low", close),
@@ -1653,33 +2251,81 @@ def _append_book_bars(
         })
 
 
+def _slim_ohlcv_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """回测只需价量列；去掉多余字段并压成 float32，降低驻留内存。"""
+    keep = [
+        c
+        for c in (
+            "trade_date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "amount",
+            "pre_close",
+            "pct_chg",
+        )
+        if c in df.columns
+    ]
+    out = df.loc[:, keep].copy()
+    for c in keep:
+        if c == "trade_date":
+            out[c] = out[c].astype(str)
+        else:
+            out[c] = pd.to_numeric(out[c], errors="coerce").astype("float32")
+    return out.reset_index(drop=True)
+
+
 def make_ohlcv_provider_from_dict(
     ohlcv_by_code: Dict[str, pd.DataFrame],
 ) -> Callable[[str], Dict[str, pd.DataFrame]]:
     """
-    把"全市场静态 OHLCV"封装成一个 provider 函数。
-    回测器每个交易日会调一次该函数；这里直接返回完整 dict（回测器内部自己按 trade_date 取行）。
-    首次调用时按 trade_date 预建索引，后续调用 O(1) 查找。
+    把静态 OHLCV 封装成按日 provider。
+
+    预建 td→code→row_dict 索引；按日返回时再包成 1 行 DataFrame。
+    不再把「每个交易日的全市场切片」永久缓存——长区间下那会复制出海量小对象直接 OOM。
     """
-    _indexed_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
+    by_date: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    value_cols = (
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "pre_close",
+        "pct_chg",
+    )
+    for code, df in ohlcv_by_code.items():
+        if df is None or getattr(df, "empty", True) or "trade_date" not in df.columns:
+            continue
+        cols = [c for c in value_cols if c in df.columns]
+        dates = df["trade_date"].astype(str).to_numpy()
+        if not cols:
+            continue
+        values = df[cols].to_numpy(copy=False)
+        code_s = normalize_code(str(code))
+        for i, td in enumerate(dates):
+            rec = {cols[j]: values[i, j] for j in range(len(cols))}
+            by_date.setdefault(str(td), {})[code_s] = rec
 
     def _provider(td: str) -> Dict[str, pd.DataFrame]:
-        if td not in _indexed_cache:
-            result = {}
-            for code, df in ohlcv_by_code.items():
-                if 'trade_date' in df.columns:
-                    row = df[df['trade_date'] == td]
-                    if not row.empty:
-                        result[code] = row
-            _indexed_cache[td] = result
-        return _indexed_cache[td]
+        day = by_date.get(str(td)) or {}
+        out: Dict[str, pd.DataFrame] = {}
+        for code, rec in day.items():
+            row = dict(rec)
+            row["trade_date"] = str(td)
+            out[code] = pd.DataFrame([row])
+        return out
+
     return _provider
 
 
 def make_signal_provider_from_pipeline_data(
     data_by_date: Dict[str, Dict[str, Any]],
 ) -> Callable[[str], Optional[Dict[str, Any]]]:
-    """每个交易日返回一个预构造好的 run_pipeline 入参字典。"""
+    """每个交易日返回一个预构造好的现场漏斗入参字典。"""
     def _provider(td: str) -> Optional[Dict[str, Any]]:
         return data_by_date.get(td)
     return _provider

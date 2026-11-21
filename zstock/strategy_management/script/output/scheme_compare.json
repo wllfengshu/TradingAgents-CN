@@ -1,0 +1,200 @@
+[
+  {
+    "scheme": "A_ma_neutral",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.09709440923770529,
+    "max_drawdown": -0.1038244789574827,
+    "sharpe": 0.8225261023916878,
+    "rebalance_count": 94
+  },
+  {
+    "scheme": "B_idle_industry",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.1678036445063502,
+    "max_drawdown": -0.0797881773630923,
+    "sharpe": 1.4076263027107676,
+    "rebalance_count": 85
+  },
+  {
+    "scheme": "C_full_scale",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.07465051608975415,
+    "max_drawdown": -0.07391507730634606,
+    "sharpe": 0.7544296230661797,
+    "rebalance_count": 82
+  },
+  {
+    "scheme": "AB",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.19160625655946872,
+    "max_drawdown": -0.08437243981047138,
+    "sharpe": 1.4143796866082565,
+    "rebalance_count": 94
+  },
+  {
+    "scheme": "ABC",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.16047031491817432,
+    "max_drawdown": -0.08677333452683844,
+    "sharpe": 1.2048975447171622,
+    "rebalance_count": 94
+  },
+  {
+    "scheme": "ABC_g1",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.045360452267781515,
+    "max_drawdown": -0.09361159860362012,
+    "sharpe": 0.44043870609300123,
+    "rebalance_count": 92
+  },
+  {
+    "scheme": "ABC_green60",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.01310134647854011,
+    "max_drawdown": -0.11413105783795585,
+    "sharpe": 0.165632805466844,
+    "rebalance_count": 84
+  },
+  {
+    "scheme": "A_ma_neutral",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.015204789929156304,
+    "max_drawdown": -0.13952518662067992,
+    "sharpe": 0.21222901717570858,
+    "rebalance_count": 77
+  },
+  {
+    "scheme": "B_idle_industry",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.08684404958985903,
+    "max_drawdown": -0.12068521863512405,
+    "sharpe": 0.8799031764260536,
+    "rebalance_count": 45
+  },
+  {
+    "scheme": "C_full_scale",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.11230977873342174,
+    "max_drawdown": -0.1206852186351236,
+    "sharpe": 1.1635769788866928,
+    "rebalance_count": 45
+  },
+  {
+    "scheme": "AB",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.02139035249124066,
+    "max_drawdown": -0.13952518662068036,
+    "sharpe": 0.2608736054377424,
+    "rebalance_count": 77
+  },
+  {
+    "scheme": "ABC",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.04835858624209144,
+    "max_drawdown": -0.1395251866206798,
+    "sharpe": 0.49362212417327167,
+    "rebalance_count": 77
+  },
+  {
+    "scheme": "ABC_g1",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": -0.02401763231923948,
+    "max_drawdown": -0.1279159975629196,
+    "sharpe": -0.19634990920538908,
+    "rebalance_count": 85
+  },
+  {
+    "scheme": "ABC_green60",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.011120371166038812,
+    "max_drawdown": -0.11252473995071843,
+    "sharpe": 0.1697187042934415,
+    "rebalance_count": 80
+  },
+  {
+    "scheme": "B_vol25",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.2841039738051552,
+    "max_drawdown": -0.09060581690778458,
+    "sharpe": 1.830700144704087,
+    "rebalance_count": 83
+  },
+  {
+    "scheme": "B_vol35",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.27957804209337,
+    "max_drawdown": -0.09369806033089834,
+    "sharpe": 1.792607190530211,
+    "rebalance_count": 83
+  },
+  {
+    "scheme": "B_narrow",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.16794217944787504,
+    "max_drawdown": -0.0810472199790252,
+    "sharpe": 1.407718862842121,
+    "rebalance_count": 85
+  },
+  {
+    "scheme": "BC",
+    "start": "2025-01-02",
+    "end": "2025-12-31",
+    "total_return": 0.13677672936055796,
+    "max_drawdown": -0.08425121184192264,
+    "sharpe": 1.166306937718833,
+    "rebalance_count": 85
+  },
+  {
+    "scheme": "B_vol25",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.06087062805821164,
+    "max_drawdown": -0.15430468558126442,
+    "sharpe": 0.528750107676601,
+    "rebalance_count": 52
+  },
+  {
+    "scheme": "B_vol35",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.0482590335409121,
+    "max_drawdown": -0.15939554965054725,
+    "sharpe": 0.42336499661964844,
+    "rebalance_count": 51
+  },
+  {
+    "scheme": "B_narrow",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.08107918699725158,
+    "max_drawdown": -0.1213321638849082,
+    "sharpe": 0.8235405024296019,
+    "rebalance_count": 46
+  },
+  {
+    "scheme": "BC",
+    "start": "2026-01-05",
+    "end": "2026-11-13",
+    "total_return": 0.1157070474237698,
+    "max_drawdown": -0.12068521863512394,
+    "sharpe": 1.1141094908492808,
+    "rebalance_count": 45
+  }
+]

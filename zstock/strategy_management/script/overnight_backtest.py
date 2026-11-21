@@ -2,7 +2,7 @@
 隔夜策略回测（完整版）：预计算 → 因子测评 → 多段回测 → 双 IS 网格 → 基准对比 → 汇总
 
 默认完整流水线（约 8~14 小时，视机器与数据量）：
-  0.  预检 MongoDB / 备份 strategy_params / 写 run.log
+  0.  预检 MongoDB / 备份 strategy_params / 写 logs/overnight_backtest_*.log
   1.  （可选）预计算因子 2024-01-01 ~ 今日
   2.  因子覆盖审计 + 全量 IC 测评（2024 / 2025 / 2026 YTD）
   3.  一次性加载 OHLCV
@@ -69,7 +69,8 @@ IS_2025_START = "2025-01-02"
 IS_2025_END = "2025-09-30"
 IS_2026_START = "2026-01-05"
 IS_2026_END = "2026-09-27"
-INDEX_CODE = "399300"
+
+from zstock.common.book_codes import INDEX_CODE
 
 
 # ─────────────────────────── 工具 ───────────────────────────
@@ -126,25 +127,22 @@ def _setup_console_utf8() -> None:
             pass
 
 
-def _setup_logging(log_file: Optional[Path] = None) -> None:
-    root = logging.getLogger()
-    for h in list(root.handlers):
-        root.removeHandler(h)
-    fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(logging.Formatter("%(message)s"))
-    root.addHandler(sh)
-    if log_file:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setFormatter(fmt)
-        root.addHandler(fh)
-    root.setLevel(logging.INFO)
+def _setup_logging(log_file: Optional[Path] = None) -> Path:
+    """落盘到项目 ``logs/``；单测可传入临时路径。"""
+    from zstock.common.logging_setup import setup_logging
+
+    return setup_logging(
+        "overnight_backtest",
+        log_file=log_file,
+        file_fmt="%(asctime)s %(message)s",
+        console_fmt="%(message)s",
+    )
 
 
 def _default_periods(today: str) -> Dict[str, str]:
     is_2026_end = _min_date(today, IS_2026_END)
-    oos_fwd_start = "2026-07-28"
+    # 2026 拟合窗截止 IS_2026_END。这段之前的日期属于样本内，不能再叫远期验证。
+    oos_fwd_start = "2026-09-28"
     oos_fwd_end = today if today > oos_fwd_start else oos_fwd_start
     return {
         "precompute_start": "2024-01-01",
@@ -210,10 +208,8 @@ def _default_rebalance_freq() -> int:
 
 
 def _clear_strategy_caches() -> None:
-    from zstock.strategy_management.pipeline import StrategyPipeline
     from zstock.common.config import strategy_config
 
-    StrategyPipeline._config_cache = None
     strategy_config._clear_cache()
 
 
@@ -233,8 +229,8 @@ def _load_checkpoint(output_dir: Path) -> Dict[str, Any]:
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("读取 checkpoint 失败，将重新跑: %s", e)
     return {"completed_steps": [], "results": {}}
 
 
@@ -358,7 +354,7 @@ def _grid_oos_jobs_2026(periods: Dict[str, str]) -> List[Tuple[str, str, str, st
     jobs = [
         ("grid26_oos_2025", periods["full_2025_start"], periods["full_2025_end"], "Grid26 OOS 2025"),
         ("grid26_ref_2024", periods["full_2024_start"], periods["full_2024_end"], "Grid26 Ref 2024"),
-        ("grid26_ytd_2026", periods["full_2026_start"], periods["full_2026_end"], "Grid26 2026 YTD"),
+        ("grid26_ytd_2026", periods["full_2026_start"], periods["full_2026_end"], "Grid26 2026 YTD（含拟合窗，不是样本外）"),
     ]
     if periods["oos_fwd_end"] > periods["oos_fwd_start"]:
         jobs.insert(2, ("grid26_fwd_h2", periods["oos_fwd_start"], periods["oos_fwd_end"], "Grid26 Fwd 2026 H2"))
@@ -507,14 +503,23 @@ async def run_precompute(
 
 
 async def run_factor_eval(start: str, end: str, output_dir: Path, label: str, *, plot: bool, period: int) -> Optional[str]:
-    from zstock.factor_management.script.因子测评.factor_evaluation import FactorEvaluationPipeline
+    from zstock.factor_management.script.factor_evaluation import FactorEvaluation
 
     eval_dir = output_dir / "factor_eval" / label
     eval_dir.mkdir(parents=True, exist_ok=True)
     logger.info("因子测评 [%s]: %s → %s", label, start, end)
-    pipeline = FactorEvaluationPipeline(
+    from zstock.common.config.strategy_config import load_strategy_params
+    from zstock.strategy_management.strategy_section.universe import build_universe_by_date
+
+    universe = await build_universe_by_date(
+        start,
+        end,
+        mode="funnel",
+        strategy_config=load_strategy_params(),
+    )
+    pipeline = FactorEvaluation(
         start_date=start, end_date=end, period=period, n_quantiles=5,
-        conditional=True, top_sectors=None, invert_negative=True, plot=plot,
+        universe_by_date=universe, invert_negative=True, plot=plot,
         output_dir=str(eval_dir), decay_max=0, layer=None, field=None,
     )
     await pipeline.run()
@@ -528,7 +533,7 @@ async def run_backtest_current(
     output_dir: Path, label: str,
 ) -> Dict[str, Any]:
     from zstock.common.config.strategy_config import load_strategy_params
-    from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
+    from zstock.strategy_management.pipeline import StrategyPipeline
     from zstock.strategy_management.script.backtester import Backtester
 
     _clear_strategy_caches()
@@ -536,7 +541,7 @@ async def run_backtest_current(
     seg_dir.mkdir(parents=True, exist_ok=True)
     logger.info("%s: %s → %s (reb=%d)", label, start, end, rebalance_freq)
 
-    bt = Backtester(fee_rate=fee, initial_capital=capital, factor_pipeline=CrossSectionStrategyPipeline())
+    bt = Backtester(fee_rate=fee, initial_capital=capital, signal_pipeline=StrategyPipeline())
     try:
         result = await bt.run(
             start_date=start, end_date=end, ohlcv_provider=provider,
@@ -545,7 +550,7 @@ async def run_backtest_current(
         )
     except Exception as e:
         logger.error("回测失败: %s", e)
-        bt.factor_pipeline = None
+        bt.signal_pipeline = None
         gc.collect()
         return {"status": f"failed:{type(e).__name__}", "error": str(e), "label": label, "start": start, "end": end}
 
@@ -568,11 +573,7 @@ async def run_backtest_current(
         row["total_return"] * 100, row["total_return_gross"] * 100, row["sharpe"],
         row["max_drawdown"] * 100, row["avg_exposure"] * 100, row["total_cost"] * 100,
     )
-    fp = getattr(bt, "factor_pipeline", None)
-    reset = getattr(fp, "_reset_precomputed", None) if fp is not None else None
-    if callable(reset):
-        reset()
-    bt.factor_pipeline = None
+    bt.signal_pipeline = None
     gc.collect()
     return row
 
@@ -758,7 +759,7 @@ def generate_report(all_results: Dict[str, Any], periods: Dict[str, str], manife
         "  factor_eval/  IC 测评 summary.csv",
         "  is_grid_2024/ is_grid_2025/ is_grid_2026/  网格搜索结果",
         "  config_backup/  运行前 strategy_params 快照",
-        "  run.log         完整日志",
+        "  （执行日志统一在项目 logs/overnight_backtest_*.log）",
         "", "=" * 100, "",
     ]
     return "\n".join(lines)
@@ -831,7 +832,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def async_main(args: argparse.Namespace) -> int:
     from zstock.common.utils.db_utils import close_zstock_database, init_zstock_database
-    from zstock.factor_management.script.网格搜索.grid_search_real import RealGridSearchOptimizer, load_ohlcv
+    from zstock.strategy_management.script.grid_search_real import RealGridSearchOptimizer, load_ohlcv
     from zstock.strategy_management.script.backtester import make_ohlcv_provider_from_dict
 
     t_start = time.time()
@@ -849,7 +850,7 @@ async def async_main(args: argparse.Namespace) -> int:
 
     output_dir = Path(args.output) if args.output else Path(__file__).resolve().parent / "output" / f"overnight_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
-    _setup_logging(output_dir / "run.log")
+    log_path = _setup_logging()
 
     rebalance_freq = args.rebalance if args.rebalance is not None else _default_rebalance_freq()
     ckpt = _load_checkpoint(output_dir) if args.resume else {"completed_steps": [], "results": {}}
@@ -857,6 +858,7 @@ async def async_main(args: argparse.Namespace) -> int:
     all_results: Dict[str, Any] = dict(ckpt.get("results") or {})
 
     logger.info("输出目录: %s", output_dir)
+    logger.info("执行日志: %s", log_path)
     logger.info(
         "覆盖区间: OHLCV %s→%s | 回测 2024/2025/2026 | IC测评 2024/2025/2026",
         periods["ohlcv_start"], periods["ohlcv_end"],
@@ -1048,7 +1050,7 @@ async def async_main(args: argparse.Namespace) -> int:
 
         logger.info("报告: %s", output_dir / "overnight_backtest_report.txt")
         logger.info("对比表: %s", output_dir / "comparison.csv")
-        logger.info("日志: %s", output_dir / "run.log")
+        logger.info("日志: %s", log_path)
         logger.info("总耗时: %s", manifest["elapsed"])
         return 0
 

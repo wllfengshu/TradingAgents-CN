@@ -3,8 +3,8 @@
 
 职责：
 1. 从 MongoDB 加载全部个股 OHLCV / 资金流（不主板/ST/黑名单过滤）
-2. 使用 FactorComputeEngine 计算全市场、全股票因子原始值
-3. 写入 zstock_factor_* 集合（个股覆盖应对齐 OHLCV）
+2. 对各层（M1~M4）按各自宇宙独立算 raw（层间无过滤、无编排漏斗）
+3. 写入 zstock_factor_* 集合
 
 用法：
     python -m zstock.factor_management.script.precompute_factors --start 2026-01-01 --end 2026-06-30
@@ -15,7 +15,7 @@
     环境变量 ZSTOCK_RESOURCE_FRACTION=0.5（默认）
     ZSTOCK_PRECOMPUTE_WORKERS / ZSTOCK_PRECOMPUTE_LOAD_WORKERS / ZSTOCK_PRECOMPUTE_QUERY_WORKERS
 
-打分 / 回测请用 CrossSectionStrategyPipeline.score_signals，不要走本脚本。
+打分 / 漏斗过滤在策略层（StrategyPipeline / signal_funnel），不要走本脚本。
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import os
 import sys
 from bisect import bisect_left, bisect_right
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import perf_counter
@@ -41,10 +42,10 @@ from zstock.common.utils.common_utils import (
     is_index_code,
     normalize_code,
 )
-from zstock.factor_management.dragon_factors import DragonFactors
-from zstock.factor_management.force_factors import ForceFactors
-from zstock.factor_management.market_factors import MarketFactors
-from zstock.factor_management.sector_factors import SectorFactors
+from zstock.factor_management.factors_dragon import DragonFactors
+from zstock.factor_management.factors_force import ForceFactors
+from zstock.factor_management.factors_market import MarketFactors
+from zstock.factor_management.factors_sector import SectorFactors
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -140,7 +141,7 @@ def _sort_ohlcv_item(item: Tuple[str, pd.DataFrame]) -> Tuple[str, pd.DataFrame]
 
 def _compute_sliced_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """进程池 worker：接收当日切片（可 pickle），绕过 GIL 真正多核计算。"""
-    return FactorComputeEngine.compute_all_factors_raw_sync(
+    return compute_day_factor_raws(
         **payload["data"],
         assume_sorted=True,
         compute_sectors=payload["compute_sectors"],
@@ -160,7 +161,7 @@ def _compute_day_sync(
     data = FactorPrecomputeService.slice_preloaded_data(
         preload, trade_date, lookback_days
     )
-    return FactorComputeEngine.compute_all_factors_raw_sync(
+    return compute_day_factor_raws(
         **data,
         assume_sorted=True,
         compute_sectors=preload["compute_sectors"],
@@ -183,214 +184,189 @@ def _error_handler(context: str, critical: bool = False):
             logger.warning(f"[WARNING] {context}: {type(e).__name__}: {e}", exc_info=True)
 
 
-# ===================== 因子计算引擎 =====================
+def _primary_sector_by_code(
+    sector_stocks: Dict[str, List[str]],
+    universe: Set[str],
+) -> Dict[str, str]:
+    """个股 → 主板块（首次命中的 membership）；仅作 M4 文档标注，不作过滤。"""
+    out: Dict[str, str] = {}
+    for sector_code, codes in (sector_stocks or {}).items():
+        for code in codes or []:
+            if code in universe and code not in out:
+                out[code] = sector_code
+    return out
 
-class FactorComputeEngine:
-    """全市场因子计算引擎（纯计算逻辑，不涉及数据库）
 
-    从策略 pipeline 的 raw 计算路径抽离，专用于预计算（与 score_signals 无关）。
+def compute_day_factor_raws(
+    trade_date: str,
+    all_stocks: List[str],
+    stock_infos: Dict[str, Dict],
+    stock_ohlcv: Dict[str, pd.DataFrame],
+    stock_flow_recent: Dict[str, List[Dict]],
+    sectors: List[Dict],
+    sector_stocks: Dict[str, List[str]],
+    index_ohlcv: Dict[str, pd.DataFrame],
+    index_name: str = "沪深 300",
+    *,
+    stock_lhb_recent: Optional[Dict[str, List[Dict]]] = None,
+    assume_sorted: bool = False,
+    compute_sectors: Optional[List[Dict]] = None,
+    compute_universe: Optional[Set[str]] = None,
+    sector_ohlcv: Optional[Dict[str, pd.DataFrame]] = None,
+    quiet: bool = False,
+    fund_provider: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """同一交易日对各层独立算 raw，仅打包结果；层间无过滤、无漏斗。
+
+    - M1：指数全量算子
+    - M2：全部板块按定义计算（eligible 仅限有行情的个股宇宙）
+    - M3：全部板块成分 + 无板块归属个股，按定义计算
+    - M4：同一股票宇宙独立计算（不吃 M3 输出、不做 topK）
+
+    策略层的 M2→M3→M4 过滤见 ``signal_funnel``，与本函数无关。
     """
+    log = logger.debug if quiet else logger.info
+    log(f"全市场因子 raw（层独立）: trade_date={trade_date}")
 
-    @staticmethod
-    def compute_all_factors_raw_sync(
-        trade_date: str,
-        all_stocks: List[str],
-        stock_infos: Dict[str, Dict],
-        stock_ohlcv: Dict[str, pd.DataFrame],
-        stock_flow_recent: Dict[str, List[Dict]],
-        sectors: List[Dict],
-        sector_stocks: Dict[str, List[str]],
-        index_ohlcv: Dict[str, pd.DataFrame],
-        index_name: str = "沪深 300",
-        *,
-        stock_lhb_recent: Optional[Dict[str, List[Dict]]] = None,
-        assume_sorted: bool = False,
-        compute_sectors: Optional[List[Dict]] = None,
-        compute_universe: Optional[Set[str]] = None,
-        sector_ohlcv: Optional[Dict[str, pd.DataFrame]] = None,
-        quiet: bool = False,
-        fund_provider: Optional[Any] = None,
-    ) -> Dict[str, Any]:
-        """
-        全市场因子原始值计算（供预计算入库，不做 topK 选股裁剪）。
+    if not assume_sorted:
+        stock_ohlcv = {
+            c: ensure_ohlcv_sorted(df) for c, df in (stock_ohlcv or {}).items()
+        }
+        index_ohlcv = {
+            c: ensure_ohlcv_sorted(df) for c, df in (index_ohlcv or {}).items()
+        }
+        assume_sorted = True
 
-        与 run_pipeline_raw 的差异：
-        - 不做主板 / ST / 黑名单过滤，覆盖全部个股
-        - M2：全部板块
-        - M3：全部板块成分股 + 无板块归属的个股
-        - M4：上述全部股票（按 code 去重）
-
-        Args:
-            trade_date: 交易日期
-            all_stocks: 全市场股票代码列表
-            stock_infos: 股票信息字典
-            stock_ohlcv: 个股 OHLCV 数据
-            stock_flow_recent: 个股最近资金流向
-            sectors: 板块列表
-            sector_stocks: 板块包含的股票
-            index_ohlcv: 指数 OHLCV 数据
-            index_name: 指数名称
-            assume_sorted: OHLCV 是否已排序
-            compute_sectors: 参与计算的板块；None 则用 sectors 全量（非策略过滤）
-            compute_universe: 参与计算的股票；None 则用 all_stocks ∪ OHLCV keys
-            sector_ohlcv: 预聚合的板块 OHLCV
-            fund_provider: get_fundamental_asof 的结果；None 则 f39/f40 为空
-
-        Returns:
-            {market_raw, sector_raw, dragon_raw_by_sector, force_raw, ...} 字典（仅原始因子值，无得分）
-        """
-
-        log = logger.debug if quiet else logger.info
-
-        log(f"🚀 全市场因子预计算: trade_date={trade_date}")
-
-        if not assume_sorted:
-            stock_ohlcv = {
-                c: ensure_ohlcv_sorted(df) for c, df in (stock_ohlcv or {}).items()
-            }
-            index_ohlcv = {
-                c: ensure_ohlcv_sorted(df) for c, df in (index_ohlcv or {}).items()
-            }
-            assume_sorted = True
-
-        # ===== M1: 市场情绪 =====
-        from zstock.common.utils.common_utils import get_index_code_from_ohlcv_dict
-        idx_df = list(index_ohlcv.values())[0] if index_ohlcv else None
-        index_code = get_index_code_from_ohlcv_dict(index_ohlcv)
-        market_sentiment = MarketFactors.calculate_market_sentiment(
-            idx_df, index_name=index_name, trade_date=trade_date
-        )
-        market_raw = market_sentiment.get("detail", {})
-        log(
-            f"📊 M1 完成: market_sentiment={market_sentiment.get('market_composite_score', 0):.2f}"
+    if compute_sectors is None:
+        compute_sectors = list(sectors or [])
+    if compute_universe is None:
+        compute_universe = {
+            c for c in (all_stocks or []) if _is_stock_code(c)
+        }
+        compute_universe.update(
+            c for c in (stock_ohlcv or {}) if _is_stock_code(c)
         )
 
-        if compute_sectors is None:
-            compute_sectors = list(sectors or [])
-        if compute_universe is None:
-            compute_universe = {
-                c for c in (all_stocks or []) if _is_stock_code(c)
-            }
-            compute_universe.update(
-                c for c in (stock_ohlcv or {}) if _is_stock_code(c)
-            )
+    log(f"股票宇宙: {len(compute_universe)} 只（各层共用输入，互不裁剪）")
 
-        log(f"🔍 参与计算个股: {len(compute_universe)} 只")
+    # ----- M1：与个股/板块结果无关 -----
+    from zstock.common.utils.common_utils import get_index_code_from_ohlcv_dict
 
-        # 计算全市场板块OHLCV（用于F2.8排名计算）
-        if sector_ohlcv is not None:
-            market_sector_ohlcv = sector_ohlcv
-        else:
-            market_sector_ohlcv, _ = SectorFactors.aggregate_sector_ohlcv(
-                sector_stocks,
-                stock_ohlcv,
-                stock_flow_recent or {},
-            )
+    idx_df = list(index_ohlcv.values())[0] if index_ohlcv else None
+    index_code = get_index_code_from_ohlcv_dict(index_ohlcv)
+    market_raw = MarketFactors.compute_market_raw(
+        idx_df, index_name=index_name, trade_date=trade_date
+    )
+    log(
+        f"M1 完成: fields="
+        f"{len([k for k in market_raw if k.startswith('mf')])}"
+    )
 
-        sector_raw = SectorFactors.calculate_all_sector_factors_raw(
-            compute_sectors,
+    # ----- M2：板块定义全量 -----
+    if sector_ohlcv is not None:
+        market_sector_ohlcv = sector_ohlcv
+    else:
+        market_sector_ohlcv, _ = SectorFactors.aggregate_sector_ohlcv(
             sector_stocks,
             stock_ohlcv,
-            stock_flow_recent,
-            sector_ohlcv=sector_ohlcv,
-            market_sector_ohlcv=market_sector_ohlcv,
-            trade_date=trade_date,
-            eligible_codes=compute_universe,
+            stock_flow_recent or {},
         )
-        log(f"📊 M2 完成: {len(sector_raw.get('f21_rps', {}))} 个板块")
 
-        # ===== M3: 龙头因子计算 =====
-        sector_jobs = []
-        all_m3_codes: Set[str] = set()
-        for sector in compute_sectors:
-            sector_code = sector.get("sector_code")
-            if not sector_code:
-                continue
-            sector_stock_list = [
-                s
-                for s in sector_stocks.get(sector_code, [])
-                if s in compute_universe
-            ]
-            if sector_stock_list:
-                sector_jobs.append((sector_code, sector_stock_list))
-                all_m3_codes.update(sector_stock_list)
+    sector_raw = SectorFactors.calculate_all_sector_factors_raw(
+        compute_sectors,
+        sector_stocks,
+        stock_ohlcv,
+        stock_flow_recent,
+        sector_ohlcv=sector_ohlcv,
+        market_sector_ohlcv=market_sector_ohlcv,
+        trade_date=trade_date,
+        eligible_codes=compute_universe,
+    )
+    log(f"M2 完成: {len(sector_raw.get('f21_rps', {}))} 个板块")
 
-        leftover = [
-            c
-            for c in sorted(compute_universe)
-            if c not in all_m3_codes and c in (stock_ohlcv or {})
+    # ----- M3：按板块成分独立算（不读 M2 得分）-----
+    sector_jobs: List[Tuple[str, List[str]]] = []
+    covered: Set[str] = set()
+    for sector in compute_sectors:
+        sector_code = sector.get("sector_code")
+        if not sector_code:
+            continue
+        members = [
+            s
+            for s in sector_stocks.get(sector_code, [])
+            if s in compute_universe
         ]
-        if leftover:
-            sector_jobs.append((_UNASSIGNED_SECTOR, leftover))
-            all_m3_codes.update(leftover)
-            log(f"🔍 无板块归属个股: {len(leftover)} 只")
+        if members:
+            sector_jobs.append((sector_code, members))
+            covered.update(members)
 
-        # M3：多板块一次计算（个股特征在 DragonFactors 内部复用）
-        dragon_raw_by_sector = DragonFactors.calculate_all_dragon_factors_raw(
-            sector_jobs,
-            stock_ohlcv,
-            assume_sorted=True,
-            trade_date=trade_date,
-            fund_provider=fund_provider,
+    leftover = [
+        c
+        for c in sorted(compute_universe)
+        if c not in covered and c in (stock_ohlcv or {})
+    ]
+    if leftover:
+        sector_jobs.append((_UNASSIGNED_SECTOR, leftover))
+        log(f"M3 无板块归属: {len(leftover)} 只")
+
+    dragon_raw_by_sector = DragonFactors.calculate_all_dragon_factors_raw(
+        sector_jobs,
+        stock_ohlcv,
+        assume_sorted=True,
+        trade_date=trade_date,
+        fund_provider=fund_provider,
+    )
+    log(
+        f"M3 完成: {len(dragon_raw_by_sector)} 个板块, "
+        f"{sum(len(v) for v in dragon_raw_by_sector.values())} 条"
+    )
+
+    # ----- M4：同一股票宇宙独立算（不读 M3 输出）-----
+    sector_of = _primary_sector_by_code(sector_stocks, compute_universe)
+    force_inputs: List[Dict] = []
+    for code in sorted(compute_universe):
+        if code not in (stock_ohlcv or {}):
+            continue
+        force_inputs.append(
+            {
+                "code": code,
+                "sector_code": sector_of.get(code, _UNASSIGNED_SECTOR),
+            }
         )
-        force_candidates: List[Dict] = []
-        for sector_code, dragon_raw in dragon_raw_by_sector.items():
-            for code in dragon_raw:
-                force_candidates.append(
-                    {
-                        "code": code,
-                        "sector_code": sector_code,
-                    }
-                )
 
-        log(
-            f"📊 M3 完成: {len(dragon_raw_by_sector)} 个板块, "
-            f"{sum(len(v) for v in dragon_raw_by_sector.values())} 条原始因子 "
-            f"(M4候选 {len(force_candidates)} 条，支持跨板块)"
-        )
+    force_raw = ForceFactors.apply_cooperative_force_raw(
+        force_inputs,
+        stock_flow_recent=stock_flow_recent,
+        stock_ohlcv=stock_ohlcv,
+        stock_lhb_recent=stock_lhb_recent or {},
+        assume_sorted=assume_sorted,
+        trade_date=trade_date,
+    )
+    log(f"M4 完成: {len(force_raw)} 只（独立宇宙，非 M3 过滤）")
 
-        # ===== M4: 合力因子 =====
-        force_raw = ForceFactors.apply_cooperative_force_raw(
-            force_candidates,
-            stock_flow_recent=stock_flow_recent,
-            stock_ohlcv=stock_ohlcv,
-            stock_lhb_recent=stock_lhb_recent or {},
-            assume_sorted=assume_sorted,
-            trade_date=trade_date,
-        )
-        log(f"📊 M4 完成: {len(force_raw)} 只")
+    stock_last_close: Dict[str, float] = {}
+    for code, df in stock_ohlcv.items():
+        if df is None or len(df) == 0:
+            continue
+        try:
+            last_close = float(df["close"].iloc[-1])
+            if np.isfinite(last_close) and last_close > 0:
+                stock_last_close[code] = last_close
+        except (IndexError, TypeError, ValueError):
+            pass
 
-        # 提取每只股票的最新收盘价 (供基本面因子 PB 计算)
-        stock_last_close: Dict[str, float] = {}
-        for code, df in stock_ohlcv.items():
-            if df is not None and len(df) > 0:
-                try:
-                    last_close = float(df["close"].iloc[-1])
-                    if np.isfinite(last_close) and last_close > 0:
-                        stock_last_close[code] = last_close
-                except (IndexError, TypeError, ValueError):
-                    pass
-
-        return {
-            "trade_date": trade_date,
-            "market_raw": market_raw,
-            "index_code": index_code,
-            "index_name": index_name,
-            "sector_raw": sector_raw,
-            "compute_sectors": compute_sectors,
-            "dragon_raw_by_sector": dragon_raw_by_sector,
-            "all_candidates": force_candidates,
-            "force_raw": force_raw,
-            "market_risk_level": market_sentiment.get("market_risk_level", "neutral"),
-            "position_scale_factor": market_sentiment.get("position_scale_factor", 1.0),
-            "stock_infos": stock_infos,
-            "stock_last_close": stock_last_close,
-        }
-
-    @staticmethod
-    async def compute_all_factors_raw(**kwargs) -> Dict[str, Any]:
-        """异步入口（兼容旧调用）；计算本身为 CPU 密集型同步逻辑。"""
-        return FactorComputeEngine.compute_all_factors_raw_sync(**kwargs)
+    return {
+        "trade_date": trade_date,
+        "market_raw": market_raw,
+        "index_code": index_code,
+        "index_name": index_name,
+        "sector_raw": sector_raw,
+        "compute_sectors": compute_sectors,
+        "dragon_raw_by_sector": dragon_raw_by_sector,
+        "force_raw": force_raw,
+        "stock_infos": stock_infos,
+        "stock_last_close": stock_last_close,
+    }
 
 
 class FactorPrecomputeService:
@@ -481,18 +457,74 @@ class FactorPrecomputeService:
 
         total = {"market": 0, "sector": 0, "dragon": 0, "force": 0}
         success = 0
-        failed = 0
-        workers = self.compute_workers
+        failed_dates: List[str] = []
+        # 子进程 pickle 过大时由下面的 BrokenProcessPool 降到 1 进程，再不行改线程池。
+        want_workers = max(1, int(self.compute_workers))
+        proc_workers = want_workers
+        mode = "process"
+        pool_workers = proc_workers
         logger.info(
-            f"多进程并行预计算 {len(trade_dates)} 个交易日 "
-            f"(processes={workers}, load={self.load_workers}, query={self.query_workers})"
+            "并行预计算 %d 个交易日 (mode=%s workers=%d, load=%d, query=%d)",
+            len(trade_dates),
+            mode,
+            pool_workers,
+            self.load_workers,
+            self.query_workers,
         )
 
-        sem = asyncio.Semaphore(workers)
         loop = asyncio.get_running_loop()
-        compute_executor = ProcessPoolExecutor(max_workers=workers)
+        executor: Any = ProcessPoolExecutor(max_workers=pool_workers)
+        exec_lock = asyncio.Lock()
+        broken_count = 0
+        sem = asyncio.Semaphore(pool_workers)
 
-        async def _process_day(td: str) -> Tuple[str, Optional[Dict[str, int]], Optional[BaseException]]:
+        def _shutdown_executor(ex: Any) -> None:
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                ex.shutdown(wait=False)
+            except Exception:
+                pass
+
+        async def _run_compute(payload: Dict[str, Any]) -> Dict[str, Any]:
+            nonlocal executor, mode, pool_workers, broken_count, sem
+            last_err: Optional[BaseException] = None
+            for attempt in range(4):
+                try:
+                    return await loop.run_in_executor(
+                        executor, _compute_sliced_payload, payload
+                    )
+                except BrokenProcessPool as e:
+                    last_err = e
+                    async with exec_lock:
+                        broken_count += 1
+                        logger.warning(
+                            "ProcessPool 崩溃 (attempt=%d broken=%d)，重建或降级",
+                            attempt + 1,
+                            broken_count,
+                        )
+                        _shutdown_executor(executor)
+                        if broken_count >= 2 or attempt >= 1:
+                            mode = "thread"
+                            pool_workers = min(4, max(2, want_workers))
+                            executor = ThreadPoolExecutor(max_workers=pool_workers)
+                            sem = asyncio.Semaphore(pool_workers)
+                            logger.warning(
+                                "降级 ThreadPoolExecutor(workers=%d)", pool_workers
+                            )
+                        else:
+                            pool_workers = 1
+                            executor = ProcessPoolExecutor(max_workers=1)
+                            sem = asyncio.Semaphore(1)
+                            logger.warning("重建 ProcessPoolExecutor(workers=1)")
+                except Exception:
+                    raise
+            assert last_err is not None
+            raise last_err
+
+        async def _process_day(
+            td: str,
+        ) -> Tuple[str, Optional[Dict[str, int]], Optional[BaseException]]:
             async with sem:
                 try:
                     t0 = perf_counter()
@@ -504,11 +536,7 @@ class FactorPrecomputeService:
                         "compute_universe": preload["compute_universe"],
                         "fund_provider": await self._fundamental_for_date(td),
                     }
-                    raw_result = await loop.run_in_executor(
-                        compute_executor,
-                        _compute_sliced_payload,
-                        payload,
-                    )
+                    raw_result = await _run_compute(payload)
                     t1 = perf_counter()
                     counts = await self._store_all(
                         td,
@@ -518,7 +546,7 @@ class FactorPrecomputeService:
                     t2 = perf_counter()
                     logger.info(
                         f"{td} 完成: {counts} | "
-                        f"compute={t1 - t0:.2f}s store={t2 - t1:.2f}s"
+                        f"compute={t1 - t0:.2f}s store={t2 - t1:.2f}s mode={mode}"
                     )
                     return td, counts, None
                 except Exception as e:
@@ -528,25 +556,85 @@ class FactorPrecomputeService:
                     )
                     return td, None, e
 
+        results: List[Tuple[str, Optional[Dict[str, int]], Optional[BaseException]]] = []
+        # 按批提交，避免一次挂上全部日期后进程池一崩全军覆没。
         try:
-            results = await asyncio.gather(*[_process_day(td) for td in trade_dates])
+            i = 0
+            while i < len(trade_dates):
+                step = max(pool_workers * 2, 4)
+                batch = trade_dates[i : i + step]
+                i += len(batch)
+                batch_results = await asyncio.gather(
+                    *[_process_day(td) for td in batch]
+                )
+                results.extend(batch_results)
         finally:
-            compute_executor.shutdown(wait=True)
+            _shutdown_executor(executor)
 
         for _td, counts, err in results:
             if err is not None or counts is None:
-                failed += 1
+                failed_dates.append(_td)
                 continue
             success += 1
             for k in total:
                 total[k] += counts.get(k, 0)
 
+        # 失败日用线程池串行补算，避免 overnight 带着空洞因子继续跑。
+        if failed_dates:
+            logger.warning(
+                "预计算首轮失败 %d 日，线程池补算: %s",
+                len(failed_dates),
+                ",".join(failed_dates[:12]) + ("..." if len(failed_dates) > 12 else ""),
+            )
+            retry_pool = ThreadPoolExecutor(max_workers=min(4, max(2, want_workers)))
+            still_failed: List[str] = []
+            try:
+                for td in failed_dates:
+                    try:
+                        t0 = perf_counter()
+                        payload = {
+                            "data": self.slice_preloaded_data(
+                                preload, td, lookback_days
+                            ),
+                            "compute_sectors": preload["compute_sectors"],
+                            "compute_universe": preload["compute_universe"],
+                            "fund_provider": await self._fundamental_for_date(td),
+                        }
+                        raw_result = await loop.run_in_executor(
+                            retry_pool, _compute_sliced_payload, payload
+                        )
+                        counts = await self._store_all(
+                            td, raw_result, preload["stock_infos"]
+                        )
+                        success += 1
+                        for k in total:
+                            total[k] += counts.get(k, 0)
+                        logger.info(
+                            "%s 补算完成: %s | %.2fs",
+                            td,
+                            counts,
+                            perf_counter() - t0,
+                        )
+                    except Exception as e:
+                        still_failed.append(td)
+                        logger.error("预计算补算仍失败 %s: %s", td, e, exc_info=True)
+            finally:
+                _shutdown_executor(retry_pool)
+            failed_dates = still_failed
+
+        failed = len(failed_dates)
         logger.info(
             f"预计算完成: 成功={success}, 失败={failed}, "
             f"总条数 market={total['market']} sector={total['sector']} "
             f"dragon={total['dragon']} force={total['force']} | "
             f"total={perf_counter() - t_range0:.2f}s"
         )
+        if failed_dates:
+            raise RuntimeError(
+                f"预计算失败 {failed}/{len(trade_dates)} 日: "
+                + ",".join(failed_dates[:20])
+                + ("..." if failed > 20 else "")
+            )
         return total
 
     async def _resolve_stock_universe(
@@ -799,7 +887,7 @@ class FactorPrecomputeService:
             if df is not None and not df.empty and "trade_date" in df.columns
         }
         # 区间内板块 OHLCV 只聚合一次，每日切片复用（M2 最大耗时点）
-        from zstock.factor_management.sector_factors import SectorFactors
+        from zstock.factor_management.factors_sector import SectorFactors
 
         t_sec = perf_counter()
         need_sector_codes = {
@@ -1402,10 +1490,7 @@ if __name__ == "__main__":
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
-        force=True,
-    )
+    from zstock.common.logging_setup import setup_logging
+
+    setup_logging("precompute_factors", console_fmt="%(message)s")
     sys.exit(asyncio.run(main()))

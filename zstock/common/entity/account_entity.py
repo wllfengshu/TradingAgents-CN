@@ -14,6 +14,7 @@ class Position(BaseModel):
     code: str = Field(description="股票代码，如 600000.SH")
     name: str = Field(default="", description="股票名称")
     volume: int = Field(description="持仓数量(股)")
+    can_use_volume: int = Field(default=0, description="可卖数量(股)，T+1 之后的可用")
     cost_price: float = Field(description="持仓成本价")
     current_price: float = Field(default=0.0, description="当前价格")
 

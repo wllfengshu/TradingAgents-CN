@@ -3,8 +3,8 @@
 import pytest
 
 from zstock.common.entity.order_entity import Order
-from zstock.order_management.xtquant_executor import XtQuantExecutor
-from zstock.order_management.test.conftest import FakeDB, FakeQMT, make_position
+from zstock.order_management.broker import XtQuantExecutor
+from test.order_management.test.conftest import FakeDB, FakeQMT, make_position
 
 
 def _make_executor(price_map, fake_db, positions=None, capital=10_000_000):

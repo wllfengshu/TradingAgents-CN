@@ -1,18 +1,27 @@
 """
-zstock 策略管理模块（截面因子方案）
+zstock 策略管理
 
-新版策略层基于 zstock.factor_management.pipeline.CrossSectionStrategyPipeline
-产出的截面信号做组合优化、风控、换手控制和回测。
+领域：
+  sentiment / selection / market_book
+编排支撑：
+  strategy_section  截面股票池、打分、配权、合规检查、持仓和强制卖出
+  market_book      灯和风格 → 防守 / 中性 / 进攻
+  sentiment        市场情绪，返回红黄绿
+编排入口：
+  StrategyPipeline（情绪+选股 → 红黄绿账户 → 组合/风控/换手）
 """
 
 from .pipeline import StrategyPipeline
-from .portfolio_optimizer import PortfolioOptimizer
-from .risk_manager import RiskManager
+from .strategy_section import PortfolioOptimizer, RiskManager, SectionStrategy
 from .turnover_controller import TurnoverController
+from .strategy_section.universe import build_universe_by_date, normalize_universe_mode
 
 __all__ = [
-    'PortfolioOptimizer',
-    'RiskManager',
-    'TurnoverController',
-    'StrategyPipeline',
+    "StrategyPipeline",
+    "PortfolioOptimizer",
+    "SectionStrategy",
+    "RiskManager",
+    "TurnoverController",
+    "build_universe_by_date",
+    "normalize_universe_mode",
 ]

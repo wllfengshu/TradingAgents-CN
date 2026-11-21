@@ -3,12 +3,11 @@
 import pandas as pd
 import pytest
 
-from zstock.order_management.execution_strategy import ExecutionStrategy
-from zstock.order_management.order_generator import OrderGenerator
+from zstock.order_management.timing import ExecutionStrategy
+from zstock.order_management.orders import OrderGenerator, TradeSettlement
 from zstock.order_management.pipeline import OrderManagementPipeline
-from zstock.order_management.trade_settlement import TradeSettlement
-from zstock.order_management.xtquant_executor import XtQuantExecutor
-from zstock.order_management.test.conftest import FakeQMT, make_position
+from zstock.order_management.broker import XtQuantExecutor
+from test.order_management.test.conftest import FakeQMT, make_position
 
 
 def _pipe(price_map, fake_db, positions=None, capital=10_000_000, allow_mock=True, mock_mode=None):
@@ -142,7 +141,7 @@ async def test_auto_price_map_and_invalid_capital(target_holdings, real_price_ma
 
 @pytest.mark.asyncio
 async def test_broker_positions_none_stops(target_holdings, real_price_map, fake_db):
-    from zstock.order_management.test.conftest import FakeQMT
+    from test.order_management.test.conftest import FakeQMT
 
     class NonePos(FakeQMT):
         def get_positions(self):
@@ -169,7 +168,7 @@ def test_default_ctor_uses_injected_deps(monkeypatch, real_price_map, fake_db):
         lambda: OrderGenerator(),
     )
     monkeypatch.setattr(
-        "zstock.order_management.xtquant_executor.XtQuantExecutor",
+        "zstock.order_management.pipeline.XtQuantExecutor",
         lambda allow_mock=False: XtQuantExecutor(
             qmt_util=FakeQMT(real_price_map), allow_mock=True
         ),

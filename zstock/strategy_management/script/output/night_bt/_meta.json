@@ -1,0 +1,28 @@
+{
+  "workers": 2,
+  "n_experiments": 18,
+  "started_at": "2026-11-17T22:40:59",
+  "ids": [
+    "cold_2025_2026",
+    "cold_2024_2026",
+    "cold_2023_2026",
+    "cold_2022_2026",
+    "cold_2021_2026",
+    "cold_2020_2026",
+    "year_2020",
+    "year_2021",
+    "year_2022",
+    "year_2023",
+    "year_2024",
+    "year_2025",
+    "year_2026",
+    "full_dd15",
+    "full_dd20",
+    "full_dd_off",
+    "cold25_confirm3",
+    "cold25_b5_only"
+  ],
+  "finished_at": "2026-11-18T01:33:29",
+  "ok": 18,
+  "error": 0
+}

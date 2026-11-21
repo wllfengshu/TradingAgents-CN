@@ -22,7 +22,7 @@ OVERNIGHT_DIR = (
 )
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 STRATEGY_OHLCV = (
-    PROJECT_ROOT / "zstock" / "strategy_management" / "test" / "fixtures" / "ohlcv_bundle.json"
+    PROJECT_ROOT / "test" / "strategy_management" / "test" / "fixtures" / "ohlcv_bundle.json"
 )
 
 
@@ -34,17 +34,28 @@ def strategy_params() -> Dict[str, Any]:
 
 @pytest.fixture(scope="session")
 def overnight_dir() -> Path:
-    if not OVERNIGHT_DIR.is_dir():
-        pytest.skip(f"缺少隔夜产物: {OVERNIGHT_DIR}")
-    return OVERNIGHT_DIR
+    if OVERNIGHT_DIR.is_dir():
+        return OVERNIGHT_DIR
+    # 无 overnight_v16 时退到因子测评本地输出目录（仍含真实 summary.csv）
+    alt = PROJECT_ROOT / "zstock" / "factor_management" / "script" / "output"
+    if alt.is_dir():
+        return alt
+    pytest.skip(f"缺少隔夜产物: {OVERNIGHT_DIR}")
 
 
 @pytest.fixture(scope="session")
 def factor_eval_2024_csv(overnight_dir: Path) -> Path:
-    path = overnight_dir / "factor_eval" / "2024" / "summary.csv"
-    if not path.is_file():
-        pytest.skip(f"缺少因子测评: {path}")
-    return path
+    candidates = [
+        overnight_dir / "factor_eval" / "2024" / "summary.csv",
+        overnight_dir / "2024" / "summary.csv",
+    ]
+    # script/output/20261114_*/summary.csv
+    if overnight_dir.is_dir():
+        candidates.extend(sorted(overnight_dir.glob("*/summary.csv"), reverse=True))
+    for path in candidates:
+        if path.is_file():
+            return path
+    pytest.skip(f"缺少因子测评 summary.csv under {overnight_dir}")
 
 
 @pytest.fixture(scope="session")
@@ -88,17 +99,22 @@ def stock_ohlcv_by_code() -> Dict[str, pd.DataFrame]:
 
 
 def make_offline_pipeline(config: Dict[str, Any], qs=None):
-    from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
-    from zstock.factor_management.prefilters import PreFilters
+    from zstock.strategy_management.pipeline import StrategyPipeline
+    from zstock.common.prefilters import PreFilters
+    from zstock.common.config.strategy_config import build_runtime_config
 
-    pipe = CrossSectionStrategyPipeline.__new__(CrossSectionStrategyPipeline)
+    pipe = StrategyPipeline.__new__(StrategyPipeline)
     pipe.config = config
+    pipe.runtime = build_runtime_config(config if config else None)
     pipe.prefilters = PreFilters()
     pipe._query_service = qs
-    pipe._reset_precomputed()
     pipe._all_stocks_cache = None
+    pipe._all_stocks_cache_asof = None
     pipe._sectors_cache = None
+    pipe._sectors_cache_asof = None
     pipe._style_cache = {}
+    pipe._sentiment_cache = {}
+    pipe._dragon_field_cache = {}
     return pipe
 
 

@@ -20,11 +20,14 @@ def test_apply_decay_reversal_override(strategy_params):
     assert f33["weight"] < float(raw["weight"]) or True
 
 
-def test_apply_active_factor_profiles_momentum_green(strategy_params):
+def test_green_stock_factors_stay_on_momentum(strategy_params):
+    from zstock.common.config.strategy_config import factor_regime_for_grade
+
+    assert factor_regime_for_grade("reversal", "green") == "momentum"
+    assert factor_regime_for_grade("neutral", "yellow") == "neutral"
     out = resolve_active_factors(strategy_params, "momentum", "green")
     assert "profiles" not in out
-    mom = out["dragon"]["momentum"]
-    fields = {x["field"] for x in mom}
+    fields = {x["field"] for x in out["dragon"]["momentum"]}
     assert "f31b_rps_percentile" in fields
     assert "f35_bollinger_trend" in fields
     unchanged = resolve_active_factors(strategy_params, "momentum", "yellow")

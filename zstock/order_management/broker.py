@@ -1,0 +1,567 @@
+"""QMT 券商适配：HTTP 桥客户端 + 下单执行。"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+
+from zstock.common.entity.order_entity import Order
+from zstock.common.utils.common_utils import normalize_code
+from zstock.common.utils.qmt_util import to_qmt_code
+from zstock.data_management.query_service import get_data_query_service
+
+logger = logging.getLogger(__name__)
+
+_ORDERS_COLLECTION = "zstock_orders"
+
+
+def _quote_date_is_stale(tick_time) -> bool:
+    """行情时间里若能读出 YYYYMMDD，且不是上海今天，则视为陈旧。"""
+    digits = "".join(ch for ch in str(tick_time or "") if ch.isdigit())
+    if len(digits) < 12:
+        return False
+    day = digits[:8]
+    if not day.startswith(("19", "20")):
+        return False
+    try:
+        month = int(day[4:6])
+        dom = int(day[6:8])
+    except ValueError:
+        return False
+    if not (1 <= month <= 12 and 1 <= dom <= 31):
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+
+        today = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
+    except Exception:
+        return False
+    return day != today
+
+
+class QMTConnectionError(ConnectionError):
+    """HTTP 桥不可用。"""
+
+
+class QMTClientFactory:
+    """创建已连接的 QMT 桥客户端。连不上就抛错。"""
+
+    @staticmethod
+    def create() -> Any:
+        last_error: str | None = None
+        try:
+            from zstock.common.utils.qmt_util import QMTUtil
+
+            client = QMTUtil()
+            if client.connect():
+                logger.info("已连接 QMT 桥")
+                return client
+            last_error = "QMTUtil.connect() 返回 False"
+        except Exception as e:
+            last_error = str(e)
+        raise QMTConnectionError(f"QMT 桥不可用（{last_error}）")
+
+
+class XtQuantExecutor:
+    """XtQuant 执行器：提交/查询/撤单，代码统一转为 QMT 格式。"""
+
+    def __init__(self, qmt_util=None, allow_mock: bool = False):
+        self._db_service = None
+        self.allow_mock = allow_mock
+
+        if qmt_util is None:
+            qmt_util = QMTClientFactory.create()
+
+        self._qmt_util = qmt_util
+        from zstock.common.utils.qmt_util import QMTUtil
+
+        # 注入的测试客户端默认视为纸面；真 QMTUtil 只有显式 mock_mode 才是纸面。
+        self.mock_mode = (not isinstance(qmt_util, QMTUtil)) or bool(
+            getattr(qmt_util, "mock_mode", False)
+        )
+        logger.info("XtQuantExecutor 初始化完成 mock=%s", self.mock_mode)
+
+    def _db(self):
+        if self._db_service is None:
+            self._db_service = get_data_query_service()
+        return self._db_service
+
+    @staticmethod
+    def _to_broker_code(stock_code: str) -> str:
+        """6 位或任意格式 → QMT 代码（如 600000.SH）。"""
+        return to_qmt_code(normalize_code(stock_code))
+
+    def _ensure_limit_price(self, order: Order, broker_code: str) -> None:
+        """所有申报都用限价。缺价时用最新价；涨停不买、跌停不卖、非当日行情不下。"""
+        order.price_type = "limit"
+        quote: Dict = {}
+        try:
+            quotes = self._qmt_util.get_realtime_quote([broker_code]) or {}
+            quote = quotes.get(broker_code) or {}
+        except Exception as e:
+            logger.error("❌ 获取 %s 行情失败: %s", broker_code, e)
+        try:
+            last = float(quote.get("lastPrice") or 0.0)
+        except (TypeError, ValueError):
+            last = 0.0
+        try:
+            px = float(order.price) if order.price is not None else 0.0
+        except (TypeError, ValueError):
+            px = 0.0
+        if px <= 0 and last > 0:
+            order.price = last
+            px = last
+        try:
+            high = float(quote.get("highLimit") or 0.0)
+            low = float(quote.get("lowLimit") or 0.0)
+        except (TypeError, ValueError):
+            high = low = 0.0
+        if order.direction == "buy" and high > 0 and px + 1e-6 >= high:
+            logger.error("❌ %s 涨停价 %.2f，不买入", broker_code, high)
+            order.price = None
+            return
+        if order.direction == "sell" and low > 0 and 0 < px <= low + 1e-6:
+            logger.error("❌ %s 跌停价 %.2f，不卖出", broker_code, low)
+            order.price = None
+            return
+        if _quote_date_is_stale(quote.get("time")):
+            logger.error("❌ %s 行情时间 %s 不是今天，拒绝按这个价格下单", broker_code, quote.get("time"))
+            order.price = None
+
+    # 允许推进为终态/流转态的状态图（防止 broker 回报把 filled 打回 pending）
+    _TERMINAL_STATUSES = frozenset({"filled", "cancelled", "rejected"})
+
+    async def submit_order(self, order: Order) -> Optional[int]:
+        """提交订单到券商，并将订单记录写入 MongoDB。
+
+        幂等性守卫：若 zstock_orders 中已有同 order_id 且状态是
+        pending / partial_filled / filled / cancelled，视为已提交（或已终态），
+        不重复调用 broker。此举防止 TWAP 分批因网络重试造成同一订单在
+        broker 端出现多笔真金真银的重复委托。
+        """
+        try:
+            # 幂等：查 DB
+            existing = await self._db().query_one(
+                _ORDERS_COLLECTION, {"order_id": order.order_id}
+            )
+            if existing:
+                existing_status = existing.get("status")
+                xt_id = existing.get("xt_order_id")
+                # 已经进过桥（含负的队列序号）或已终态：不重发。
+                # 只有 created、或 pending 但没有桥序号，才是还没发出去。
+                if xt_id not in (None, "", 0):
+                    logger.warning(
+                        "⚠️ 订单 %s 已有桥序号 %s (status=%s)，跳过重发",
+                        order.order_id, xt_id, existing_status,
+                    )
+                    return int(xt_id)
+                if existing_status in ("filled", "cancelled", "rejected", "pending_cancel"):
+                    logger.warning(
+                        "⚠️ 订单 %s 已处于 %s，跳过重发",
+                        order.order_id, existing_status,
+                    )
+                    return None
+
+            broker_code = self._to_broker_code(order.stock_code)
+            self._ensure_limit_price(order, broker_code)
+            if order.price is None or float(order.price) <= 0:
+                logger.error("❌ %s 没有有效限价，拒绝提交", order.order_id)
+                return None
+            logger.info(
+                f"📤 提交订单: {order.order_id} {broker_code} "
+                f"{order.direction} x{order.volume}"
+            )
+
+            if order.direction == "buy":
+                xt_order_id = self._buy(order, broker_code)
+            elif order.direction == "sell":
+                xt_order_id = self._qmt_util.sell(
+                    code=broker_code,
+                    volume=order.volume,
+                    price=order.price,
+                    remark=f"Order:{order.order_id}",
+                )
+            else:
+                logger.error(f"❌ 未知的交易方向: {order.direction}")
+                return None
+
+            # 桥入队成功时 order_id 为负的队列序号；正数是柜台号。0 / None 才是失败。
+            queued_id = None
+            if xt_order_id is not None:
+                try:
+                    queued_id = int(xt_order_id)
+                except (TypeError, ValueError):
+                    queued_id = None
+            if queued_id not in (None, 0):
+                xt_order_id = queued_id
+                # 与 OrderGenerator.persist_orders 共享同一 zstock_orders 集合，
+                # 按 order_id 幂等——这里必须用 upsert 而不是 insert_one：
+                # 1) generator 侧可能已经把该 order_id 写为 status="created"，
+                #    再 insert_one 会 DuplicateKey；
+                # 2) TWAP 分批下 submit_order 会对同一 order_id 反复调用（网络重试
+                #    等场景），insert_one 会造成同一订单在库里出现多条。
+                now_iso = datetime.now(timezone.utc).isoformat()
+                await self._db().update_one(
+                    _ORDERS_COLLECTION,
+                    {"order_id": order.order_id},
+                    {
+                        "$set": {
+                            "xt_order_id": xt_order_id,
+                            "stock_code": normalize_code(order.stock_code),
+                            "broker_code": broker_code,
+                            "direction": order.direction,
+                            "volume": order.volume,
+                            "price": order.price,
+                            "status": "pending",
+                            "submitted_at": now_iso,
+                            "updated_at": now_iso,
+                        },
+                        "$setOnInsert": {
+                            "order_id": order.order_id,
+                        },
+                    },
+                    upsert=True,
+                )
+                logger.info(f"✅ 订单提交成功: xt_order_id={xt_order_id}")
+                return xt_order_id
+
+            logger.error(f"❌ 订单提交失败: {order.order_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"❌ 提交订单异常: {e}")
+            return None
+
+    def _buy(self, order: Order, broker_code: str) -> Optional[int]:
+        """按股数下单；qmt_util.buy 支持 volume 参数时优先使用。"""
+        price = order.price
+        if price is None:
+            try:
+                quote = self._qmt_util.get_realtime_quote([broker_code]) or {}
+                tick = quote.get(broker_code, {})
+                price = float(tick.get("lastPrice", 0.0) or 0.0)
+            except Exception as e:
+                logger.error(f"❌ 获取 {broker_code} 实时行情失败: {e}")
+
+        if not price or price <= 0:
+            logger.error(f"❌ {broker_code} 无法取得有效价格，跳过买入")
+            return None
+
+        buy_fn = self._qmt_util.buy
+        if self._accepts_volume(buy_fn):
+            return buy_fn(
+                code=broker_code,
+                amount=order.volume * price,
+                price=price,
+                remark=f"Order:{order.order_id}",
+                volume=order.volume,
+            )
+
+        return buy_fn(
+            code=broker_code,
+            amount=order.volume * price,
+            price=price,
+            remark=f"Order:{order.order_id}",
+        )
+
+    async def query_order(self, order_id: str) -> Optional[Dict]:
+        doc = await self._db().query_one(
+            _ORDERS_COLLECTION, {"order_id": order_id}
+        )
+        if not doc:
+            logger.error(f"❌ 订单不存在: {order_id}")
+        return doc
+
+    async def query_all_orders(self, status: Optional[str] = None) -> List[Dict]:
+        query = {"status": status} if status else {}
+        return await self._db().query(_ORDERS_COLLECTION, query)
+
+    async def cancel_order(self, order_id: str) -> bool:
+        """请求撤单（不立即改 status=cancelled）。
+
+        真实 QMT 的撤单是**异步且可能失败**的：
+          - 涨跌停锁死时不可撤
+          - 集合竞价 09:20-09:25 段不可撤
+          - 已成交/部分成交后剩余部分不可撤（需拆分）
+
+        因此这里只做两件事：
+          1) 把 broker 侧的 cancel 请求发出去
+          2) 把 DB 状态置为 "pending_cancel"（"已请求撤单，等 broker 回执"）
+
+        真正把状态推进到 "cancelled" 必须由 broker 回报驱动
+        （见 on_order_status 回调）。原实现直接标 cancelled 会造成
+        DB=cancelled 但券商侧仍在成交的账本发散事故。
+        """
+        logger.info(f"🚫 撤单请求: {order_id}")
+
+        doc = await self._db().query_one(
+            _ORDERS_COLLECTION, {"order_id": order_id}
+        )
+        if not doc:
+            logger.error(f"❌ 订单不存在: {order_id}")
+            return False
+
+        # 已终态订单不再重复撤单
+        if doc.get("status") in self._TERMINAL_STATUSES:
+            logger.warning(
+                "订单 %s 已终态 (%s)，忽略撤单请求", order_id, doc.get("status")
+            )
+            return False
+
+        xt_order_id = doc.get("xt_order_id")
+        cancel_ok = False
+        if xt_order_id:
+            try:
+                # cancel_order 底层可能返回 None / bool / int，各家 QMT 略有不同
+                ret = self._qmt_util.cancel_order(xt_order_id)
+                # 只要没有异常，就认为撤单请求已发到 broker，具体成败等回报
+                cancel_ok = ret is not False
+            except Exception as e:
+                logger.error(f"❌ broker 撤单调用异常 {order_id}: {e}")
+                cancel_ok = False
+
+        # 只标 pending_cancel，等 on_order_status 回调把状态推到 cancelled/filled/partial
+        await self._db().update_one(
+            _ORDERS_COLLECTION,
+            {"order_id": order_id},
+            {
+                "status": "pending_cancel" if cancel_ok else "cancel_failed",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        logger.info(
+            "撤单请求已发送: %s (broker_ret_ok=%s)，最终状态等 broker 回执",
+            order_id, cancel_ok,
+        )
+        return cancel_ok
+
+    # ============ 订单状态机推进 ============
+    # 以下两个方法是 broker 回报的接入点。真实接入 QMT 需要在 QMTUtil
+    # 侧注册 xtquant.xttrader.XtQuantTrader.register_callback(...)
+    # 的 on_order / on_trade 回调，回调里调用这两个方法即可把状态机跑通。
+    # 目前 QMTUtil 未提供该注册钩子；下面两个方法保证了状态机在**上层
+    # 一旦能拿到回报**时就能正确推进，不再"永远停在 pending"。
+
+    async def on_order_status(
+        self,
+        xt_order_id: int,
+        broker_status: str,
+        filled_volume: int = 0,
+        rejection_reason: Optional[str] = None,
+    ) -> bool:
+        """处理券商侧订单状态变更回报。
+
+        broker_status: 直接来自 QMT 的字符串状态。常见值映射到我们内部状态：
+            'accepted' / 'partial'  → pending / partial_filled
+            'filled'                → filled
+            'cancelled' / 'canceled'→ cancelled
+            'rejected'              → rejected
+        """
+        s = (broker_status or "").strip().lower()
+        mapping = {
+            "accepted": "pending",
+            "reported": "pending",
+            "partial": "partial_filled",
+            "partial_filled": "partial_filled",
+            "filled": "filled",
+            "traded": "filled",
+            "cancelled": "cancelled",
+            "canceled": "cancelled",
+            "rejected": "rejected",
+        }
+        new_status = mapping.get(s)
+        if not new_status:
+            logger.warning("未识别的 broker_status: %s (xt=%s)", broker_status, xt_order_id)
+            return False
+
+        doc = await self._db().query_one(
+            _ORDERS_COLLECTION, {"xt_order_id": xt_order_id}
+        )
+        if not doc:
+            logger.error("on_order_status: 未找到 xt_order_id=%s 对应订单", xt_order_id)
+            return False
+        # 已终态不允许被回退（例如 filled 之后再来一条 accepted）
+        if doc.get("status") in self._TERMINAL_STATUSES:
+            logger.debug(
+                "订单 %s 已在终态 %s，忽略状态更新 %s",
+                doc.get("order_id"), doc.get("status"), new_status,
+            )
+            return False
+        # 部分成交不能被 accepted 打回 pending
+        if doc.get("status") == "partial_filled" and new_status == "pending":
+            new_status = "partial_filled"
+
+        update: Dict = {
+            "status": new_status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if filled_volume:
+            prev_filled = int(doc.get("filled_volume") or 0)
+            # 状态回报里的数量是累计成交，不能覆盖成更小的数
+            update["filled_volume"] = max(prev_filled, int(filled_volume))
+        if rejection_reason:
+            update["rejection_reason"] = rejection_reason
+        await self._db().update_one(
+            _ORDERS_COLLECTION,
+            {"xt_order_id": xt_order_id},
+            update,
+        )
+        return True
+
+    async def on_trade(
+        self,
+        xt_order_id: int,
+        filled_price: float,
+        filled_volume: int,
+        broker_trade_id: Optional[str] = None,
+        trade_time: Optional[str] = None,
+    ) -> bool:
+        """处理券商成交回报——记录成交明细，并推进订单状态。
+
+        broker_trade_id：券商侧唯一的 fill id（如 QMT 的 traded_id/business_id）。
+        必须传入以支持幂等——QMT 在断线重连/轮询模式下会对同一成交回调多次，
+        本地账本必须去重，否则 current_positions 会重复累加。
+        """
+        doc = await self._db().query_one(
+            _ORDERS_COLLECTION, {"xt_order_id": xt_order_id}
+        )
+        if not doc:
+            logger.error("on_trade: 未找到 xt_order_id=%s 对应订单", xt_order_id)
+            return False
+
+        if not broker_trade_id:
+            logger.error("on_trade 缺少 broker_trade_id，拒绝入账以免同一笔成交被加两次")
+            return False
+        # 幂等：同一 broker_trade_id 只记一次
+        existing_fills = doc.get("fills") or []
+        if any(f.get("broker_trade_id") == broker_trade_id for f in existing_fills):
+            logger.debug(
+                "on_trade: 重复回调忽略 (order=%s trade=%s)",
+                doc.get("order_id"), broker_trade_id,
+            )
+            return False
+
+        fill = {
+            "broker_trade_id": broker_trade_id,
+            "filled_price": float(filled_price),
+            "filled_volume": int(filled_volume),
+            "trade_time": trade_time or datetime.now(timezone.utc).isoformat(),
+        }
+        fills_sum = sum(int(f.get("filled_volume") or 0) for f in existing_fills) + int(filled_volume)
+        watermark = int(doc.get("filled_volume") or 0)
+        # 状态回报已经记过的累计成交不要再被同一笔 trade 加一遍
+        total_filled = max(watermark, fills_sum)
+        target_volume = int(doc.get("volume") or 0)
+        # 已终态订单不推进 status，但仍记录 fill 供审计
+        if doc.get("status") in self._TERMINAL_STATUSES:
+            new_status = doc.get("status")
+        elif target_volume > 0 and total_filled >= target_volume:
+            new_status = "filled"
+        else:
+            new_status = "partial_filled"
+
+        await self._db().update_one(
+            _ORDERS_COLLECTION,
+            {"xt_order_id": xt_order_id},
+            {
+                "$set": {
+                    "status": new_status,
+                    "filled_volume": total_filled,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                "$push": {"fills": fill},
+            },
+        )
+        return True
+
+    def get_account_info(self) -> Optional[Dict]:
+        try:
+            info = self._qmt_util.get_account_info()
+            return {
+                "cash": info.cash,
+                "total_value": info.total_value,
+                "frozen_cash": info.frozen_cash,
+            }
+        except Exception as e:
+            logger.error(f"❌ 获取账户信息失败: {e}")
+            return None
+
+    def get_positions(self) -> Optional[List[Dict]]:
+        """返回 6 位 code 格式的持仓列表。查询失败返回 None（不是空列表）。"""
+        try:
+            positions = self._qmt_util.get_positions()
+            if positions is None:
+                logger.error("券商持仓查询返回 None")
+                return None
+            return [
+                {
+                    "code": normalize_code(p.code),
+                    "broker_code": self._to_broker_code(p.code),
+                    "volume": p.volume,
+                    "can_use_volume": int(getattr(p, "can_use_volume", p.volume) or 0),
+                    "cost_price": p.cost_price,
+                    "current_price": p.current_price,
+                }
+                for p in positions
+            ]
+        except Exception as e:
+            logger.error(f"❌ 获取持仓失败: {e}")
+            return None
+
+    def get_price_map(self, codes: List[str]) -> Dict[str, float]:
+        """批量获取最新价 {6位code: price}。"""
+        if not codes:
+            return {}
+        broker_codes = [self._to_broker_code(c) for c in codes]
+        try:
+            quotes = self._qmt_util.get_realtime_quote(broker_codes) or {}
+        except Exception as e:
+            logger.error(f"❌ 批量行情失败: {e}")
+            return {}
+
+        out: Dict[str, float] = {}
+        for pure, broker in zip(codes, broker_codes):
+            tick = quotes.get(broker, {})
+            px = float(tick.get("lastPrice", 0.0) or 0.0)
+            if px > 0:
+                out[normalize_code(pure)] = px
+        return out
+
+    def is_connected(self) -> bool:
+        """判断 QMT 连接是否活跃。
+
+        优先调用 qmt_util 的公共方法（不同实现可能是 is_connected() 或
+        connected 属性），退回到私有 _connected 属性做兜底——避免因对方
+        重命名内部字段而静默失联。
+        """
+        util = self._qmt_util
+        # 1) 公共方法
+        fn = getattr(util, "is_connected", None)
+        if callable(fn):
+            try:
+                return bool(fn())
+            except Exception:
+                pass
+        # 2) 常见的公共属性名
+        for attr in ("connected", "_connected"):
+            if hasattr(util, attr):
+                try:
+                    return bool(getattr(util, attr))
+                except Exception:
+                    continue
+        return False
+
+    @staticmethod
+    def _accepts_volume(fn) -> bool:
+        """QMT buy 有的只收金额 amount，有的额外收股数 volume。
+
+        能传 volume 时按整手股数下单，避免 amount/price 反算股数被四舍五入。
+        签名探测失败则当不支持，只走金额路径。
+        """
+        import inspect
+
+        try:
+            return "volume" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False

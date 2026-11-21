@@ -39,6 +39,24 @@ class _Handler(BaseHTTPRequestHandler):
                 "queued": True, "order_id": -7,
             }}
             code = 200
+        elif method == "query_stock_positions":
+            payload = {
+                "id": body.get("id"),
+                "ok": True,
+                "result": [{
+                    "stock_code": "600000.SH",
+                    "volume": 1000,
+                    "open_price": 10.0,
+                    "market_value": 10500.0,
+                }],
+            }
+            code = 200
+        elif method == "cancel_order_stock":
+            payload = {"id": body.get("id"), "ok": True, "result": {"ok": True}}
+            code = 200
+        elif method == "query_stock_orders":
+            payload = {"id": body.get("id"), "ok": True, "result": [{"order_id": 1}]}
+            code = 200
         else:
             payload = {"id": body.get("id"), "ok": False, "error": "unexpected " + str(method)}
             code = 400
@@ -54,6 +72,9 @@ def test_to_qmt_code_suffix():
     assert to_qmt_code("159915") == "159915.SZ"
     assert to_qmt_code("511260") == "511260.SH"
     assert to_qmt_code("512480.SH") == "512480.SH"
+    assert to_qmt_code("399300") == "399300.SZ"
+    assert to_qmt_code("830001") == "830001.BJ"
+    assert to_qmt_code("920808") == "920808.BJ"
 
 
 def test_qmt_util_talks_to_bridge(monkeypatch):
@@ -80,6 +101,13 @@ def test_qmt_util_talks_to_bridge(monkeypatch):
         assert quote["600000"]["lastPrice"] == 10.5
         order_id = client.buy("600000", amount=0, price=10.5, volume=100)
         assert order_id == -7
+        positions = client.get_positions()
+        assert positions and positions[0].code == "600000.SH"
+        assert positions[0].current_price == 10.5
+        assert client.query_orders()
+        sell_id = client.sell("600000", volume=100, price=10.5)
+        assert sell_id == -7
+        assert client.cancel_order(-7) is True or client.cancel_order(-7) is not None
     finally:
         server.shutdown()
         QMTUtil._instance = None

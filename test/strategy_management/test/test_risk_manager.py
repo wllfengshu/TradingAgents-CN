@@ -2,9 +2,9 @@
 
 import pandas as pd
 
-from zstock.strategy_management.portfolio_optimizer import PortfolioOptimizer
+from zstock.strategy_management.strategy_section.optimizer import PortfolioOptimizer
 from zstock.common.config.strategy_config import build_risk_limits
-from zstock.strategy_management.risk_manager import RiskManager
+from zstock.strategy_management.strategy_section.risk import RiskManager
 
 
 def test_limits_loaded_from_ssot(strategy_params):

@@ -55,13 +55,14 @@ def to_qmt_code(code: str) -> str:
     if "." in raw:
         return raw
     c = normalize_code(raw)
-    # 399xxx 深证指数 → .SZ（必须在 4/8 北交所判断之前，否则会被误标 .BJ）
+    # 399xxx 深证指数 → .SZ（必须在 4/8/92 北交所判断之前，否则会被误标 .BJ）
     if c.startswith("399"):
         return c + ".SZ"
+    # 北交所：4xxxxx / 8xxxxx / 92xxxx（92 须先于「9→SH」的 B 股规则）
+    if c.startswith(("4", "8")) or c.startswith("92"):
+        return c + ".BJ"
     if c.startswith(("5", "6", "9", "11", "204")):
         return c + ".SH"
-    if c.startswith(("4", "8")):
-        return c + ".BJ"
     return c + ".SZ"
 
 
@@ -85,7 +86,7 @@ class QMTUtil:
     def __init__(self, install_path: str = None, account_id: str = None, session_id: int = 9999):
         if self._initialized:
             return
-        self.install_path = install_path or r"D:\GJZQqmt\国金证券QMT交易端"
+        self.install_path = install_path or r"D:\GJZQqmt\国金证券QMT交易端2"
         self.account_id = account_id or _read_bridge_setting("ACCOUNT_ID")
         self.session_id = session_id
         self.host = _DEFAULT_HOST
@@ -165,7 +166,9 @@ class QMTUtil:
 
     def get_positions(self) -> List[Position]:
         self._require_connection()
-        rows = self.rpc("query_stock_positions", {"account_id": self.account_id}) or []
+        rows = self.rpc("query_stock_positions", {"account_id": self.account_id})
+        if not isinstance(rows, list):
+            raise RuntimeError("持仓查询没有返回列表，拒绝当成空仓")
         positions: List[Position] = []
         valid_codes: List[str] = []
         for row in rows:
@@ -176,10 +179,17 @@ class QMTUtil:
                 continue
             code = str(row.get("stock_code") or "")
             market_value = float(row.get("market_value") or 0.0)
+            can_use = row.get("can_use_volume")
+            try:
+                can_use_n = int(float(can_use)) if can_use is not None else volume
+            except (TypeError, ValueError):
+                can_use_n = volume
+            can_use_n = max(0, min(can_use_n, volume))
             positions.append(Position(
                 code=code,
                 name="",
                 volume=volume,
+                can_use_volume=can_use_n,
                 cost_price=float(row.get("open_price") or 0.0),
                 current_price=(market_value / volume) if volume else 0.0,
             ))
@@ -212,7 +222,12 @@ class QMTUtil:
             if not isinstance(tick, dict):
                 continue
             last = tick.get("lastPrice", tick.get("last_price", 0.0))
-            result[original] = {"lastPrice": float(last or 0.0)}
+            result[original] = {
+                "lastPrice": float(last or 0.0),
+                "highLimit": float(tick.get("highLimit") or tick.get("high_limit") or 0.0),
+                "lowLimit": float(tick.get("lowLimit") or tick.get("low_limit") or 0.0),
+                "time": tick.get("time") or tick.get("timetag") or "",
+            }
         return result
 
     def query_orders(self, cancelable_only: bool = False) -> list:
@@ -242,10 +257,12 @@ class QMTUtil:
             if current_price <= 0:
                 logger.error("无法获取 %s 当前价格，取消买入", code)
                 return None
+        from zstock.common.utils.common_utils import buy_shares
+
         if volume is not None:
-            volume = (int(volume) // 100) * 100
+            volume = buy_shares(code, int(volume))
         else:
-            volume = int(amount / current_price / 100) * 100
+            volume = buy_shares(code, int(amount / current_price))
         if volume <= 0:
             logger.warning("买入金额 %s 不足以购买 1 手 %s（价格=%s），跳过", amount, code, current_price)
             return None

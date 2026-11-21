@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 import pytest
+from zstock.strategy_management.strategy_section import schema as signal_schema
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 STRATEGY_PARAMS_PATH = PROJECT_ROOT / "zstock" / "common" / "config" / "strategy_params.json"
@@ -30,7 +31,7 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 SIGNALS_FIXTURE = FIXTURES_DIR / "score_signals_bundle.json"
 OHLCV_FIXTURE = FIXTURES_DIR / "ohlcv_bundle.json"
 
-# 与 signal_consistency_check 文档一致的历史交易日；若红灯则回退到隔夜覆盖的其他日期。
+# 与 web.backend.signal_consistency_check 文档一致的历史交易日；若红灯则回退到隔夜覆盖的其他日期。
 CANDIDATE_SIGNAL_DATES = (
     "2024-06-03",
     "2024-06-04",
@@ -69,13 +70,10 @@ def signals_from_payload(payload: Dict[str, Any]) -> pd.DataFrame:
 
 @pytest.fixture(autouse=True)
 def _clear_strategy_caches():
-    from zstock.strategy_management.pipeline import StrategyPipeline
     from zstock.common.config import strategy_config
 
-    StrategyPipeline._config_cache = None
     strategy_config._clear_cache()
     yield
-    StrategyPipeline._config_cache = None
     strategy_config._clear_cache()
 
 
@@ -83,6 +81,43 @@ def _clear_strategy_caches():
 def strategy_params() -> Dict[str, Any]:
     with open(STRATEGY_PARAMS_PATH, encoding="utf-8") as f:
         return json.load(f)
+
+
+# 因子层夹具（打分单测复用，路径在 factor_management/test/fixtures）
+_FACTOR_FIXTURES = (
+    PROJECT_ROOT / "test" / "factor_management" / "test" / "fixtures"
+)
+
+
+@pytest.fixture(scope="session")
+def factor_raw() -> Dict[str, Any]:
+    path = _FACTOR_FIXTURES / "factor_raw_20240102.json"
+    if not path.is_file():
+        pytest.skip("缺少 2024-01-02 因子原始值夹具")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="session")
+def signal_names_raw() -> Dict[str, Any]:
+    path = _FACTOR_FIXTURES / "signal_names_20240102.json"
+    if not path.is_file():
+        pytest.skip("缺少信号标的因子夹具")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="session")
+def hs300_ohlcv() -> pd.DataFrame:
+    path = _FACTOR_FIXTURES / "hs300_ohlcv.json"
+    if not path.is_file():
+        pytest.skip("缺少 399300 日线夹具")
+    with open(path, encoding="utf-8") as f:
+        payload = json.load(f)
+    df = pd.DataFrame(payload.get("rows") or [])
+    if len(df) < 31:
+        pytest.skip(f"沪深300 根数不足 31: {len(df)}")
+    return df
 
 
 @pytest.fixture(scope="session")
@@ -140,11 +175,11 @@ def _try_fetch_signals_from_mongo() -> Optional[Dict[str, Any]]:
 
     async def _inner() -> Optional[Dict[str, Any]]:
         from zstock.common.utils.db_utils import close_zstock_database, init_zstock_database
-        from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
+        from zstock.strategy_management.pipeline import StrategyPipeline
 
         await init_zstock_database()
         try:
-            pipe = CrossSectionStrategyPipeline()
+            pipe = StrategyPipeline()
             days: Dict[str, Any] = {}
             nonempty_date = None
             for td in CANDIDATE_SIGNAL_DATES:
@@ -273,7 +308,7 @@ def _try_fetch_ohlcv_from_mongo(codes: list[str], start: str, end: str) -> Optio
         return None
 
 
-class DummyFactorPipeline:
+class DummySignalPipeline:
     """不连 Mongo 的因子管道，供 StrategyPipeline / Backtester 离线构造。"""
 
     def __init__(self, df: Optional[pd.DataFrame] = None):
@@ -282,26 +317,21 @@ class DummyFactorPipeline:
     async def compute_signals(self, **kwargs):
         if self._df is not None:
             return self._df
-        from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
+        from zstock.strategy_management.pipeline import StrategyPipeline
 
         td = kwargs.get("trade_date") or "2024-01-02"
-        return CrossSectionStrategyPipeline._empty_signals_df(str(td), "red", 0.0)
+        return signal_schema.empty_signals_df(str(td), "red", 0.0)
+
 
     async def score_signals(self, trade_date: str) -> pd.DataFrame:
         return await self.compute_signals(trade_date=trade_date)
 
 
-class ReplayFactorPipeline:
+class ReplaySignalPipeline:
     """按导出的 score_signals 回放，不连 Mongo。"""
 
     def __init__(self, bundle: Dict[str, Any]):
         self.bundle = bundle
-
-    async def preload_precomputed_factors(self, *args, **kwargs):
-        return None
-
-    def _reset_precomputed(self):
-        return None
 
     async def compute_signals(self, trade_date: str = None, **kwargs) -> pd.DataFrame:
         return await self.score_signals(str(trade_date or kwargs.get("trade_date") or ""))
@@ -333,7 +363,7 @@ class ReplayFactorPipeline:
 def make_offline_pipeline(signals: Optional[pd.DataFrame] = None):
     from zstock.strategy_management.pipeline import StrategyPipeline
 
-    return StrategyPipeline(factor_pipeline=DummyFactorPipeline(signals))  # type: ignore[arg-type]
+    return StrategyPipeline(signals=DummySignalPipeline(signals))  # type: ignore[arg-type]
 
 
 @pytest.fixture

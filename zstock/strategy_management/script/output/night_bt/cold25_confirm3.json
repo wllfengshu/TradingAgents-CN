@@ -1,0 +1,29 @@
+{
+  "id": "cold25_confirm3",
+  "start": "2025-01-01",
+  "end": "2026-11-13",
+  "book_regime": {
+    "confirm_green_days": 3,
+    "attack_skip_neutral_on_green": false
+  },
+  "status": "ok",
+  "started_at": "2026-11-18T00:59:28",
+  "elapsed_sec": 706.2,
+  "total_return": 0.1259041253585267,
+  "annualized_return": 0.06850569512699956,
+  "max_drawdown": -0.16087568352502524,
+  "sharpe": 0.5254125378116061,
+  "rebalance_count": 116,
+  "total_cost": 0.24048398770699284,
+  "output_dir": "output/night_bt/cold25_confirm3",
+  "2025_ret": 0.13948329657723546,
+  "2025_ann": 0.14500730724374167,
+  "2025_sharpe": 1.021687116027071,
+  "2025_mdd": -0.08117378360153038,
+  "2025_days": 243.0,
+  "2026_ret": -0.011928447576740053,
+  "2026_ann": -0.014433482293403133,
+  "2026_sharpe": -0.021295435864313737,
+  "2026_mdd": -0.16087990300258515,
+  "2026_days": 208.0
+}

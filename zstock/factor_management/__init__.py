@@ -1,23 +1,28 @@
 """
-zstock 因子管理模块 (研究层)
+zstock 因子管理模块（研究 / 定义层）
 
-截面日频策略：M1–M5 因子、预计算管道与 CrossSectionStrategyPipeline。
+职责：因子公式、因子目录与预计算脚本。
+宇宙准入过滤见 zstock.common.prefilters.PreFilters。
+选股漏斗见 strategy_management.StrategyPipeline。
+注意：因子层，只负责单个因子，不要做策略层的逻辑！！！
 """
 
 from __future__ import annotations
 
-from .prefilters import PreFilters
-from .sector_factors import SectorFactors
-from .dragon_factors import DragonFactors
-from .force_factors import ForceFactors
-from .market_factors import MarketFactors
-from .pipeline import CrossSectionStrategyPipeline
+from .factors_dragon import DragonFactors
+from .factors_force import ForceFactors
+from .factors_market import MarketFactors
+from .factors_sector import SectorFactors
+from zstock.common.entity.factor_spec import FactorRegistry, FactorSpec, factor
+from zstock.factor_management.registry_bootstrap import ensure_factors_loaded
 
 __all__ = [
-    "PreFilters",
     "SectorFactors",
     "DragonFactors",
     "ForceFactors",
     "MarketFactors",
-    "CrossSectionStrategyPipeline",
+    "FactorSpec",
+    "FactorRegistry",
+    "factor",
+    "ensure_factors_loaded",
 ]

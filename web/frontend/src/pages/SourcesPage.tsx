@@ -56,7 +56,8 @@ export default function SourcesPage() {
     <div className="sources-page">
       <div className="page-head">
         <div>
-          <h1 className="page-title">数据源管理</h1>
+          <p className="page-kicker">运维</p>
+          <h1 className="page-title">数据源</h1>
           <p className="page-lead">查看并测试 akshare / QMT 桥 / stockdb，不写库、不改配置。</p>
         </div>
         <div className="row">
@@ -72,17 +73,17 @@ export default function SourcesPage() {
       {error && <p className="danger">{error}</p>}
 
       <div className="stat-row">
-        <div className="card hoverable soft-card stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">数据源</div>
           <div className="value hero-num">{items.length || '—'}</div>
           <div className="hint">已注册连接</div>
         </div>
-        <div className="card hoverable soft-card stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">正常</div>
           <div className="value hero-num ok">{items.length ? okCount : '—'}</div>
           <div className="hint">最近探测通过</div>
         </div>
-        <div className="card hoverable soft-card stat-card">
+        <div className="card soft-card stat-card">
           <div className="label">异常 / 未配</div>
           <div className="value hero-num">{items.length ? attention : '—'}</div>
           <div className="hint">需关注</div>
@@ -93,7 +94,7 @@ export default function SourcesPage() {
         {items.map((it) => {
           const status = displayStatus(it)
           return (
-            <article key={it.id} className="card hoverable soft-card source-card">
+            <article key={it.id} className="card soft-card source-card">
               <header className="source-card-head">
                 <div>
                   <h3 className="source-name">{it.name}</h3>

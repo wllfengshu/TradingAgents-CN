@@ -1,0 +1,32 @@
+{
+  "id": "cold25_b5_only",
+  "start": "2025-01-01",
+  "end": "2026-11-13",
+  "book_regime": {
+    "confirm_green_days": 1,
+    "attack_skip_neutral_on_green": true,
+    "industry_stop_loss_pct": 0.0,
+    "industry_rel_index_gate": 0.0,
+    "industry_min_positive_mom": 0
+  },
+  "status": "ok",
+  "started_at": "2026-11-18T01:11:14",
+  "elapsed_sec": 704.4,
+  "total_return": 0.09682626973217845,
+  "annualized_return": 0.052997533289766086,
+  "max_drawdown": -0.1876725631992583,
+  "sharpe": 0.458193901568098,
+  "rebalance_count": 125,
+  "total_cost": 0.26942417633680427,
+  "output_dir": "output/night_bt/cold25_b5_only",
+  "2025_ret": 0.013178857175565994,
+  "2025_ann": 0.013670284439689873,
+  "2025_sharpe": 0.16848828030072283,
+  "2025_mdd": -0.14723350815174407,
+  "2025_days": 243.0,
+  "2026_ret": 0.08253100648998957,
+  "2026_ann": 0.10084405657042939,
+  "2026_sharpe": 0.7994993653332633,
+  "2026_mdd": -0.10178098447056805,
+  "2026_days": 208.0
+}

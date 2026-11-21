@@ -33,11 +33,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s  %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger(__name__)
 
 # 需同步的指数（仅日线默认同步；分钟线可选 --with-index）
@@ -264,6 +259,16 @@ def _parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="不同步指数",
     )
+    parser.add_argument(
+        "--codes",
+        default="",
+        help="只同步这些代码（逗号分隔）；默认全市场 + Book ETF/债",
+    )
+    parser.add_argument(
+        "--book-only",
+        action="store_true",
+        help="只同步 Book 账户所需债基/行业ETF/黄金等（不含指数）",
+    )
     args, _ = parser.parse_known_args(argv)
     return args
 
@@ -361,6 +366,14 @@ async def _sync_one_freq(
                 continue
             if df_idx is None or df_idx.empty:
                 logger.warning("  指数 %s(%s) 无数据", idx_name, idx_code)
+                if idx_code == "399300" and mongo_period == "D":
+                    n = await _extend_index_from_etf_proxy(
+                        index_code="399300",
+                        proxy_code="510300",
+                        start=start,
+                        end=end,
+                    )
+                    total_index += n
                 continue
             n = len(df_idx)
             for batch_start in range(0, n, PERSIST_BATCH_SIZE):
@@ -373,7 +386,104 @@ async def _sync_one_freq(
     return total_ohlcv, total_index, failed_batches
 
 
+async def _extend_index_from_etf_proxy(
+    *,
+    index_code: str,
+    proxy_code: str,
+    start: str,
+    end: str,
+) -> int:
+    """stockdb 无指数日线时，用 ETF 日收益外推补齐指数（保持点位连续）。"""
+    from datetime import timezone
+
+    from pymongo import UpdateOne
+
+    from zstock.common.utils import db_utils as db_module
+    from zstock.data_management.query_service import COL_OHLCV
+
+    # 先确保 proxy ETF 有窗口数据
+    df_proxy = _load_bars([proxy_code], start, end, frequency="1d")
+    if df_proxy is not None and not df_proxy.empty:
+        await _persist_ohlcv(df_proxy, "D")
+
+    col = db_module.db_manager.mongo_db[COL_OHLCV]
+    idx = await col.find({"code": index_code, "period": "D"}, {"_id": 0}).sort("trade_date", 1).to_list(None)
+    pxy = await col.find({"code": proxy_code, "period": "D"}, {"_id": 0}).sort("trade_date", 1).to_list(None)
+    if not idx or not pxy:
+        logger.warning("  指数代理外推跳过：index=%s rows=%s proxy=%s rows=%s", index_code, len(idx), proxy_code, len(pxy))
+        return 0
+
+    last = idx[-1]
+    last_td = str(last["trade_date"])
+    level = float(last["close"])
+    pmap = {str(r["trade_date"]): r for r in pxy}
+    if last_td not in pmap:
+        priors = [d for d in pmap if d <= last_td]
+        if not priors:
+            logger.warning("  指数代理外推跳过：无重叠交易日")
+            return 0
+        anchor_td = max(priors)
+    else:
+        anchor_td = last_td
+    prev_px = float(pmap[anchor_td]["close"])
+    set_op = "$" + "set"
+    ops = []
+    for td in sorted(d for d in pmap if d > last_td):
+        prow = pmap[td]
+        px = float(prow.get("close") or 0.0)
+        if prev_px <= 0 or px <= 0:
+            continue
+        ret = px / prev_px - 1.0
+        level = level * (1.0 + ret)
+        factor = level / px
+        doc = {
+            "code": index_code,
+            "trade_date": td,
+            "period": "D",
+            "open": float(prow.get("open") or px) * factor,
+            "high": float(prow.get("high") or px) * factor,
+            "low": float(prow.get("low") or px) * factor,
+            "close": level,
+            "volume": float(prow.get("volume") or 0.0),
+            "amount": float(prow.get("amount") or 0.0) * factor,
+            "pre_close": level / (1.0 + ret) if ret != -1 else level,
+            "pct_chg": ret * 100.0,
+            "turnover_rate": 0.0,
+            "updated_at": datetime.now(timezone.utc),
+            "source": f"proxy:{proxy_code}",
+        }
+        ops.append(
+            UpdateOne(
+                {"code": index_code, "trade_date": td, "period": "D"},
+                {set_op: doc},
+                upsert=True,
+            )
+        )
+        prev_px = px
+    if not ops:
+        logger.info("  指数 %s 已与代理 %s 对齐，无需外推", index_code, proxy_code)
+        return 0
+    await col.bulk_write(ops, ordered=False)
+    last_written = str(ops[-1]._filter.get("trade_date"))
+    logger.info(
+        "  ✓ 指数 %s 由 %s 外推补齐 %s 行（至 %s）",
+        index_code,
+        proxy_code,
+        len(ops),
+        last_written,
+    )
+    return len(ops)
+
+
 async def main(argv: List[str] | None = None):
+    from zstock.common.logging_setup import setup_logging
+
+    setup_logging(
+        "sync_ohlcv",
+        stamped=False,
+        file_fmt="%(asctime)s  %(levelname)-7s  %(message)s",
+        console_fmt="%(asctime)s  %(levelname)-7s  %(message)s",
+    )
     args = _parse_args(argv)
     freqs = _parse_freqs(args.freq)
     start = args.start
@@ -392,9 +502,28 @@ async def main(argv: List[str] | None = None):
     await qs.ensure_indexes()
 
     t0 = datetime.now()
-    all_stocks, source = await qs.get_all_stocks()
-    logger.info("  ✓ 全市场 %s 只 (来源: %s)", len(all_stocks), source)
-    all_codes = [s["code"] for s in all_stocks]
+    from zstock.common.book_codes import BOOK_OHLCV_CODES, INDEX_CODE
+
+    book_extras = [str(c) for c in BOOK_OHLCV_CODES if str(c) != str(INDEX_CODE)]
+    explicit = [c.strip() for c in str(args.codes or "").split(",") if c.strip()]
+    if args.book_only:
+        all_codes = list(dict.fromkeys(book_extras))
+        logger.info("  ✓ Book-only 同步 %s 只: %s", len(all_codes), ",".join(all_codes))
+    elif explicit:
+        all_codes = list(dict.fromkeys(explicit))
+        logger.info("  ✓ 指定代码同步 %s 只", len(all_codes))
+    else:
+        all_stocks, source = await qs.get_all_stocks()
+        logger.info("  ✓ 全市场 %s 只 (来源: %s)", len(all_stocks), source)
+        all_codes = [s["code"] for s in all_stocks]
+        before = len(all_codes)
+        all_codes = list(dict.fromkeys([*all_codes, *book_extras]))
+        logger.info(
+            "  ✓ 并入 Book OHLCV %s 只（债/行业ETF等），合计 %s → %s",
+            len(book_extras),
+            before,
+            len(all_codes),
+        )
 
     grand_ohlcv = 0
     grand_index = 0

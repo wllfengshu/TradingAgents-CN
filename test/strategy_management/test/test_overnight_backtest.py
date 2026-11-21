@@ -80,8 +80,11 @@ def test_periods_and_jobs_match_overnight_window():
     assert len(_sensitivity_jobs(periods)) == 9
     assert len(_grid_oos_jobs_2024(periods)) == 3
     assert len(_grid_oos_jobs_2025(periods)) == 3
-    fwd = _grid_oos_jobs_2026(periods)
-    assert any(j[0] == "grid26_fwd_h2" for j in fwd)
+    # 2026-08-24 还在拟合窗里，不能当成远期验证
+    assert all(j[0] != "grid26_fwd_h2" for j in _grid_oos_jobs_2026(periods))
+    later = _default_periods("2026-11-18")
+    fwd = _grid_oos_jobs_2026(later)
+    assert any(j[0] == "grid26_fwd_h2" and j[1] == "2026-09-28" for j in fwd)
 
 
 def test_strategy_summary_and_rebalance_from_ssot(strategy_params):
@@ -161,11 +164,12 @@ def test_backup_and_parser(tmp_path, strategy_params):
 
 
 def test_clear_strategy_caches():
-    from zstock.strategy_management.pipeline import StrategyPipeline
+    from zstock.common.config import strategy_config as sc
 
-    StrategyPipeline._default_config()
+    sc.load_strategy_params()
+    assert sc._params_cache is not None
     ob._clear_strategy_caches()
-    assert StrategyPipeline._config_cache is None
+    assert sc._params_cache is None
 
 
 def test_logging_helpers(tmp_path):
@@ -192,11 +196,11 @@ async def test_run_backtest_current_uses_exported_jan_window(
     ohlcv_by_code, signals_bundle, tmp_path, monkeypatch
 ):
     from zstock.strategy_management.script.backtester import make_ohlcv_provider_from_dict
-    from zstock.strategy_management.test.conftest import ReplayFactorPipeline
+    from test.strategy_management.test.conftest import ReplaySignalPipeline
 
-    replay = ReplayFactorPipeline(signals_bundle)
+    replay = ReplaySignalPipeline(signals_bundle)
     monkeypatch.setattr(
-        "zstock.factor_management.pipeline.CrossSectionStrategyPipeline",
+        "zstock.strategy_management.pipeline.StrategyPipeline",
         lambda *a, **k: replay,
     )
     row = await ob.run_backtest_current(
@@ -228,7 +232,7 @@ async def test_run_backtest_current_failure_is_recorded(tmp_path, monkeypatch):
 
     monkeypatch.setattr("zstock.strategy_management.script.backtester.Backtester", _BT)
     monkeypatch.setattr(
-        "zstock.factor_management.pipeline.CrossSectionStrategyPipeline",
+        "zstock.strategy_management.pipeline.StrategyPipeline",
         lambda *a, **k: object(),
     )
     row = await ob.run_backtest_current(
@@ -239,7 +243,7 @@ async def test_run_backtest_current_failure_is_recorded(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_consistency_run_checks_skip_missing_precompute(monkeypatch):
-    from zstock.strategy_management.script import signal_consistency_check as scc
+    from web.backend import signal_consistency_check as scc
 
     class _Svc:
         async def validate_consistency(self, td, **kwargs):
@@ -254,7 +258,7 @@ async def test_consistency_run_checks_skip_missing_precompute(monkeypatch):
     monkeypatch.setattr("zstock.common.utils.db_utils.init_zstock_database", _init)
     monkeypatch.setattr("zstock.common.utils.db_utils.close_zstock_database", _close)
     monkeypatch.setattr(
-        "zstock.strategy_management.signal_service.StrategySignalService.instance",
+        "web.backend.signal_service.StrategySignalService.instance",
         lambda: _Svc(),
     )
     rc = await scc._run_checks(["2024-06-03"], include_pipeline=False, tolerance=1e-6)
@@ -375,7 +379,7 @@ async def test_async_main_resume_replays_real_checkpoint(overnight_dir, tmp_path
     with patch("zstock.common.utils.db_utils.init_zstock_database", _ok_init), patch(
         "zstock.common.utils.db_utils.close_zstock_database", _ok_close
     ), patch(
-        "zstock.factor_management.script.网格搜索.grid_search_real.load_ohlcv",
+        "zstock.strategy_management.script.grid_search_real.load_ohlcv",
         _no_ohlcv,
     ):
         rc = await ob.async_main(args)

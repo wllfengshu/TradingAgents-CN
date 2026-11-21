@@ -1,26 +1,19 @@
-"""
-换手控制（截面因子方案）
+"""换手与交易成本。
 
-Buffer 机制：新候选必须显著优于当前持仓最弱票才换入。
-最短持有：未满 min_hold_days 的持仓禁止因调仓卖出（硬止损在回测层单独处理）。
-
-输入：
-- new_holdings: 待换入的目标持仓（含 code/weight/score）
-- current_holdings: 当前实际持仓（含 code/weight，可无 score；可选 entry_date）
-
-输出：
-- final_holdings：经 buffer / 最短持有过滤后的目标持仓
-- trading_cost：估算换手成本
+新持仓要明显优于当前最弱的持仓才换入。未满最短持有天数的，不能因为调仓卖掉。
+另按佣金和印花税估算换手成本。国债、政金债、黄金免佣。
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional, Sequence, Set
 
 import numpy as np
 import pandas as pd
+
+from zstock.common.book_codes import FEE_FREE_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +27,31 @@ class TurnoverController:
         fee_rate: float = 0.0015,
         min_hold_days: int = 3,
         fill_open_slots: bool = False,
+        trading_calendar: Optional[Sequence[str]] = None,
+        stamp_tax: float = 0.0005,
+        fee_free_codes: Optional[Iterable[str]] = None,
     ):
         self.buffer_threshold = buffer_threshold
-        self.fee_rate = fee_rate  # 双边费率上限（手续费+滑点+印花税近似）
+        self.fee_rate = fee_rate  # 单边佣金/滑点近似（买卖对称）
+        self.stamp_tax = float(stamp_tax)  # A 股卖出印花税（只加在卖出腿）
         self.min_hold_days = int(min_hold_days)
         self.fill_open_slots = bool(fill_open_slots)
+        self.trading_calendar: Optional[Set[str]] = (
+            {str(d)[:10] for d in trading_calendar} if trading_calendar else None
+        )
+        self.fee_free_codes: Set[str] = {
+            str(c).zfill(6) if str(c).isdigit() else str(c)
+            for c in (fee_free_codes if fee_free_codes is not None else FEE_FREE_CODES)
+        }
         logger.info(
             f"✅ TurnoverController 初始化完成: buffer={buffer_threshold} "
-            f"fee={fee_rate} min_hold={self.min_hold_days} fill_open_slots={self.fill_open_slots}"
+            f"fee={fee_rate} stamp={self.stamp_tax} min_hold={self.min_hold_days} "
+            f"fill_open_slots={self.fill_open_slots} fee_free={len(self.fee_free_codes)}"
         )
+
+    def set_trading_calendar(self, dates: Optional[Sequence[str]]) -> None:
+        """注入交易日集合；有日历时最短持有按交易日计数。"""
+        self.trading_calendar = {str(d)[:10] for d in dates} if dates else None
 
     def apply_buffer_mechanism(
         self,
@@ -53,6 +62,7 @@ class TurnoverController:
         trade_date: Optional[str] = None,
         force_exit_codes: Optional[set] = None,
         fill_open_slots: Optional[bool] = None,
+        trading_calendar: Optional[Sequence[str]] = None,
     ) -> pd.DataFrame:
         """
         Args:
@@ -71,6 +81,11 @@ class TurnoverController:
         if min_hold_days is None:
             min_hold_days = self.min_hold_days
         force_exit_codes = set(force_exit_codes or set())
+        calendar = (
+            {str(d)[:10] for d in trading_calendar}
+            if trading_calendar is not None
+            else self.trading_calendar
+        )
 
         if new_holdings is None or new_holdings.empty:
             # 无新信号时：最短持有保护仍生效，但 force_exit 必须卖出
@@ -81,7 +96,11 @@ class TurnoverController:
                 and trade_date
             ):
                 protected = self._protected_holds(
-                    current_holdings, set(), trade_date, int(min_hold_days)
+                    current_holdings,
+                    set(),
+                    trade_date,
+                    int(min_hold_days),
+                    calendar=calendar,
                 )
                 if force_exit_codes and not protected.empty:
                     protected = protected[~protected["code"].isin(force_exit_codes)]
@@ -110,7 +129,11 @@ class TurnoverController:
 
         # 最短持有：不在新目标中、但未满持有期的旧仓继续保留（强制退出除外）
         protected = self._protected_holds(
-            cur_df, new_codes | force_exit_codes, trade_date, int(min_hold_days)
+            cur_df,
+            new_codes | force_exit_codes,
+            trade_date,
+            int(min_hold_days),
+            calendar=calendar,
         )
         if force_exit_codes:
             if not kept.empty:
@@ -183,6 +206,8 @@ class TurnoverController:
         new_codes: set,
         trade_date: Optional[str],
         min_hold_days: int,
+        *,
+        calendar: Optional[Set[str]] = None,
     ) -> pd.DataFrame:
         if min_hold_days <= 0 or not trade_date or cur_df is None or cur_df.empty:
             return pd.DataFrame()
@@ -193,7 +218,9 @@ class TurnoverController:
             code = row['code']
             if code in new_codes:
                 continue
-            held = self._trading_days_between(row.get('entry_date'), trade_date)
+            held = self._trading_days_between(
+                row.get('entry_date'), trade_date, calendar=calendar
+            )
             if held < min_hold_days:
                 rows.append(row)
         if not rows:
@@ -206,12 +233,21 @@ class TurnoverController:
         return out
 
     @staticmethod
-    def _trading_days_between(start: str, end: str) -> int:
-        """粗略按日历日差估算持有天数（回测交易日序列更准，此处作保护下限）。"""
+    def _trading_days_between(
+        start: str,
+        end: str,
+        *,
+        calendar: Optional[Set[str]] = None,
+    ) -> int:
+        """持有天数：有交易日历则数 (start, end] 内交易日，否则退回日历日差。"""
         try:
-            a = datetime.strptime(str(start)[:10], "%Y-%m-%d")
-            b = datetime.strptime(str(end)[:10], "%Y-%m-%d")
-            return max(0, (b - a).days)
+            a = str(start)[:10]
+            b = str(end)[:10]
+            if calendar:
+                return sum(1 for d in calendar if a < d <= b)
+            da = datetime.strptime(a, "%Y-%m-%d")
+            db = datetime.strptime(b, "%Y-%m-%d")
+            return max(0, (db - da).days)
         except (TypeError, ValueError):
             return 0
 
@@ -226,15 +262,34 @@ class TurnoverController:
             df['weight'] = df['weight'] / total
         return df.reset_index(drop=True)
 
+    def _norm_code(self, code: object) -> str:
+        s = str(code).replace(".0", "")
+        return s.zfill(6) if s.isdigit() else s
+
+    def is_fee_free(self, code: object) -> bool:
+        return self._norm_code(code) in self.fee_free_codes
+
     def estimate_trading_costs(
         self,
         current_holdings: Optional[pd.DataFrame],
         new_holdings: pd.DataFrame,
         total_capital: float = 1e7,
     ) -> Dict:
-        """估算换手成本：turnover = 0.5 * Σ|new - old|，成本 = turnover * fee_rate。"""
+        """估算换手成本。
+
+        turnover = 0.5 * Σ|Δw|（单边换手口径）；
+        成本按标的分别计：fee_free_codes（债基/黄金等）买卖均为 0；
+        其余 = 买入权重 * fee_rate + 卖出权重 * (fee_rate + stamp_tax)。
+        """
         cur = current_holdings if current_holdings is not None and not current_holdings.empty else pd.DataFrame(columns=['code', 'weight'])
         new = new_holdings if new_holdings is not None and not new_holdings.empty else pd.DataFrame(columns=['code', 'weight'])
+
+        cur = cur.copy()
+        new = new.copy()
+        if not cur.empty:
+            cur["code"] = cur["code"].map(self._norm_code)
+        if not new.empty:
+            new["code"] = new["code"].map(self._norm_code)
 
         merged = pd.merge(
             cur[['code', 'weight']].rename(columns={'weight': 'w_old'}),
@@ -242,11 +297,37 @@ class TurnoverController:
             on='code', how='outer',
         )
         merged = merged.infer_objects().fillna(0.0)
-        turnover = 0.5 * float((merged['w_new'] - merged['w_old']).abs().sum())
-        cost_pct = turnover * self.fee_rate
+        delta = merged['w_new'] - merged['w_old']
+        buy_w = float(delta.clip(lower=0.0).sum())
+        sell_w = float((-delta).clip(lower=0.0).sum())
+        turnover = 0.5 * float(delta.abs().sum())
+
+        from zstock.common.utils.common_utils import is_equity_etf
+
+        cost_pct = 0.0
+        charged_buy = 0.0
+        charged_sell = 0.0
+        for _, row in merged.iterrows():
+            code = str(row["code"])
+            if self.is_fee_free(code):
+                continue
+            change = float(row["w_new"] - row["w_old"])
+            # 场内 ETF 收佣金，不收股票印花税
+            sell_rate = self.fee_rate if is_equity_etf(code) else self.fee_rate + self.stamp_tax
+            if change > 0:
+                charged_buy += change
+                cost_pct += change * self.fee_rate
+            elif change < 0:
+                charged_sell += -change
+                cost_pct += (-change) * sell_rate
         return {
             'turnover': turnover,
             'cost_pct': cost_pct,
             'cost_amount': cost_pct * total_capital,
             'fee_rate': self.fee_rate,
+            'stamp_tax': self.stamp_tax,
+            'buy_weight': buy_w,
+            'sell_weight': sell_w,
+            'charged_buy_weight': charged_buy,
+            'charged_sell_weight': charged_sell,
         }

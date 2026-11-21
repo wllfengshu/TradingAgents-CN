@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from zstock.order_management.order_generator import OrderGenerator
+from zstock.order_management.orders import OrderGenerator
 
 
 def test_empty_target_returns_no_orders():

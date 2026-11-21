@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from zstock.factor_management.dragon_factors import DragonFactors
+from zstock.factor_management.factors_dragon import DragonFactors
 from test.factor_management.test.conftest import make_ohlcv
 
 N = 40
@@ -56,10 +56,10 @@ def test_f31b_percentile_and_f37_zscore():
     )
     ret_a = (12.1 - 10.0) / 10.0
     rets = np.array([ret_a, 0.0, 0.0])
-    unique = np.unique(rets)
-    # searchsorted left / (n-1) * 100
-    assert raw[A]["f31b_rps_percentile"] == pytest.approx(1.0 / 2.0 * 100.0)
-    assert raw[B]["f31b_rps_percentile"] == pytest.approx(0.0)
+    # 平均秩：两只收益为 0 的并列在底部，龙头为 100
+    assert raw[A]["f31b_rps_percentile"] == pytest.approx(100.0)
+    assert raw[B]["f31b_rps_percentile"] == pytest.approx(25.0)
+    assert raw[C]["f31b_rps_percentile"] == pytest.approx(25.0)
     mean = float(np.mean(rets))
     std = float(np.std(rets))
     assert raw[A]["f37_relative_strength"] == pytest.approx((ret_a - mean) / std)
@@ -132,28 +132,6 @@ def test_multi_sector_reuses_same_stock_features():
     assert by_sec["SW2其它"][B]["f32_amount"] == pytest.approx(by_sec[SEC][B]["f32_amount"])
 
 
-def test_scores_from_raw_gates_and_minmax():
-    raw = {
-        A: {"f31_excess_return_5d": 0.21, "f35_bollinger_trend": 70.0},
-        B: {"f31_excess_return_5d": 0.0, "f35_bollinger_trend": float("nan")},
-        C: {"f31_excess_return_5d": 0.0, "f35_bollinger_trend": 40.0},
-    }
-    cfg = {
-        "dragon": {
-            "momentum": [
-                {"field": "f31_excess_return_5d", "weight": 1.0, "polarity": "positive"}
-            ]
-        }
-    }
-    gated = DragonFactors.scores_from_raw(raw, regime="momentum", active_factors=cfg, gates=None)
-    assert set(gated) == {A, C}
-    assert gated[A] == pytest.approx(100.0)
-    assert gated[C] == pytest.approx(0.0)
-    all_codes = DragonFactors.scores_from_raw(raw, regime="momentum", active_factors=cfg, gates=[])
-    assert B in all_codes
-    assert DragonFactors.scores_from_raw({}, regime="momentum", active_factors=cfg) == {}
-    assert DragonFactors.scores_from_raw(raw, regime="momentum", active_factors=None) == {}
-
 
 def test_raw_from_doc_aliases():
     packed = DragonFactors.raw_from_doc(
@@ -171,12 +149,3 @@ def test_raw_from_doc_aliases():
     assert packed["f34_resonance_pct_5d"] == 0.4
 
 
-def test_dragon_scores_from_signal_names(signal_names_raw, strategy_params):
-    raw = {d["code"]: d for d in signal_names_raw["dragons"]}
-    scores = DragonFactors.scores_from_raw(
-        raw,
-        regime="momentum",
-        active_factors=strategy_params["active_factors"],
-    )
-    assert set(scores) <= set(raw)
-    assert scores

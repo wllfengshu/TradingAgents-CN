@@ -2,8 +2,7 @@
 
 import pandas as pd
 
-from zstock.order_management.order_generator import OrderGenerator
-from zstock.order_management.trade_settlement import TradeSettlement
+from zstock.order_management.orders import OrderGenerator, TradeSettlement
 
 
 def test_handle_buy_then_sell_updates_position():

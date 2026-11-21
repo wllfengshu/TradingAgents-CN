@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from zstock.strategy_management.portfolio_optimizer import PortfolioOptimizer
+from zstock.strategy_management.strategy_section.optimizer import PortfolioOptimizer
 
 
 def test_empty_signals_fail():
@@ -66,16 +66,8 @@ def test_softmax_differs_from_equal_on_unequal_scores(real_signals, strategy_par
     assert not np.allclose(soft["weights"], eq["weights"])
 
 
-def test_strategy_signal_score_alias(real_signals, strategy_params):
-    df = real_signals.drop(columns=["final_score"])
-    cap = float(strategy_params["portfolio"]["max_weight_per_stock"])
-    out = PortfolioOptimizer().optimize_portfolio(df, min_holdings=1, max_holdings=5, max_weight_per_stock=cap)
-    assert out["status"] == "success"
-    assert "score" in out["holdings_df"].columns
-
-
 def test_missing_score_column_defaults_zero(real_signals, strategy_params):
-    df = real_signals.drop(columns=["final_score", "strategy_signal_score"], errors="ignore")
+    df = real_signals.drop(columns=["final_score"], errors="ignore")
     cap = float(strategy_params["portfolio"]["max_weight_per_stock"])
     out = PortfolioOptimizer().optimize_portfolio(df, min_holdings=1, max_holdings=5, max_weight_per_stock=cap)
     assert out["status"] == "success"

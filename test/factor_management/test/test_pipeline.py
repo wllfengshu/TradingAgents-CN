@@ -2,8 +2,9 @@
 
 import pytest
 
-from zstock.factor_management.pipeline import CrossSectionStrategyPipeline
+from zstock.strategy_management.pipeline import StrategyPipeline
 from test.factor_management.test.conftest import make_offline_pipeline
+from zstock.strategy_management.strategy_section import schema as signal_schema
 
 
 def test_unknown_export_raises():
@@ -62,20 +63,20 @@ def test_position_scale_overlay(strategy_params):
 
 def test_dedupe_keeps_higher_dragon_score():
     rows = [
-        {"code": "603201", "dragon_composite_score": 10, "sector_code": "A"},
-        {"code": "603201", "dragon_composite_score": 80, "sector_code": "B"},
-        {"code": "000060", "dragon_composite_score": 50, "sector_code": "C"},
-        {"code": "", "dragon_composite_score": 99},
+        {"code": "603201", "dragon_score": 10, "sector_code": "A"},
+        {"code": "603201", "dragon_score": 80, "sector_code": "B"},
+        {"code": "000060", "dragon_score": 50, "sector_code": "C"},
+        {"code": "", "dragon_score": 99},
     ]
-    out = CrossSectionStrategyPipeline._dedupe_candidates_by_code(rows)
+    out = signal_schema.dedupe_candidates_by_code(rows)
     by_code = {r["code"]: r for r in out}
-    assert by_code["603201"]["dragon_composite_score"] == 80
+    assert by_code["603201"]["dragon_score"] == 80
     assert by_code["603201"]["sector_code"] == "B"
     assert "000060" in by_code
 
 
 def test_empty_and_ranked_signals_schema(strategy_params):
-    empty = CrossSectionStrategyPipeline._empty_signals_df("2024-01-02", "red", 0.0)
+    empty = signal_schema.empty_signals_df("2024-01-02", "red", 0.0)
     assert empty.empty
     assert empty.attrs["market_grade"] == "red"
     pipe = make_offline_pipeline(strategy_params)
@@ -83,19 +84,19 @@ def test_empty_and_ranked_signals_schema(strategy_params):
         {
             "code": "603201",
             "sector_code": "SW2汽车零部件",
-            "strategy_signal_score": 75.36,
-            "dragon_composite_score": 80.0,
+            "final_score": 75.36,
+            "dragon_score": 80.0,
             "force_composite_score": 50.0,
         },
         {
             "code": "000060",
             "sector_code": "SW2工业金属",
-            "strategy_signal_score": 60.0,
-            "dragon_composite_score": 70.0,
+            "final_score": 60.0,
+            "dragon_score": 70.0,
             "force_composite_score": 50.0,
         },
     ]
-    df = pipe._ranked_to_signals_df(ranked, "2024-01-02", "yellow", 0.4, regime="momentum")
+    df = signal_schema.ranked_to_signals_df(ranked, "2024-01-02", "yellow", 0.4, top_k=pipe._cfg_top_k("momentum"), regime="momentum")
     assert list(df["code"]) == ["603201", "000060"]
     assert df.iloc[0]["signal_type"] == "buy"
     assert df.attrs["regime"] == "momentum"
@@ -207,41 +208,14 @@ async def test_score_signals_missing_market_raises(strategy_params):
         await pipe.score_signals("2024-01-02")
 
 
-def test_resolve_m4_gate_by_regime(strategy_params):
-    from zstock.factor_management.force_factors import ForceFactors
-
-    coop = {
-        "threshold_pct": 0.01,
-        "by_regime": {"momentum": {"threshold_pct": 0.005}},
-    }
-    thr, mode = ForceFactors.resolve_gate_settings(coop, "momentum", "green")
-    assert thr == 0.005
-    assert mode == "inflow"
-    thr2, _ = ForceFactors.resolve_gate_settings(coop, "reversal", "yellow")
-    assert thr2 == 0.01
-
-
-def test_resolve_m4_gate_by_context(strategy_params):
-    from zstock.factor_management.force_factors import ForceFactors
-
-    coop = {
-        "threshold_pct": 0.01,
-        "gate_mode_by_context": {"momentum_green": "off"},
-    }
-    _, mode_mg = ForceFactors.resolve_gate_settings(coop, "momentum", "green")
-    assert mode_mg == "off"
-    _, mode_rg = ForceFactors.resolve_gate_settings(coop, "reversal", "green")
-    assert mode_rg == "inflow"
-
-
 def test_pipeline_constructs_from_ssot(monkeypatch, strategy_params):
     monkeypatch.setattr(
-        "zstock.factor_management.pipeline.get_data_query_service",
+        "zstock.strategy_management.pipeline.get_data_query_service",
         lambda: object(),
     )
-    pipe = CrossSectionStrategyPipeline()
+    pipe = StrategyPipeline()
     assert pipe.config["version"] == strategy_params["version"]
-    pipe._merge_config({"final_score": {"top_k": 7}})
+    pipe._apply_config_override({"final_score": {"top_k": 7}})
     assert pipe._cfg_top_k("momentum") == 7
 
 
@@ -257,9 +231,9 @@ async def test_score_signals_red_market(strategy_params, factor_raw):
             "mf5_atr_ratio": 0.09,
         }
     )
-    from zstock.factor_management.market_factors import MarketFactors
+    from zstock.strategy_management.sentiment import score_market_from_raw
 
-    sent = MarketFactors.score_from_raw(
+    sent = score_market_from_raw(
         float(market["mf1_slope_pct"]),
         float(market["mf2_boll_pct"]),
         float(market["mf3_vol_ratio"]),
@@ -274,32 +248,9 @@ async def test_score_signals_red_market(strategy_params, factor_raw):
             return market
 
     cfg = dict(strategy_params)
-    cfg.setdefault("market_selection", {})["factor_pipeline_stops_on_red"] = True
+    cfg.setdefault("market_selection", {})["stops_on_red"] = True
     pipe = make_offline_pipeline(cfg, qs=RedQS())
     df = await pipe.score_signals("2024-01-02")
     assert df.empty
     assert df.attrs["market_grade"] == "red"
 
-
-@pytest.mark.asyncio
-async def test_preload_indexes_by_date(strategy_params, factor_raw, signal_names_raw):
-    qs = _FakeQS(factor_raw, signal_names_raw)
-    pipe = make_offline_pipeline(strategy_params, qs=qs)
-    assert pipe._pc_range is None
-    await pipe.preload_precomputed_factors("2024-01-02", "2024-01-02")
-    assert pipe._pc_range == ("2024-01-02", "2024-01-02")
-    mkt = pipe._cached_factor_market("2024-01-02")
-    assert mkt["index_code"] == "399300"
-    assert pipe._cached_factor_sectors("2024-01-02")
-    dragons = pipe._cached_factor_dragons("2024-01-02")
-    codes = {d["code"] for d in dragons}
-    assert "603201" in codes
-    raw_f35 = next(d for d in dragons if d["code"] == "603201")["f35_bollinger_trend"]
-    f35 = pipe.dragon_field_by_code("2024-01-02", "f35_bollinger_trend", ["603201"])
-    assert f35["603201"] == pytest.approx(float(raw_f35))
-    subset = pipe._cached_factor_dragons("2024-01-02", sector_codes=["SW2汽车零部件"])
-    assert all(d["sector_code"] == "SW2汽车零部件" for d in subset)
-    forces = pipe._cached_factor_forces("2024-01-02")
-    assert any(d["code"] == "603201" for d in forces)
-    pipe._reset_precomputed()
-    assert pipe._pc_range is None
