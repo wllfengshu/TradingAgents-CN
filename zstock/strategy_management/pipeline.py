@@ -3,7 +3,6 @@
 
 领域实现：
   sentiment.py   红/黄/绿
-  selection.py   板块 / 龙头 / 合力门禁与最终合成
   market_book.py 红黄绿账户
 
 流程：取数 → 情绪 → 风格 → 板块 → 龙头 → 合力合成 → 信号表
