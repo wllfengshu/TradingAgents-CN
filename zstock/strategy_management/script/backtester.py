@@ -936,6 +936,14 @@ class Backtester:
             decision = None
             if book_on:
                 index_closes = [float(row["close"]) for row in index_rows]
+                today_bar = _day_bar_frame(day_ohlcv, INDEX_CODE)
+                if today_bar is not None and not getattr(today_bar, "empty", True):
+                    try:
+                        today_px = float(today_bar.iloc[-1].get("close"))
+                    except (TypeError, ValueError):
+                        today_px = float("nan")
+                    if today_px > 0:
+                        index_closes.append(today_px)
                 held_codes: List[str] = []
                 if last_holdings is not None and not last_holdings.empty and "code" in last_holdings.columns:
                     held_codes = [str(code) for code in last_holdings["code"].tolist()]
@@ -950,11 +958,8 @@ class Backtester:
                 light_state = _state_for_grade(decision.grade)
                 state_changed = light_state != prev_book_state
                 prev_book_state = light_state
-                # 截面每天排名。行业 ETF 和低波按间隔更新，红灯当天更新。
-                entering_red = state_changed and light_state == "defense"
-                refresh_satellites = (
-                    days_since_rebalance >= target_freq or entering_red
-                )
+                # 截面、行业 ETF、低波都按当天信号重算。
+                refresh_satellites = True
                 do_rebalance = True
 
             if do_rebalance:

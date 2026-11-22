@@ -215,12 +215,8 @@ flowchart TB
 | 方法 | 作用 |
 |------|------|
 | `min_bars` | 指数最少 K 线根数要求 |
-| `compute_market_raw` | 指数 OHLCV → mf* 原始值字典（含多窗口）；数据不足时返回 `reason` |
-| `mf1_slope_pct` | MA 百分比斜率 |
-| `mf2_boll_pct` | 收盘在布林带中的相对位置 0~1 |
-| `mf3_vol_ratio` | 成交量 / 均量 |
-| `mf4_momentum` | N 日涨跌幅 |
-| `mf5_atr_ratio` | ATR / MA |
+| `compute_market_raw` | 指数 OHLCV → `trend_gap`；数据不足时返回 `reason` |
+| `trend_gap` | 收盘 / MA120 − 1 |
 | `rank_autocorr` | 滚动收益排名的 1 阶 Spearman 自相关（风格特征） |
 
 ### 2. `SectorFactors`（M2）

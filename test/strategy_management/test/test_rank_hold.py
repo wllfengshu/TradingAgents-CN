@@ -31,7 +31,7 @@ def test_keeps_held_name_inside_buffer_and_does_not_churn():
     assert set(weights) == {"600006", "600002", "600003"}
 
 
-def test_sells_when_rank_leaves_buffer():
+def test_missing_from_short_list_is_kept():
     weights = rank_stock_weights(
         _signals(),
         ["600009", "600002"],
@@ -39,7 +39,21 @@ def test_sells_when_rank_leaves_buffer():
         buffer=2,
         cap=0.2,
     )
-    assert "600009" not in weights
+    assert "600009" in weights
+    assert "600002" in weights
+    assert "600001" in weights
+    assert len(weights) == 3
+
+
+def test_sells_when_rank_leaves_buffer():
+    weights = rank_stock_weights(
+        _signals(),
+        ["600006", "600002"],
+        n=3,
+        buffer=2,
+        cap=0.2,
+    )
+    assert "600006" not in weights
     assert "600002" in weights
     assert "600001" in weights
     assert len(weights) == 3

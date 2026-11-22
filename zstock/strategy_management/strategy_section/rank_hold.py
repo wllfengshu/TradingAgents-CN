@@ -19,8 +19,9 @@ def rank_stock_weights(
 ) -> Dict[str, float]:
     """买排名 1..n 的股票。已持有且排名仍在 n+buffer 内的继续留着。
 
-    名额满了不再换入。不在当日排名里的持仓卖掉。
-    每只权重不超过 cap，凑不满 1 的部分留给后面的行业 ETF。
+    名额满了不再换入。排名已经差于 n+buffer 的卖掉。
+    不在当日短名单里的先留着，短名单不是全市场名次。
+    每只权重不超过 cap。凑不满 1 的部分留给后面的行业 ETF。
     """
     count = max(int(n), 0)
     hold_limit = count + max(int(buffer), 0)
@@ -31,8 +32,10 @@ def rank_stock_weights(
     kept: list[str] = []
     for raw in held:
         code = normalize_code(str(raw))
+        if not code or code in kept:
+            continue
         rank = ranks.get(code)
-        if code and rank is not None and rank <= hold_limit and code not in kept:
+        if rank is None or rank <= hold_limit:
             kept.append(code)
     for code, rank in sorted(ranks.items(), key=lambda item: item[1]):
         if len(kept) >= count:
@@ -43,8 +46,8 @@ def rank_stock_weights(
             kept.append(code)
     if not kept:
         return {}
-    weight = min(single, 1.0 / count)
-    return {code: weight for code in kept[:count]}
+    weight = min(single, 1.0 / len(kept))
+    return {code: weight for code in kept}
 
 
 def _ranks(signals: Optional[pd.DataFrame]) -> Dict[str, int]:

@@ -1,8 +1,8 @@
 """按灯把截面、行业 ETF、低波三份结果和当前持仓合成一个目标仓。
 
 绿灯先买股票，再买行业 ETF，最后用低波补满。
-黄灯可以留下截面还要的旧股票，但不能买新股票，新买只用行业 ETF 的结果。
-红灯卖掉全部股票和行业 ETF，整仓换成低波。
+黄灯不再买新股票。截面还要的旧股票留下，腾出来的权重买行业 ETF，没占满的用低波补上。
+红灯卖掉全部股票。行业 ETF 只留策略还要、而且已经持有的，不买新的，空余换成低波。
 """
 
 from __future__ import annotations
@@ -43,14 +43,25 @@ def combine_by_light(
         _add(out, _fill(low_w, residual))
         return _clean(out)
     if grade == "red":
-        return _fill(low_w, 1.0)
+        kept = {}
+        for code, cur in current_w.items():
+            if code in _INDUSTRY and industry_w.get(code, 0.0) > 0:
+                kept[code] = min(cur, industry_w[code])
+        out = _fit(kept, 1.0)
+        residual = 1.0 - sum(out.values())
+        _add(out, _fill(low_w, residual))
+        return _clean(out)
     kept = {}
     for code, cur in current_w.items():
         if is_stock(code) and stock_w.get(code, 0.0) > 0:
             kept[code] = min(cur, stock_w[code])
     out = _fit(kept, 1.0)
     residual = 1.0 - sum(out.values())
-    _add(out, _fill(industry_w, residual))
+    etf = {c: w for c, w in industry_w.items() if c in _INDUSTRY}
+    taken = _fit(etf, residual)
+    _add(out, taken)
+    residual = 1.0 - sum(out.values())
+    _add(out, _fill(low_w, residual))
     return _clean(out)
 
 

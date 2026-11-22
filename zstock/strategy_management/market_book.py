@@ -630,7 +630,8 @@ class MarketBook:
 
 # ── Book 行情输入（Mongo → 判定用序列）────────────────────────────────────────
 
-_LOOKBACK_CALENDAR_DAYS = max(MIN_HISTORY + 80, 150)
+# 120 日均线需要大约 170 个交易日，按日历多留一段假期。
+_LOOKBACK_CALENDAR_DAYS = max(MIN_HISTORY + 80, 400)
 
 
 @dataclass(frozen=True)

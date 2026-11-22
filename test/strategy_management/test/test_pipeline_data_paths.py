@@ -107,7 +107,7 @@ async def test_score_signals_precomputed_paths(monkeypatch):
 
     # non-red path with stocks cache
     async def _load_green(method, td, **kwargs):
-        return {"mf1_slope_pct": 0.01, "trade_date": td}
+        return {"trend_gap": 0.05, "trade_date": td}
 
     monkeypatch.setattr(pipe, "_load_factor_docs", _load_green)
     monkeypatch.setattr(

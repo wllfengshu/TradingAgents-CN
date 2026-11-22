@@ -42,11 +42,12 @@ def test_load_missing_file_raises(tmp_path, monkeypatch):
 
 def test_market_and_style_configs(strategy_params):
     mf = sc.get_market_factors_config()
-    assert mf["w_trend"] == pytest.approx(
-        float(strategy_params["market_factors"]["weights"]["trend_strength"])
+    assert mf["ma_window"] == int(strategy_params["market_factors"]["ma_window"])
+    assert mf["trend_band"] == pytest.approx(
+        float(strategy_params["market_factors"]["trend_band"])
     )
-    assert mf["grade_green"] == pytest.approx(
-        float(strategy_params["market_factors"]["grade_green"])
+    assert mf["trend_release"] == pytest.approx(
+        float(strategy_params["market_factors"]["trend_release"])
     )
     cached = sc.get_market_factors_config()
     assert cached is mf

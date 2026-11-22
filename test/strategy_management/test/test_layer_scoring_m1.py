@@ -1,4 +1,4 @@
-"""M1：合成日线校验 MF1–MF5 公式 + 风格分类；夹具做回归。"""
+"""M1 灯：收盘相对 120 日均线。风格分类仍在本文件后半。"""
 
 from __future__ import annotations
 
@@ -8,18 +8,17 @@ import pytest
 
 from zstock.strategy_management.sentiment import (
     detect_style,
+    score_market_from_closes,
     score_market_from_doc,
-    score_market_from_raw,
+    score_market_from_gap,
     score_market_sentiment,
 )
 from test.factor_management.test.conftest import make_ohlcv
 
-_K_SLOPE = 800.0
-_K_MOM = 30.0
 
-
-def _sigmoid(x: float, k: float) -> float:
-    return float(np.clip(100.0 / (1.0 + np.exp(np.clip(-k * x, -709, 709))), 0.0, 100.0))
+def _rising(n: int = 160, step: float = 1.0) -> pd.DataFrame:
+    close = 100.0 + step * np.arange(n, dtype=float)
+    return make_ohlcv(n, close=close, volume=1_000_000.0)
 
 
 def test_insufficient_bars_is_neutral():
@@ -29,133 +28,107 @@ def test_insufficient_bars_is_neutral():
     assert out["market_composite_score"] == 50.0
     assert out["allow_new_open"] is True
     assert out["position_scale_factor"] == 0.4
+    assert out["detail"]["reason"] == "data_insufficient"
 
 
-def test_missing_column_is_neutral():
-    df = make_ohlcv(40, close=100.0).drop(columns=["volume"])
+def test_missing_close_is_neutral():
+    df = _rising().drop(columns=["close"])
     out = score_market_sentiment(df)
     assert out["market_risk_level"] == "yellow"
-    assert out["market_composite_score"] == 50.0
+    assert out["detail"]["reason"] == "missing_col_close"
 
 
-def test_mf4_momentum_matches_close_to_close_return():
-    close = np.full(40, 100.0)
-    close[-1] = 105.0
-    df = make_ohlcv(40, close=close, volume=1_000_000.0)
-    out = score_market_sentiment(df)
-    expected = (105.0 - 100.0) / 100.0
-    assert out["detail"]["mf4_momentum_5d"] == pytest.approx(expected)
-    assert out["market_5day_momentum"] == pytest.approx(_sigmoid(expected, _K_MOM))
-
-
-def test_mf3_constant_volume_ratio_is_one():
-    df = make_ohlcv(40, close=100.0, volume=1_000_000.0)
-    out = score_market_sentiment(df)
-    assert out["detail"]["mf3_vol_ratio"] == pytest.approx(1.0)
-    assert out["market_volume_state"] == pytest.approx(90.0)
-
-
-def test_mf3_last_bar_double_volume():
-    vol = np.full(40, 1_000_000.0)
-    vol[-1] = 2_000_000.0
-    df = make_ohlcv(40, close=100.0, volume=vol)
-    out = score_market_sentiment(df)
-    vol_ma20 = (19 * 1_000_000.0 + 2_000_000.0) / 20.0
-    expected = 2_000_000.0 / vol_ma20
-    assert out["detail"]["mf3_vol_ratio"] == pytest.approx(expected)
-
-
-def test_mf1_slope_pct_from_linear_close():
-    close = 100.0 + np.arange(40, dtype=float)
-    df = make_ohlcv(40, close=close, volume=1_000_000.0)
-    out = score_market_sentiment(df)
-    ma = pd.Series(close).rolling(20, min_periods=20).mean().to_numpy()
-    valid = ma[~np.isnan(ma)][-5:]
-    slope = float(np.polyfit(np.arange(len(valid), dtype=float), valid, 1)[0])
-    slope_pct = slope / valid[-1]
-    assert out["detail"]["mf1_slope_pct"] == pytest.approx(slope_pct)
-    assert out["market_trend_strength"] == pytest.approx(_sigmoid(slope_pct, _K_SLOPE))
-
-
-def test_mf2_boll_pct_formula():
-    close = 100.0 + 5.0 * np.sin(np.linspace(0, 6 * np.pi, 40))
-    df = make_ohlcv(40, close=close, volume=1_000_000.0)
-    ma = pd.Series(close).rolling(20, min_periods=20).mean()
-    std = pd.Series(close).rolling(20, min_periods=20).std()
-    upper = float(ma.iloc[-1] + 2.0 * std.iloc[-1])
-    lower = float(ma.iloc[-1] - 2.0 * std.iloc[-1])
-    expected = float(np.clip((close[-1] - lower) / (upper - lower), 0.0, 1.0))
-    out = score_market_sentiment(df)
-    assert np.isfinite(expected)
-    assert out["detail"]["mf2_boll_pct"] == pytest.approx(expected)
-    assert out["market_bollinger_position"] == pytest.approx(expected * 100.0)
-
-
-def test_mf5_atr_ratio_constant_range():
-    df = make_ohlcv(40, close=100.0, volume=1_000_000.0)
-    high = df["high"].to_numpy()
-    low = df["low"].to_numpy()
+def test_trend_gap_matches_close_over_ma120():
+    df = _rising()
     close = df["close"].to_numpy()
-    prev = np.roll(close, 1)
-    prev[0] = close[0]
-    tr = np.maximum(high - low, np.maximum(np.abs(high - prev), np.abs(low - prev)))
-    atr = float(pd.Series(tr).rolling(20, min_periods=20).mean().iloc[-1])
-    ma = float(pd.Series(close).rolling(20, min_periods=20).mean().iloc[-1])
-    expected = atr / ma
+    expected = float(close[-1] / close[-120:].mean() - 1.0)
     out = score_market_sentiment(df)
-    assert out["detail"]["mf5_atr_ratio"] == pytest.approx(expected)
-    # high=101, low=99, close=100 → TR=2, ATR=2, MA=100, ratio=0.02 → 70 分
-    assert expected == pytest.approx(0.02)
-    assert out["market_volatility_suppression"] == pytest.approx(70.0)
+    assert out["detail"]["trend_gap"] == pytest.approx(expected)
+    assert out["trend_gap"] == pytest.approx(expected)
+    assert expected > 0.03
+    assert out["market_risk_level"] == "green"
+    assert out["position_scale_factor"] == 1.0
+    assert out["allow_new_open"] is True
 
 
-def test_score_from_raw_matches_calculate_mapping():
-    close = 100.0 + np.arange(40, dtype=float)
-    df = make_ohlcv(40, close=close, volume=1_000_000.0)
-    live = score_market_sentiment(df)
-    d = live["detail"]
-    replay = score_market_from_raw(
-        mf1_slope_pct=float(d["mf1_slope_pct"]),
-        mf2_boll_pct=float(d["mf2_boll_pct"]),
-        mf3_vol_ratio=float(d["mf3_vol_ratio"]),
-        mf4_momentum_5d=float(d["mf4_momentum_5d"]),
-        mf5_atr_ratio=float(d["mf5_atr_ratio"]),
-    )
-    assert replay["market_composite_score"] == pytest.approx(live["market_composite_score"])
-    assert replay["market_risk_level"] == live["market_risk_level"]
-    assert replay["position_scale_factor"] == live["position_scale_factor"]
-    doc = score_market_from_doc(
-        {k: d[k] for k in ("mf1_slope_pct", "mf2_boll_pct", "mf3_vol_ratio", "mf4_momentum_5d", "mf5_atr_ratio")}
-    )
+def test_flat_market_is_yellow():
+    df = make_ohlcv(160, close=100.0, volume=1_000_000.0)
+    out = score_market_sentiment(df)
+    assert out["trend_gap"] == pytest.approx(0.0)
+    assert out["market_risk_level"] == "yellow"
+    assert out["market_composite_score"] == pytest.approx(50.0)
+    assert out["position_scale_factor"] == 0.4
+
+
+def test_decline_is_red():
+    close = 200.0 - np.arange(160, dtype=float)
+    df = make_ohlcv(160, close=close, volume=1_000_000.0)
+    out = score_market_sentiment(df)
+    assert out["trend_gap"] < -0.03
+    assert out["market_risk_level"] == "red"
+    assert out["allow_new_open"] is False
+    assert out["position_scale_factor"] == 0.0
+
+
+def test_gap_band_edges():
+    assert score_market_from_gap(0.03)["market_risk_level"] == "green"
+    assert score_market_from_gap(0.029)["market_risk_level"] == "yellow"
+    assert score_market_from_gap(-0.03)["market_risk_level"] == "red"
+    assert score_market_from_gap(-0.029)["market_risk_level"] == "yellow"
+    nan = score_market_from_gap(float("nan"))
+    assert nan["market_risk_level"] == "yellow"
+    assert nan["data_missing"] is False
+
+
+def test_score_from_closes_uses_last_window():
+    closes = [100.0] * 119 + [103.0]
+    out = score_market_from_closes(closes)
+    ma = (100.0 * 119 + 103.0) / 120.0
+    assert out["trend_gap"] == pytest.approx(103.0 / ma - 1.0)
+    short = score_market_from_closes([100.0] * 10)
+    assert short["market_risk_level"] == "yellow"
+    assert short["detail"]["reason"] == "data_insufficient"
+
+
+def test_score_from_doc_matches_gap():
+    live = score_market_from_gap(0.05)
+    doc = score_market_from_doc({"trend_gap": 0.05})
+    assert doc["market_risk_level"] == live["market_risk_level"]
     assert doc["market_composite_score"] == pytest.approx(live["market_composite_score"])
+    missing = score_market_from_doc({})
+    assert missing["data_missing"] is True
+    assert missing["market_risk_level"] == "yellow"
 
 
-def test_score_from_raw_nan_maps_to_neutral_subscores():
-    out = score_market_from_raw(
-        mf1_slope_pct=float("nan"),
-        mf2_boll_pct=float("nan"),
-        mf3_vol_ratio=float("nan"),
-        mf4_momentum_5d=float("nan"),
-        mf5_atr_ratio=float("nan"),
-    )
-    assert out["market_trend_strength"] == 50.0
-    assert out["market_bollinger_position"] == 50.0
-    assert out["market_volume_state"] == 50.0
-    assert out["market_5day_momentum"] == 50.0
-    assert out["market_volatility_suppression"] == 50.0
+def test_replay_from_detail_matches_live():
+    df = _rising(step=0.2)
+    live = score_market_sentiment(df)
+    replay = score_market_from_gap(float(live["detail"]["trend_gap"]))
+    assert replay["market_risk_level"] == live["market_risk_level"]
+    assert replay["market_composite_score"] == pytest.approx(live["market_composite_score"])
 
 
-def test_compose_green_yellow_red_from_known_raw():
-    green = score_market_from_raw(0.01, 0.9, 1.0, 0.05, 0.005)
-    assert green["market_risk_level"] == "green"
-    assert green["position_scale_factor"] == 1.0
-    assert green["allow_new_open"] is True
-    yellow = score_market_from_raw(0.0, 0.5, 1.0, 0.0, 0.02)
-    assert yellow["market_risk_level"] in {"green", "yellow"}
-    red = score_market_from_raw(-0.02, 0.05, 0.2, -0.08, 0.12)
-    assert red["market_risk_level"] == "red"
-    assert red["allow_new_open"] is False
-    assert red["position_scale_factor"] == 0.0
+def test_light_holds_until_price_returns_to_average():
+    # 刚越过 3% 亮绿灯。下一天仍在均线上方、但不到 3%，灯保持。
+    up = [100.0] * 119 + [104.0]
+    assert score_market_from_closes(up)["market_risk_level"] == "green"
+    held = score_market_from_closes(up + [101.5])
+    assert held["trend_gap"] < 0.03
+    assert held["market_risk_level"] == "green"
+    # 回到均线下方，绿灯灭，还没到 -3%，是黄灯。
+    back = score_market_from_closes(up + [101.5, 99.0])
+    assert back["trend_gap"] < 0
+    assert back["market_risk_level"] == "yellow"
+
+    down = [100.0] * 119 + [96.0]
+    assert score_market_from_closes(down)["market_risk_level"] == "red"
+    held_red = score_market_from_closes(down + [99.0])
+    assert held_red["trend_gap"] < 0
+    assert held_red["trend_gap"] > -0.03
+    assert held_red["market_risk_level"] == "red"
+    released = score_market_from_closes(down + [99.0, 102.0])
+    assert released["trend_gap"] > 0
+    assert released["market_risk_level"] == "yellow"
 
 
 def test_detect_style_empty_and_missing_close_are_neutral():
@@ -169,12 +142,10 @@ def test_detect_style_empty_and_missing_close_are_neutral():
 
 def test_detect_style_trending_vs_alternating():
     n = 40
-    # 收益率严格递增 → 排名自相关为正 → 动量
     r = 0.001 * np.arange(1, n)
     trend_close = 100.0 * np.cumprod(np.concatenate([[1.0], 1.0 + r]))
     mom = detect_style(make_ohlcv(len(trend_close), close=trend_close))
     assert mom["regime"] == "momentum"
-    # 正负交替 → 排名自相关为负 → 反转
     alt_close = np.where(np.arange(n) % 2 == 0, 100.0, 90.0)
     rev = detect_style(make_ohlcv(n, close=alt_close))
     assert rev["regime"] == "reversal"
@@ -183,28 +154,17 @@ def test_detect_style_trending_vs_alternating():
 
 def test_calculate_market_sentiment_on_hs300(hs300_ohlcv):
     asof = hs300_ohlcv[hs300_ohlcv["trade_date"] <= "2024-01-02"]
-    assert len(asof) >= 31
     out = score_market_sentiment(
         asof, index_name="沪深300", trade_date="2024-01-02"
     )
+    if len(asof) < 120:
+        assert out["market_risk_level"] == "yellow"
+        assert "reason" in out["detail"]
+        return
     assert out["market_risk_level"] in {"green", "yellow", "red"}
     assert 0.0 <= out["market_composite_score"] <= 100.0
     assert out["position_scale_factor"] in {0.0, 0.4, 1.0}
     assert out["allow_new_open"] == (out["market_risk_level"] != "red")
-
-
-def test_score_from_raw_matches_dumped_market(factor_raw):
-    m = factor_raw["market"]
-    out = score_market_from_raw(
-        mf1_slope_pct=float(m["mf1_slope_pct"]),
-        mf2_boll_pct=float(m["mf2_boll_pct"]),
-        mf3_vol_ratio=float(m["mf3_vol_ratio"]),
-        mf4_momentum_5d=float(m["mf4_momentum_5d"]),
-        mf5_atr_ratio=float(m["mf5_atr_ratio"]),
-    )
-    assert out["market_risk_level"] == "yellow"
-    assert out["position_scale_factor"] == 0.4
-    assert out["allow_new_open"] is True
 
 
 def test_detect_on_hs300_around_jan2024(hs300_ohlcv):

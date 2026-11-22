@@ -257,10 +257,7 @@ def compute_day_factor_raws(
     market_raw = MarketFactors.compute_market_raw(
         idx_df, index_name=index_name, trade_date=trade_date
     )
-    log(
-        f"M1 完成: fields="
-        f"{len([k for k in market_raw if k.startswith('mf')])}"
-    )
+    log(f"M1 完成: trend_gap={market_raw.get('trend_gap', market_raw.get('reason'))}")
 
     # ----- M2：板块定义全量 -----
     if sector_ohlcv is not None:
@@ -1066,30 +1063,8 @@ class FactorPrecomputeService:
             "trade_date": trade_date,
             "index_code": raw_result.get("index_code", ""),
             "index_name": raw_result.get("index_name", "沪深 300"),
-            # MF1 趋势强度
-            "mf1_slope_pct": market_raw.get("mf1_slope_pct", float("nan")),
-            "mf1_slope_pct_5d": market_raw.get("mf1_slope_pct_5d", float("nan")),
-            "mf1_slope_pct_10d": market_raw.get("mf1_slope_pct_10d", float("nan")),
-            "mf1_slope_pct_20d": market_raw.get("mf1_slope_pct_20d", float("nan")),
-            # MF2 布林位置
-            "mf2_boll_pct": market_raw.get("mf2_boll_pct", float("nan")),
-            "mf2_boll_pct_10d": market_raw.get("mf2_boll_pct_10d", float("nan")),
-            "mf2_boll_pct_20d": market_raw.get("mf2_boll_pct_20d", float("nan")),
-            "mf2_boll_pct_30d": market_raw.get("mf2_boll_pct_30d", float("nan")),
-            # MF3 成交量
-            "mf3_vol_ratio": market_raw.get("mf3_vol_ratio", float("nan")),
-            "mf3_vol_ratio_5d": market_raw.get("mf3_vol_ratio_5d", float("nan")),
-            "mf3_vol_ratio_10d": market_raw.get("mf3_vol_ratio_10d", float("nan")),
-            "mf3_vol_ratio_20d": market_raw.get("mf3_vol_ratio_20d", float("nan")),
-            # MF4 动量
-            "mf4_momentum_3d": market_raw.get("mf4_momentum_3d", float("nan")),
-            "mf4_momentum_5d": market_raw.get("mf4_momentum_5d", float("nan")),
-            "mf4_momentum_10d": market_raw.get("mf4_momentum_10d", float("nan")),
-            # MF5 波动率（多窗口格式 {w}d_{w}d，与 MarketFactors 产出一致）
-            "mf5_atr_ratio": market_raw.get("mf5_atr_ratio", float("nan")),
-            "mf5_atr_ratio_10d_10d": market_raw.get("mf5_atr_ratio_10d_10d", float("nan")),
-            "mf5_atr_ratio_20d_20d": market_raw.get("mf5_atr_ratio_20d_20d", float("nan")),
-            "mf5_atr_ratio_30d_30d": market_raw.get("mf5_atr_ratio_30d_30d", float("nan")),
+            "trend_gap": market_raw.get("trend_gap", float("nan")),
+            "ma_window": market_raw.get("ma_window", 120),
         }
         await self.query_service.replace_one(
             COL_FACTOR_MARKET, {"trade_date": trade_date}, doc, upsert=True

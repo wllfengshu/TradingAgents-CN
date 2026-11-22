@@ -180,15 +180,9 @@
     }
   },
   "market_factors": {
-    "weights": {
-      "trend_strength": 0.3,
-      "bollinger_position": 0.25,
-      "volume_state": 0.2,
-      "momentum_5day": 0.15,
-      "volatility_suppression": 0.1
-    },
-    "grade_green": 70.0,
-    "grade_yellow": 40.0,
+    "ma_window": 120,
+    "trend_band": 0.03,
+    "trend_release": 0.0,
     "scale_green": 1.0,
     "scale_yellow": 0.4,
     "scale_red": 0.0

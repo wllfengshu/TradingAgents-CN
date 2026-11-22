@@ -37,7 +37,7 @@
 |---|---|
 | **sentiment** | 市场情绪：由市场因子算红/黄/绿、仓位缩放；`detect_style` 判动量/反转/中性。 |
 | **selection** | 截面选股：板块打分(M2)、龙头打分(M3)、合力门禁(M4)、最终加权合成(M5)。 |
-| **MarketBook** | 跨日账户状态机：红→防守、黄→中性、动量绿灯确认后→进攻；中性或反转绿灯留在行业 ETF。 |
+| **MarketBook** | 跨日账户状态机，给出当日灯色。目标仓由 `sleeve_combine` 合成：绿灯股票，黄灯留下还要的股票、其余买行业 ETF，红灯只留还要的行业 ETF。 |
 | **BookDecision** | 单日账户决策：`state` / `weights` / `grade`。 |
 | **BookMarketInputs** | 账户判定用的指数与资产收盘序列（截至上一交易日）。 |
 
@@ -88,7 +88,7 @@ flowchart TB
     H -->|是| J[MarketBook.step<br/>红黄绿 → 防守/中性/进攻]
     J --> K{账户状态}
     K -->|防守 defense| L[债 / 黄金等防守权重]
-    K -->|中性 neutral| M[行业 ETF 权重<br/>不开股票新仓]
+    K -->|中性 neutral| M[留下还要的股票<br/>其余买行业 ETF]
     K -->|进攻 attack| I
     I --> N[组合优化 → 风控 → 退出 → 换手 → 仓位缩放<br/>开仓和账户状态用同一盏 M1 灯]
     L --> O[目标持仓]
@@ -109,8 +109,7 @@ flowchart TB
     S0[入口：trade_date + 宇宙] --> M1
 
     subgraph M1[M1 市场情绪]
-        M1A[市场因子 raw] --> M1B[合成综合分]
-        M1B --> M1C{灯色}
+        M1A[收盘相对 120 日均线] --> M1C{灯色}
         M1C -->|红且 stops_on_red| M1X[提前退出<br/>空信号 / 仓位 0]
         M1C -->|黄 / 绿| M1D[仓位缩放因子]
     end
@@ -187,7 +186,7 @@ flowchart TB
     end
 
     subgraph NEU[中性 neutral]
-        N1[股票类行业 ETF<br/>或债；不开股票新仓]
+        N1[留下截面还要的股票<br/>其余买行业 ETF，空余给低波]
     end
 
     subgraph ATK[进攻 attack]

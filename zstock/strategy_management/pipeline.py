@@ -33,6 +33,7 @@ from zstock.common.config.strategy_config import (
 )
 from zstock.common.utils.common_utils import (
     get_index_ohlcv_df,
+    normalize_code,
     normalize_date,
 )
 from zstock.data_management.query_service import get_data_query_service
@@ -318,12 +319,15 @@ class StrategyPipeline(SignalFunnelMixin):
         trade_date: str,
         *,
         index_df: Optional[pd.DataFrame] = None,
+        index_closes: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
-        """当日 M1 信号灯，只算一次。账户状态和选股漏斗都读这份结果。"""
+        """当日 M1 信号灯。传入收盘或行情时按 120 日均线现算，并覆盖缓存。"""
         td = normalize_date(trade_date)
-        cached = self._sentiment_cache.get(td)
-        if cached is not None:
-            return cached
+        if index_df is None and index_closes is None:
+            cached = self._sentiment_cache.get(td)
+            if cached is not None:
+                return cached
+        sentiment = None
         if index_df is not None:
             sentiment = score_market_sentiment(
                 index_df,
@@ -331,7 +335,13 @@ class StrategyPipeline(SignalFunnelMixin):
                 trade_date=td,
                 params=self.config,
             )
-        else:
+        elif index_closes is not None:
+            from zstock.strategy_management.sentiment import score_market_from_closes
+
+            sentiment = score_market_from_closes(index_closes, params=self.config)
+            if (sentiment.get("detail") or {}).get("reason") == "data_insufficient":
+                sentiment = None
+        if sentiment is None:
             market_doc = None
             try:
                 market_doc = await self._load_factor_docs("get_factor_market", td)
@@ -364,7 +374,9 @@ class StrategyPipeline(SignalFunnelMixin):
     ) -> BookDecision:
         """当日只走这一处：M1 灯 → 账户状态。回测和执行层都调用它。"""
         td = normalize_date(trade_date)
-        sentiment = await self.market_sentiment(td, index_df=index_df)
+        sentiment = await self.market_sentiment(
+            td, index_df=index_df, index_closes=index_closes
+        )
         grade = str(sentiment.get("market_risk_level") or "yellow").lower()
         if grade not in ("red", "yellow", "green"):
             grade = "yellow"
@@ -742,7 +754,7 @@ class StrategyPipeline(SignalFunnelMixin):
                 跳过 query_service 真实拉数。
             ohlcv_by_code: 趋势退出用的个股日线；缺省则「未创新高」支路为 False。
             prev_f35_by_code: 上一交易日 f35，供 bollinger_require_declining。
-            index_bars: 指数收盘序列，只给账户的均线/动量用，不另算灯色。
+            index_bars: 指数行情。灯色用 index_closes（含判定日收盘）相对 120 日均线现算。
             respect_book_rebalance_band: 中性/防守日在偏离带内时保留当前持仓。
             book_decision: 回测层已 step 过的 Book 决策；传入则不再二次 step。
         """
@@ -866,18 +878,16 @@ class StrategyPipeline(SignalFunnelMixin):
     ) -> Dict[str, Any]:
         """三个策略都跑，再按灯和当前持仓合成目标仓。
 
-        股票每天按排名更新。industry_weights / low_vol_weights 有值时沿用上一天的行业 ETF 和低波。
+        股票每天按排名更新。行业 ETF 和低波也按当天行情重算。
         """
+        from zstock.common.book_codes import INDUSTRY_ETFS
         from zstock.strategy_management.sleeve_combine import combine_by_light, is_stock
         from zstock.strategy_management.strategy_industry_etf import IndustryEtfStrategy
         from zstock.strategy_management.strategy_low_volatility import LowVolatilityStrategy
-        from zstock.strategy_management.strategy_section.execute import resolve_effective_top_k
         from zstock.strategy_management.strategy_section.rank_hold import rank_stock_weights
 
-        regime = str(results.get("style_regime") or "neutral")
-        if hasattr(signals_df, "attrs") and signals_df.attrs.get("regime"):
-            regime = str(signals_df.attrs.get("regime"))
-        n = resolve_effective_top_k(cfg, regime)
+        # 绿灯买满配置里的前 n 只。反转风格的 top_k=3 不再把股票仓卡在 60%。
+        n = int((cfg.get("final_score") or {}).get("top_k", 5))
         buffer = int((cfg.get("final_score") or {}).get("rank_hold_buffer", 5))
         cap = float(
             (cfg.get("portfolio_optimization") or {}).get(
@@ -893,7 +903,15 @@ class StrategyPipeline(SignalFunnelMixin):
         )
         qs = self._query_service
         if industry_weights is None:
-            industry = await IndustryEtfStrategy(query_service=qs).select(trade_date)
+            industry_codes = {normalize_code(code) for code in INDUSTRY_ETFS}
+            held_etf = [
+                code
+                for code in (normalize_code(c) for c in weight_map(current_positions))
+                if code in industry_codes
+            ]
+            industry = await IndustryEtfStrategy(query_service=qs).select(
+                trade_date, held=held_etf
+            )
         else:
             industry = dict(industry_weights)
         if low_vol_weights is None:

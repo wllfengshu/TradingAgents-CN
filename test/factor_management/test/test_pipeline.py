@@ -155,7 +155,7 @@ class _FakeQS:
             return []
         return docs
 
-    async def get_all_stocks(self):
+    async def get_all_stocks(self, as_of=None):
         infos = [v for v in self.names.get("stock_infos", {}).values() if isinstance(v, dict)]
         extras = [
             {"code": d["code"], "is_mainboard": True, "is_st": False, "name": d.get("stock_name", "")}
@@ -222,24 +222,10 @@ def test_pipeline_constructs_from_ssot(monkeypatch, strategy_params):
 @pytest.mark.asyncio
 async def test_score_signals_red_market(strategy_params, factor_raw):
     market = dict(factor_raw["market"])
-    market.update(
-        {
-            "mf1_slope_pct": -0.05,
-            "mf2_boll_pct": 0.05,
-            "mf3_vol_ratio": 0.2,
-            "mf4_momentum_5d": -0.12,
-            "mf5_atr_ratio": 0.09,
-        }
-    )
-    from zstock.strategy_management.sentiment import score_market_from_raw
+    market["trend_gap"] = -0.05
+    from zstock.strategy_management.sentiment import score_market_from_gap
 
-    sent = score_market_from_raw(
-        float(market["mf1_slope_pct"]),
-        float(market["mf2_boll_pct"]),
-        float(market["mf3_vol_ratio"]),
-        float(market["mf4_momentum_5d"]),
-        float(market["mf5_atr_ratio"]),
-    )
+    sent = score_market_from_gap(float(market["trend_gap"]))
     if sent["market_risk_level"] != "red":
         pytest.skip("该组压力参数仍未落到红灯")
 

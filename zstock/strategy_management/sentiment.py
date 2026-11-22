@@ -1,17 +1,18 @@
 """市场情绪：红 / 黄 / 绿。
 
-只消费 market 因子 raw（或指数 OHLCV 现场算 raw），输出：
-- market_risk_level: red | yellow | green
-- position_scale_factor / allow_new_open
-- detect_style：动量 / 反转 / 中性（供截面权重选配置档）
+灯只看沪深300收盘相对 120 日均线的距离（trend_gap）：
+高于带宽才亮绿灯，低于负带宽才亮红灯。
+绿灯要等收盘回到均线才灭，红灯同样，避免贴着带宽来回跳。
+中间是黄灯。
+detect_style 仍是动量 / 反转 / 中性，供截面权重选配置档，不参与灯色。
 
-阈值一律经 get_*_config(params)；传入 pipeline.config 时与漏斗同源。
+带宽与仓位缩放经 get_market_factors_config(params)。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -21,54 +22,64 @@ from zstock.common.config.strategy_config import (
     get_neutral_style,
     get_style_detector_config,
 )
-from zstock.common.utils.score_maps import (
-    map_atr_ratio_to_score,
-    map_momentum_to_score,
-    map_slope_to_score,
-    map_vol_ratio_to_score,
-)
 
 logger = logging.getLogger(__name__)
 
 
-def _compose_sentiment(
-    mf1: float,
-    mf2: float,
-    mf3: float,
-    mf4: float,
-    mf5: float,
+def _band(params: Optional[Dict[str, Any]]) -> tuple[float, float]:
+    mc = get_market_factors_config(params)
+    band = float(mc["trend_band"])
+    if band <= 0:
+        band = 0.03
+    return band, float(mc["trend_release"])
+
+
+def _instant_grade(gap: float, band: float) -> str:
+    if gap >= band:
+        return "green"
+    if gap <= -band:
+        return "red"
+    return "yellow"
+
+
+def _hold_light(previous: str, gap: float, band: float, release: float) -> str:
+    """已亮的灯保持到收盘穿过均线；未亮的灯仍要越过带宽才亮。"""
+    if previous == "green":
+        if gap <= -band:
+            return "red"
+        if gap > release:
+            return "green"
+        return "yellow"
+    if previous == "red":
+        if gap >= band:
+            return "green"
+        if gap < -release:
+            return "red"
+        return "yellow"
+    return _instant_grade(gap, band)
+
+
+def _light_result(
+    gap: float,
+    grade: str,
     detail: Dict[str, Any],
     *,
     params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     mc = get_market_factors_config(params)
-    score = float(
-        np.clip(
-            mc["w_trend"] * mf1
-            + mc["w_bollinger"] * mf2
-            + mc["w_volume"] * mf3
-            + mc["w_momentum"] * mf4
-            + mc["w_volatility"] * mf5,
-            0.0,
-            100.0,
-        )
-    )
-    if score >= mc["grade_green"]:
-        grade, scale = "green", mc["scale_green"]
-    elif score >= mc["grade_yellow"]:
-        grade, scale = "yellow", mc["scale_yellow"]
-    else:
-        grade, scale = "red", mc["scale_red"]
+    band, _release = _band(params)
+    scale = {
+        "green": mc["scale_green"],
+        "yellow": mc["scale_yellow"],
+        "red": mc["scale_red"],
+    }[grade]
+    score = float(np.clip(50.0 + 50.0 * (gap / band), 0.0, 100.0))
     return {
         "market_composite_score": score,
         "market_risk_level": grade,
         "position_scale_factor": scale,
         "allow_new_open": grade != "red",
-        "market_trend_strength": mf1,
-        "market_bollinger_position": mf2,
-        "market_volume_state": mf3,
-        "market_5day_momentum": mf4,
-        "market_volatility_suppression": mf5,
+        "trend_gap": float(gap),
         "detail": detail,
     }
 
@@ -87,56 +98,74 @@ def _neutral_market_result(
         "position_scale_factor": get_market_factors_config(params)["scale_yellow"],
         "allow_new_open": True,
         "data_missing": data_missing,
-        "market_trend_strength": 50.0,
-        "market_bollinger_position": 50.0,
-        "market_volume_state": 50.0,
-        "market_5day_momentum": 50.0,
-        "market_volatility_suppression": 50.0,
+        "trend_gap": 0.0,
         "detail": {"reason": reason},
     }
 
 
-def score_market_from_raw(
-    mf1_slope_pct: float,
-    mf2_boll_pct: float,
-    mf3_vol_ratio: float,
-    mf4_momentum_5d: float,
-    mf5_atr_ratio: float,
+def score_market_from_gap(
+    trend_gap: float,
     *,
     params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """五个子因子 raw → 情绪分 / 红绿灯 / 仓位缩放。"""
-    mf1 = map_slope_to_score(mf1_slope_pct) if not np.isnan(mf1_slope_pct) else 50.0
-    mf2 = mf2_boll_pct * 100.0 if not np.isnan(mf2_boll_pct) else 50.0
-    mf3 = map_vol_ratio_to_score(mf3_vol_ratio) if not np.isnan(mf3_vol_ratio) else 50.0
-    mf4 = (
-        map_momentum_to_score(mf4_momentum_5d)
-        if not np.isnan(mf4_momentum_5d)
-        else 50.0
-    )
-    mf5 = map_atr_ratio_to_score(mf5_atr_ratio) if not np.isnan(mf5_atr_ratio) else 50.0
-    atr_inv = (
-        (1.0 / mf5_atr_ratio)
-        if (
-            mf5_atr_ratio is not None
-            and not np.isnan(mf5_atr_ratio)
-            and mf5_atr_ratio > 0
-        )
-        else float("nan")
-    )
-    return _compose_sentiment(
-        mf1,
-        mf2,
-        mf3,
-        mf4,
-        mf5,
+    """trend_gap = 收盘 / MA − 1 → 灯色。"""
+    gap = float(trend_gap)
+    if gap != gap:
+        return _neutral_market_result("沪深300", reason="trend_gap_nan", params=params)
+    band, _release = _band(params)
+    mc = get_market_factors_config(params)
+    return _light_result(
+        gap,
+        _instant_grade(gap, band),
         {
-            "mf1_slope_pct": mf1_slope_pct,
-            "mf2_boll_pct": mf2_boll_pct,
-            "mf3_vol_ratio": mf3_vol_ratio,
-            "mf4_momentum_5d": mf4_momentum_5d,
-            "mf5_atr_ratio": mf5_atr_ratio,
-            "mf5_atr_ratio_inv": atr_inv,
+            "trend_gap": gap,
+            "ma_window": int(mc["ma_window"]),
+            "trend_band": band,
+        },
+        params=params,
+    )
+
+
+def score_market_from_closes(
+    closes: Sequence[float],
+    *,
+    params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """收盘序列（最后一根是判定日）→ 灯色。"""
+    mc = get_market_factors_config(params)
+    window = int(mc["ma_window"])
+    series = []
+    for value in closes or []:
+        try:
+            px = float(value)
+        except (TypeError, ValueError):
+            continue
+        if px > 0 and px == px:
+            series.append(px)
+    if len(series) < window:
+        return _neutral_market_result(
+            "沪深300", reason="data_insufficient", params=params
+        )
+    band, release = _band(params)
+    grade = "yellow"
+    gap = float("nan")
+    for end in range(window, len(series) + 1):
+        ma = sum(series[end - window : end]) / window
+        if ma <= 0:
+            continue
+        gap = series[end - 1] / ma - 1.0
+        grade = _hold_light(grade, gap, band, release)
+    if gap != gap:
+        return _neutral_market_result("沪深300", reason="trend_gap_nan", params=params)
+    mc = get_market_factors_config(params)
+    return _light_result(
+        gap,
+        grade,
+        {
+            "trend_gap": gap,
+            "ma_window": int(mc["ma_window"]),
+            "trend_band": band,
+            "trend_release": release,
         },
         params=params,
     )
@@ -148,15 +177,18 @@ def score_market_from_doc(
     params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """预计算 M1 文档 → 情绪结果。"""
-    nan = float("nan")
-    return score_market_from_raw(
-        mf1_slope_pct=float(doc.get("mf1_slope_pct", nan)),
-        mf2_boll_pct=float(doc.get("mf2_boll_pct", nan)),
-        mf3_vol_ratio=float(doc.get("mf3_vol_ratio", nan)),
-        mf4_momentum_5d=float(doc.get("mf4_momentum_5d", nan)),
-        mf5_atr_ratio=float(doc.get("mf5_atr_ratio", nan)),
-        params=params,
-    )
+    try:
+        gap = float(doc.get("trend_gap"))
+    except (TypeError, ValueError):
+        gap = float("nan")
+    if gap != gap:
+        return _neutral_market_result(
+            "沪深300",
+            reason="no_trend_gap",
+            params=params,
+            data_missing=True,
+        )
+    return score_market_from_gap(gap, params=params)
 
 
 def score_market_sentiment(
@@ -172,18 +204,21 @@ def score_market_sentiment(
     raw = MarketFactors.compute_market_raw(
         index_ohlcv, index_name=index_name, trade_date=trade_date
     )
-    if "mf1_slope_pct" not in raw:
+    if "trend_gap" not in raw:
         return _neutral_market_result(
             index_name, reason=str(raw.get("reason") or "empty"), params=params
         )
-    out = score_market_from_raw(
-        mf1_slope_pct=float(raw["mf1_slope_pct"]),
-        mf2_boll_pct=float(raw["mf2_boll_pct"]),
-        mf3_vol_ratio=float(raw["mf3_vol_ratio"]),
-        mf4_momentum_5d=float(raw["mf4_momentum_5d"]),
-        mf5_atr_ratio=float(raw["mf5_atr_ratio"]),
-        params=params,
-    )
+    frame = index_ohlcv
+    closes = []
+    if frame is not None and "close" in getattr(frame, "columns", []):
+        frame = frame.copy()
+        if "trade_date" in frame.columns:
+            if trade_date:
+                frame = frame.loc[frame["trade_date"].astype(str) <= str(trade_date)]
+            frame = frame.sort_values("trade_date")
+        parsed = pd.to_numeric(frame["close"], errors="coerce").dropna()
+        closes = [float(value) for value in parsed.tolist() if value > 0]
+    out = score_market_from_closes(closes, params=params)
     out["detail"] = raw
     return out
 

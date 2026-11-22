@@ -103,7 +103,7 @@ async def test_reversal_yellow_reduce_only_blocks_new_entry(
 
 @pytest.mark.asyncio
 async def test_reduce_only_with_runtime_config_only(reversal_yellow_signals):
-    """黄灯走中性行业 ETF 账户，不再在这一层开新股票。"""
+    """黄灯留下截面还要的股票，其余买行业 ETF。"""
     from zstock.common.config.strategy_config import build_runtime_config
 
     runtime = build_runtime_config()

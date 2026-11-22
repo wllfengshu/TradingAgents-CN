@@ -157,11 +157,15 @@ class IndustryEtfStrategy:
     def __init__(self, query_service=None):
         self._query_service = query_service
 
-    async def select(self, trade_date: Optional[str] = None) -> Dict[str, float]:
+    async def select(
+        self,
+        trade_date: Optional[str] = None,
+        held: Optional[Iterable[str]] = None,
+    ) -> Dict[str, float]:
         td = _trade_day(trade_date)
         qs = self._query_service or get_data_query_service()
         closes = await _load_closes(qs, list(BOOK_OHLCV_CODES), td)
-        return industry_targets(closes)
+        return industry_targets(closes, held=held)
 
 
 def _trade_day(trade_date: Optional[str]) -> str:

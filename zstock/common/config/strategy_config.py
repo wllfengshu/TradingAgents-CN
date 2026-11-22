@@ -5,7 +5,7 @@
 
 对外提供：
 - load_strategy_params()         读并缓存原始配置 JSON；可传入备用文件路径
-- get_market_factors_config()    派生 M1 情绪权重/红绿灯/仓位缩放
+- get_market_factors_config()    派生 M1 均线窗口、带宽与仓位缩放
 - get_style_detector_config()    派生 M1 风格检测阈值
 - get_neutral_style()            中性风格（动量/反转对半，定义而非交易参数）
 - resolve_active_factors()       当日因子画像（profiles + factor_decay）
@@ -64,22 +64,17 @@ def load_strategy_params(path: Optional[str | Path] = None) -> Dict[str, Any]:
 
 
 def get_market_factors_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """派生 M1 情绪权重、红绿灯阈值与仓位缩放（进程内缓存）。"""
+    """派生 M1 均线灯的窗口、带宽与仓位缩放（进程内缓存）。"""
     global _market_factors_cfg_cache
     if params is None and _market_factors_cfg_cache is not None:
         return _market_factors_cfg_cache
 
     src = params if params is not None else load_strategy_params()
     cfg = (src or {}).get("market_factors") or {}
-    weights = cfg.get("weights") or {}
     out = {
-        "w_trend": float(weights.get("trend_strength", 0.30)),
-        "w_bollinger": float(weights.get("bollinger_position", 0.25)),
-        "w_volume": float(weights.get("volume_state", 0.20)),
-        "w_momentum": float(weights.get("momentum_5day", 0.15)),
-        "w_volatility": float(weights.get("volatility_suppression", 0.10)),
-        "grade_green": float(cfg.get("grade_green", 70.0)),
-        "grade_yellow": float(cfg.get("grade_yellow", 40.0)),
+        "ma_window": int(cfg.get("ma_window", 120)),
+        "trend_band": float(cfg.get("trend_band", 0.03)),
+        "trend_release": float(cfg.get("trend_release", 0.0)),
         "scale_green": float(cfg.get("scale_green", 1.0)),
         "scale_yellow": float(cfg.get("scale_yellow", 0.4)),
         "scale_red": float(cfg.get("scale_red", 0.0)),

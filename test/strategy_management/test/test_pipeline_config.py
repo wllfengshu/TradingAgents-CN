@@ -129,7 +129,7 @@ async def test_result_to_signals_and_precomputed_red(monkeypatch):
 
     async def fake_load(method, td, **kwargs):
         if method == "get_factor_market":
-            return {"mf1_slope_pct": -1.0}  # 占位；情绪由 mock 覆盖
+            return {"trend_gap": -0.05}  # 占位；情绪由 mock 覆盖
         return []
 
     monkeypatch.setattr(
